@@ -14,7 +14,6 @@
  *   from_date       YYYY-MM-DD  Default: 89 days before today (Cairo).
  *   to_date         YYYY-MM-DD  Default: today (Cairo).
  *   client_name[]   string[]  Multi-value: match ANY.
- *   company_name[]  string[]  Multi-value: match ANY.
  *   receipt_number[] string[] Multi-value: match ANY.
  *   vehicle[]       string[]  Multi-value: match ANY (searches rows JSON).
  *   karta[]         string[]  Multi-value: match ANY (searches rows JSON).
@@ -61,7 +60,6 @@ try {
 
     // Multi-value array parameters
     $clientNames    = _sanitizeArray($_GET['client_name'] ?? []);
-    $companyNames   = _sanitizeArray($_GET['company_name'] ?? []);
     $receiptNumbers = _sanitizeArray($_GET['receipt_number'] ?? []);
     $vehicles       = _sanitizeArray($_GET['vehicle'] ?? []);
     $kartas         = _sanitizeArray($_GET['karta'] ?? []);
@@ -81,7 +79,6 @@ try {
         'from_date'       => $fromDate,
         'to_date'         => $toDate,
         'client_name'     => $clientNames,
-        'company_name'    => $companyNames,
         'receipt_number'  => $receiptNumbers,
         'vehicle'         => $vehicles,
         'karta'           => $kartas,

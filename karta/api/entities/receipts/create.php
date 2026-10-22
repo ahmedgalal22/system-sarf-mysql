@@ -70,8 +70,6 @@ try {
             'client_id'        => sanitizeString($body['client_id'] ?? null) ?: null,
             'client_type'      => sanitizeString($body['client_type'] ?? null) ?: null,
             'client_name'      => sanitizeString($body['client_name'] ?? null) ?: null,
-            'recipient_name'   => sanitizeString($body['recipient_name'] ?? null) ?: null,
-            'company_name'     => sanitizeString($body['company_name'] ?? null) ?: null,
             'payout_status'    => sanitizeString($body['payout_status'] ?? null) ?: 'unpaid',
             'paid_at'          => sanitizeString($body['paid_at'] ?? null) ?: null,
             'account_type'     => sanitizeString($body['account_type'] ?? null) ?: null,

@@ -298,8 +298,7 @@ const _RECEIPT_COLS = Object.freeze([
   { key: 'ohda',         header: 'عهدة',           type: 'number' },
   { key: 'officeAmount', header: 'مكتب',           type: 'number' },
   { key: 'add',          header: 'إضافة',          type: 'number' },
-  { key: 'discount',     header: 'خصم',           type: 'number' },
-  { key: 'army',         header: 'جيش',           type: 'number' },
+  { key: 'sarf',         header: 'الصرف',          type: 'number' },
 ]);
 
 // Full header list used in import validation error messages.
@@ -677,8 +676,7 @@ const _ALL_RECEIPTS_COLS = Object.freeze([
   { header: 'عهدة',         getValue: (row, _rec) => _allReceiptsNum(row.ohda) },
   { header: 'مكتب',         getValue: (row, _rec) => _allReceiptsNum(row.officeAmount) },
   { header: 'اضافة',        getValue: (row, _rec) => _allReceiptsNum(row.add) },
-  { header: 'خصم',         getValue: (row, _rec) => _allReceiptsNum(row.discount) },
-  { header: 'جيش',         getValue: (row, _rec) => _allReceiptsNum(row.army) },
+  { header: 'الصرف',        getValue: (row, _rec) => _allReceiptsNum(row.sarf) },
   { header: 'الصافي',       getValue: (row, _rec) => _allReceiptsNum(row.net) },
 ]);
 

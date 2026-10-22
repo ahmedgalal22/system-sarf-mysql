@@ -16,7 +16,7 @@ const _EFFECT = Object.freeze({
 
 /**
  * Calculates the net value of a single data row.
- * Formula: ((weight + weight2) - deficit) * noloon - (ohda + officeAmount + discount) + add
+ * Formula: ((weight + weight2) - deficit) * noloon - (ohda + officeAmount + sarf) + add
  */
 export function calculateRowNet(row) {
   if (!row) return 0;
@@ -28,14 +28,12 @@ export function calculateRowNet(row) {
   const noloon       = Number(row.noloon)       || 0;
   const ohda         = Number(row.ohda)         || 0;
   const officeAmount = Number(row.officeAmount ?? row.office_amount ?? row.officeAmount) || 0;
-  const discount     = Number(row.discount)     || 0;
+  const sarf         = Number(row.sarf)         || 0;
   const add          = Number(row.add)          || 0;
-  const army         = Number(row.army)         || 0;
 
   const net = ((weight + weight2) - deficit) * noloon
-            - (ohda + officeAmount + discount)
-            + add
-            + army;
+            - (ohda + officeAmount + sarf)
+            + add;
 
   return Money.round(net);
 }

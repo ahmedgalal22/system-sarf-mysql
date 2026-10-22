@@ -41,7 +41,6 @@ try {
         $patch = [];
         $allowed = [
             'receipt_date', 'client_id', 'client_type', 'client_name',
-            'recipient_name', 'company_name',
             'payout_status', 'paid_at', 'account_type',
             'total', 'net_due', 'net_total', 'paid', 'previous_balance', 'general_add',
             'rows', 'notes', 'shipping_number',

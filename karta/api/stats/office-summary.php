@@ -8,8 +8,8 @@
  * FORMULA (mirrors financialCalculator.js exactly):
  *   weight = (weight + weight2) - deficit
  *   net    = ((weight + weight2) - deficit) * noloon
- *            - (ohda + officeAmount + discount)
- *            + add + army
+ *            - (ohda + officeAmount + sarf)
+ *            + add
  */
 
 require_once __DIR__ . '/../../core/bootstrap.php';
@@ -54,14 +54,12 @@ try {
             $noloon       = floatval($row['noloon'] ?? 0);
             $ohda         = floatval($row['ohda'] ?? 0);
             $officeAmount = floatval($row['officeAmount'] ?? ($row['office_amount'] ?? 0));
-            $discount     = floatval($row['discount'] ?? 0);
+            $sarf         = floatval($row['sarf'] ?? 0);
             $add          = floatval($row['add'] ?? 0);
-            $army         = floatval($row['army'] ?? 0);
 
             $net = ($weightTotal * $noloon)
-                 - ($ohda + $officeAmount + $discount)
-                 + $add
-                 + $army;
+                 - ($ohda + $officeAmount + $sarf)
+                 + $add;
 
             $summary[$key]['weight'] += $weightTotal;
             $summary[$key]['net']    += round($net, 2);

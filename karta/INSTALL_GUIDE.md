@@ -1,375 +1,295 @@
-# 📋 Karta ERP — دليل التثبيت والتشغيل الكامل
-## نظام LAN لـ 5 أجهزة
+# 📋 Karta ERP v2 — دليل التثبيت والتشغيل والاختبار المحلي (Windows / XAMPP)
+## نظام مستقل للشبكة المحلية (LAN)
 
 ---
 
-## المتطلبات
+## ⚠️ تحذير هام قبل البدء (عزل قاعدة البيانات)
+
+هذه النسخة (**Karta ERP v2**) مصممة لتعمل في بيئة معزولة تماماً عن النظام الأصلي:
+- **اسم قاعدة البيانات المخصص لـ v2:** `karta_erp_v2`
+- **اسم الجلسة (Session):** `KARTA_V2_SESSION`
+- **مفاتيح التخزين المحلي بالمتصفح:** `karta_v2_*`
+- **مجلد النسخ الاحتياطي التلقائي:** `C:\karta-v2-backups`
+
+> 🚫 **تحذير صارم:** لا تقم أبداً بتوجيه ملف `config/database.php` في هذه النسخة إلى قاعدة بيانات الإنتاج الأصلية (`karta_erp`)، ولا تقم باستيراد ملفات النسخ الاحتياطي الخاصة بـ v2 داخل قاعدة البيانات الأصلية.
+
+---
+
+## 1. المتطلبات الأساسية
 
 ### جهاز السيرفر (الجهاز الرئيسي)
-- **Windows 10/11**
-- **XAMPP** (آخر إصدار) — يشمل Apache + MySQL + PHP 8.x
-- تحميل XAMPP: https://www.apachefriends.org
+- **نظام التشغيل:** Windows 10 أو Windows 11
+- **حزمة XAMPP:** تشمل **Apache + MySQL + PHP 8.x**
+  - الموقع الرسمي: `https://www.apachefriends.org`
 
-### أجهزة العملاء (4 أجهزة)
-- أي متصفح حديث (Chrome / Edge / Firefox)
-- اتصال بنفس الشبكة المحلية (LAN)
+### أجهزة العملاء (على الشبكة المحلية LAN)
+- متصفح حديث (Google Chrome / Microsoft Edge / Mozilla Firefox)
+- اتصال بنفس الشبكة المحلية (LAN) الخاصة بجهاز السيرفر
 
 ---
 
-## خطوات التثبيت
+## 2. خطوات التثبيت والتشغيل على Windows / XAMPP
 
-### الخطوة 1: تثبيت XAMPP
+### الخطوة 1: تثبيت XAMPP وتشغيل الخدمات
+1. ثبّت XAMPP في المسار الافتراضي `C:\xampp` مع اختيار **Apache** و **MySQL** و **PHP**.
+2. افتح **XAMPP Control Panel**.
+3. اضغط **Start** بجانب **Apache** واضغط **Start** بجانب **MySQL**، وتأكد أن الخدمتين باللون الأخضر ✅.
 
-1. حمّل وثبّت XAMPP على الجهاز الرئيسي
-2. أثناء التثبيت اختر: **Apache + MySQL + PHP**
-3. مسار التثبيت الافتراضي: `C:\xampp`
+### الخطوة 2: وضع ملفات التطبيق في `htdocs`
+انسخ مجلد `karta` إلى داخل مجلد `C:\xampp\htdocs\` (يدعم النظام الكشف التلقائي عن مسار `./api` أياً كان اسم المجلد الأب، مثل `C:\xampp\htdocs\karta_v2\karta\` أو `C:\xampp\htdocs\system52\karta\`):
 
-### الخطوة 2: نقل ملفات المشروع
-
-1. انسخ مجلد `karta` بالكامل إلى:
-```
-C:\xampp\htdocs\system52\karta\
-```
-
-2. تأكد أن الهيكل يبدو هكذا:
-```
-C:\xampp\htdocs\system52\karta\
+```text
+C:\xampp\htdocs\karta_v2\karta\
 ├── app.js
+├── receipts.js
+├── allReceipts.js
+├── excelService.js
+├── financial.js
+├── offices.js
+├── treasury.js
+├── archive.js
+├── archiveViewer.js
 ├── index.html
 ├── login.html
 ├── index.php
 ├── setup.php
+├── INSTALL_GUIDE.md
 ├── database.sql
-├── database_*.sql (12 ملف)
+├── database_*.sql (13 ملفاً إضافياً — إجمالي 14 ملف SQL)
 ├── api/
 ├── config/
 ├── core/
 ├── repositories/
 ├── services/
-├── tests_v2/
-└── ...
+├── scripts/
+└── tests_v2/
 ```
 
-### الخطوة 3: تشغيل XAMPP
-
-1. افتح **XAMPP Control Panel**
-2. اضغط **Start** بجانب **Apache**
-3. اضغط **Start** بجانب **MySQL**
-4. تأكد أن كلاهما يظهر بالأخضر ✅
-
-### الخطوة 4: إنشاء قاعدة البيانات
-
-1. افتح المتصفح على الجهاز الرئيسي
-2. ادخل: **http://localhost/phpmyadmin**
-3. اضغط **Import** من القائمة العلوية
-4. استورد ملفات SQL **بهذا الترتيب** (ملف تلو الآخر):
-
-```
-الترتيب مهم! استورد كل ملف بشكل منفصل:
-
- 1. database.sql              ← ينشئ قاعدة البيانات + جدول المستخدمين
- 2. database_vehicles.sql
- 3. database_vehicle_owners.sql
- 4. database_agents.sql
- 5. database_offices.sql
- 6. database_drivers.sql
- 7. database_notes.sql
- 8. database_receipts.sql
- 9. database_treasury.sql
-10. database_vehicle_ledger.sql
-11. database_bolsa_forms.sql
-12. database_main_capital.sql
-13. database_archive.sql
-14. database_sync.sql
-15. database_backup_metadata.sql
-```
-
-**لكل ملف:**
-- اضغط **Import** → **Choose File** → اختر الملف → **Go**
-- انتظر رسالة النجاح ✅ ثم انتقل للملف التالي
-
-### الخطوة 5: إعداد المستخدمين
-
-1. افتح المتصفح:
-```
-http://localhost/system52/karta/setup.php
-```
-
-2. ستظهر رسائل التأكيد:
-   - ✅ جميع الجداول المطلوبة موجودة
-   - ✅ تم إنشاء مستخدم: admin
-   - ✅ تم إنشاء مستخدم: accountant
-
-3. **⚠️ مهم:** بعد نجاح الإعداد، احذف ملف `setup.php`:
-```
-احذف: C:\xampp\htdocs\system52\karta\setup.php
-```
-
-### الخطوة 6: فحص النظام
-
-افتح في المتصفح:
-```
-http://localhost/system52/karta/api/health/ping.php
-```
-
-يجب أن تظهر:
-```json
-{
-  "success": true,
-  "data": {
-    "status": "ok",
-    "mysql": "connected",
-    "users_table": "exists"
-  }
-}
-```
-
-### الخطوة 7: تسجيل الدخول
-
-افتح:
-```
-http://localhost/system52/karta/login.html
-```
-
-**بيانات الدخول:**
-
-| الدور | اسم المستخدم | كلمة المرور |
-|:---:|:---:|:---:|
-| المدير | `admin` | `admin123` |
-| المحاسب | `accountant` | `accountant123` |
+- **الرابط المحلي (في حال وضعه داخل `C:\xampp\htdocs\karta_v2\karta\`):**
+  `http://localhost/karta_v2/karta/login.html`
+- *(أو `http://localhost/system52/karta/login.html` إذا وضعته داخل `C:\xampp\htdocs\system52\karta\`)*
 
 ---
 
-## إعداد الشبكة (5 أجهزة)
+## 3. إنشاء قاعدة البيانات `karta_erp_v2` وترتيب استيراد ملفات SQL
 
-### على جهاز السيرفر:
+1. افتح المتصفح وانتقل إلى: `http://localhost/phpmyadmin`
+2. اضغط على تبويب **Import** من القائمة العلوية.
+3. استورد ملفات SQL الـ **14** الموجودة داخل مجلد `karta/` **بالترتيب التالي** (ملفاً تلو الآخر):
 
-#### 1. اعرف IP السيرفر:
-- افتح **CMD** (موجه الأوامر)
-- اكتب: `ipconfig`
-- ابحث عن **IPv4 Address** ضمن الشبكة المحلية
-- مثال: `192.168.1.100`
-
-#### 2. اسمح لـ Apache بالوصول من الشبكة:
-
-افتح الملف:
+```text
+ 1. database.sql                  ← ينشئ قاعدة البيانات karta_erp_v2 + جدول users
+ 2. database_vehicles.sql         ← جدول المركبات (vehicles)
+ 3. database_vehicle_owners.sql   ← جدول أصحاب المركبات (vehicle_owners)
+ 4. database_offices.sql          ← جدول الشركات/المكاتب (offices)
+ 5. database_drivers.sql          ← جدول السائقين (drivers)
+ 6. database_notes.sql            ← جدول الملاحظات (notes)
+ 7. database_hamola_details.sql   ← جدول تفاصيل الحمولة (hamola_details)
+ 8. database_receipts.sql         ← جدولا نماذج الصرف وعدادات الأذون (receipts, receipt_counters)
+ 9. database_treasury.sql         ← جدول الخزنة (treasury)
+10. database_vehicle_ledger.sql   ← جدول دفتر حسابات المركبات والعملاء (vehicle_ledger)
+11. database_main_capital.sql     ← جدول خزنة رأس المال (main_capital)
+12. database_archive.sql          ← جداول الأرشيف (archive_batches, archived_*, archive_snapshots)
+13. database_sync.sql             ← جداول المزامنة وسجل العمليات (idempotency_keys, sync_log)
+14. database_backup_metadata.sql  ← جدول بيانات النسخ الاحتياطي (backup_metadata)
 ```
-C:\xampp\apache\conf\httpd.conf
-```
 
-ابحث عن:
-```
-Listen 80
-```
-تأكد أنها:
-```
-Listen 0.0.0.0:80
-```
-(وليست `Listen 127.0.0.1:80`)
-
-#### 3. جدار الحماية (Windows Firewall):
-
-- افتح **Windows Defender Firewall**
-- اضغط **Allow an app through firewall**
-- ابحث عن **Apache HTTP Server** — تأكد أنه مفعّل لـ **Private** ✅
-- إذا غير موجود: اضغط **Allow another app** → تصفح إلى `C:\xampp\apache\bin\httpd.exe`
-
-#### 4. أعد تشغيل Apache من XAMPP Control Panel
-
-### على أجهزة العملاء (الأجهزة الأخرى):
-
-افتح المتصفح وأدخل:
-```
-http://192.168.1.100/system52/karta/login.html
-```
-(استبدل `192.168.1.100` بـ IP السيرفر الفعلي)
-
-**اختبر أولاً:**
-```
-http://192.168.1.100/system52/karta/api/health/ping.php
-```
-يجب أن تظهر `"mysql": "connected"` ✅
+> **ملاحظة:** تم في **Karta ERP v2** إزالة جداول ووحدات البوالص والمناديب نهائياً (`database_bolsa_forms.sql` و `database_agents.sql`)، لذا يقتصر النظام على الجداول الـ 14 المذكورة أعلاه داخل `karta_erp_v2`.
 
 ---
 
-## بيانات الدخول
+## 4. إعدادات الاتصال بقاعدة البيانات (`config/database.php`)
 
-| الدور | اسم المستخدم | كلمة المرور | الصلاحيات |
+تحقق من الملف `karta/config/database.php` للتأكد من أنه يشير إلى `karta_erp_v2`:
+
+```php
+return [
+    'host'     => '127.0.0.1',
+    'port'     => 3306,
+    'dbname'   => 'karta_erp_v2',
+    'username' => 'root',
+    'password' => '', // فارغة في الإعداد الافتراضي لـ XAMPP
+    'charset'  => 'utf8mb4',
+    // ...
+];
+```
+
+---
+
+## 5. التهيئة الأولية عبر `setup.php` وإجراءات الأمان
+
+### ما الذي يفعله `karta/setup.php` فعلياً؟
+عند فتح `setup.php` في المتصفح:
+1. يتحقق من وجود الجداول الأساسية المطلوبة (`users`, `receipts`, `receipt_counters`) في قاعدة البيانات `karta_erp_v2`.
+2. يتحقق من أن عمود `updated_at` في جدول `receipts` من نوع `DATETIME(3)` بدقة الملي ثانية.
+3. ينشئ أو **يعيد تعيين (Reset)** كلمات المرور الافتراضية المشفرة بـ `PASSWORD_BCRYPT` للحسابين الافتراضيين:
+   - **`admin`** (الدور: `admin`) — كلمة المرور الافتراضية: `admin123`
+   - **`accountant`** (الدور: `accountant`) — كلمة المرور الافتراضية: `accountant123`
+   *(إذا كان المستخدم موجوداً مسبقاً، يقوم `setup.php` بتنفيذ `UPDATE users SET password_hash = :hash, role = :role WHERE username = :username`).*
+
+### خطوات التشغيل الآمن لـ `setup.php`
+1. افتح في المتصفح (لمرة واحدة فقط بعد استيراد ملفات SQL):
+   ```text
+   http://localhost/karta_v2/karta/setup.php
+   ```
+2. تأكد من ظهور الرسائل:
+   - `✅ جميع الجداول المطلوبة موجودة`
+   - `✅ Schema: updated_at is DATETIME(3) (millisecond precision)`
+   - `✅ تم إنشاء مستخدم: admin` (أو تحديث كلمة مروره)
+   - `✅ تم إنشاء مستخدم: accountant` (أو تحديث كلمة مروره)
+3. **⚠️ مخاطر الأمان وإجراء الحماية الفوري:**
+   - نظراً لأن `setup.php` يعمل بدون مصادقة ويعيد تعيين كلمات مرور `admin` و `accountant` إلى القيم الافتراضية عند كل استدعاء، فإن تركه متاحاً على الشبكة المحلية يسمح لأي مستخدم بإعادة ضبط كلمات المرور.
+   - **فور انتهاء التهيئة:** احذف الملف `karta/setup.php` أو انقله خارج مجلد `htdocs`، وغيّر كلمات المرور الافتراضية من خلال توليد تجزئة Bcrypt عبر PHP CLI:
+     ```cmd
+     C:\xampp\php\php.exe -r "echo password_hash('NewStrongPassword', PASSWORD_BCRYPT) . PHP_EOL;"
+     ```
+     ثم تحديث حقل `password_hash` في جدول `users` داخل قاعدة `karta_erp_v2` عبر `phpMyAdmin`.
+
+### فحص صحة النظام وتسجيل الدخول
+1. افتح رابط الفحص الصحي:
+   ```text
+   http://localhost/karta_v2/karta/api/health/ping.php
+   ```
+   وتأكد من عودة الاستجابة:
+   ```json
+   {
+     "success": true,
+     "data": {
+       "status": "ok",
+       "mysql": "connected",
+       "users_table": "exists"
+     }
+   }
+   ```
+2. افتح صفحة تسجيل الدخول:
+   ```text
+   http://localhost/karta_v2/karta/login.html
+   ```
+
+| الدور | اسم المستخدم | كلمة المرور الافتراضية | الصلاحيات في Karta ERP v2 |
 |:---:|:---:|:---:|:---|
-| **المدير** | `admin` | `admin123` | كل شيء: إيصالات + خزنة + بوالص + أرشيف + dashboard |
-| **المحاسب** | `accountant` | `accountant123` | إيصالات + خزنة (بدون حذف أو إعدادات) |
+| **المدير** | `admin` | `admin123` | جميع الصلاحيات: نموذج الصرف، كل الكارتات، الخزنة، رأس المال، الشركات، العملاء، الأرشيف، النسخ الاحتياطي، لوحة التحكم |
+| **المحاسب** | `accountant` | `accountant123` | نماذج الصرف والخزنة والعمليات اليومية (بدون الحذف الإداري أو إدارة النسخ الاحتياطي) |
 
 ---
 
-## الاختبار بعد التثبيت
+## 6. تحديثات نموذج الصرف وجدول الكارتات في Karta ERP v2
 
-### اختبار سريع (من المتصفح):
+### أ. حقول رأس نموذج الصرف (Header Fields)
+- **الحقول المحذوفة نهائياً من رأس النموذج:**
+  - `اسم المستلم` (`recipient_name` / `#recipientName`)
+  - `اسم الشركة` على مستوى رأس النموذج (`company_name` / `#companyName`)
+  - `هاتف الشركة` (`company_phone` / `#companyPhone`)
+- **الحقول المعتمدة في رأس النموذج (3 حقول فقط):**
+  1. **التاريخ** (`#receiptDate` / `receipt_date`)
+  2. **صاحب المركبة** (`#clientInput` / `client_name`)
+  3. **إذن الصرف** (`#receiptNumber` / `receipt_number`)
+- **ملاحظة:** تم الإبقاء بالكامل على عمود **اسم الشركة** (`office` / `.receipt-office`) داخل صفوف الجدول لدعم التعبئة التلقائية للحمولة وربط حسابات الشركات في صفحة **الشركات** (`offices.js`).
 
-1. **فحص الصحة:**
-```
-http://localhost/system52/karta/api/health/ping.php
+### ب. أعمدة جدول الصرف المحذوفة والمضافة
+- **الأعمدة المحذوفة نهائياً:**
+  - عمود **خصم** (`discount` / `.receipt-discount`)
+  - عمود **جيش** (`army` / `.receipt-army`)
+  *(أُزيلت من واجهة الجدول، المعادلات الحسابية، الإجماليات، الطباعة المفردة والمجمعة، بطاقات كل الكارتات والأرشيف، وتصدير/استيراد Excel).*
+- **العمود الجديد المضاف (يُخصم من الصافي):**
+  - **الاسم البرمجي:** `sarf`
+  - **عنوان العمود في الواجهة والطباعة وExcel:** `الصرف`
+  - **فئة عنصر الإدخال (CSS Class):** `.receipt-sarf`
+  - **موقعه في الجدول:** يقع مباشرةً **بعد** عمود `إضافة` (`add`) ومباشرةً **قبل** عمود `الصافي` (`net`).
+  - **عدد أعمدة الجدول الحالي:** **18 عمود بيانات** + عمود `إجراءات` (`_actions`) = **19 عموداً** (ومجموع `colspan` لصف فاصل المركبة هو `7 + 11 + 1 = 19`).
+
+### ج. معادلة حساب صافي الصف (`calculateRowNet`)
+يتم حساب صافي كل صف (`net`) في كلٍ من الواجهة (`karta/services/financialCalculator.js` و `karta/receipts.js` و `karta/offices.js`) والخادم (`karta/api/stats/office-summary.php`) وفق المعادلة التالية:
+
+```text
+الوزن الصافي (weightTotal) = (weight + weight2) - deficit
+الصافي (net) = ((weight + weight2 - deficit) * noloon) - (ohda + officeAmount + sarf) + add
 ```
 
-2. **تسجيل دخول** → إنشاء إيصال → التأكد أنه يُحفظ
-
-3. **من جهاز ثاني** → تسجيل دخول → التأكد أن الإيصال يظهر
-
-### اختبار شامل (اختياري):
-
-افتح من المتصفح أو CMD:
-```
-http://localhost/system52/karta/tests_v2/run_tests_v2.php
-```
-أو:
-```
-cd C:\xampp\htdocs\system52\karta
-php tests_v2/run_tests_v2.php
-```
+- يُعامل حقل **الصرف (`sarf`)** كمبلغ مخصوم من الصافي تماماً مثل **العهدة (`ohda`)** و **المكتب (`officeAmount`)**.
+- **التوافق مع السجلات القديمة:** السجلات التاريخية التي لا تحتوي على الخاصية `sarf` داخل مصفوفة `rows` (JSON) تُعامل قيمتها تلقائياً على أنها `0` دون الحاجة لأي تعديل هدام في بنية قاعدة البيانات.
+- **مثال رقمي للتحقق:**
+  عند إدخال: `وزن وش = 40`، `وزن م = 10`، `عجز = 2`، `نولون = 100`، `عهدة = 200`، `مكتب = 50`، `إضافة = 30`، `الصرف = 100`:
+  - `الوزن الصافي = (40 + 10) - 2 = 48`
+  - `الصافي = (48 × 100) - (200 + 50 + 100) + 30 = 4800 - 350 + 30 = 4480.00`
+  - وعندما يكون `الصرف = 0` (أو فارغاً): `الصافي = 4580.00`.
 
 ---
 
-## استكشاف الأخطاء
+## 7. النسخ الاحتياطي والاستعادة (مخصص لـ `karta_erp_v2` فقط)
 
-### مشكلة: "MySQL not connected"
+### الطريقة 1: النسخ الاحتياطي والاستعادة بصيغة JSON من داخل التطبيق
+1. سجّل الدخول بحساب **المدير (`admin`)**.
+2. لتصدير نسخة احتياطية: اضغط **💾 نسخة احتياطية** من الشريط الجانبي؛ يقوم الخادم (`api/backup/create.php`) بتصدير الجداول الـ 14 الخاصة بـ `karta_erp_v2` مع بصمة تحقق (`karta-v2-v1`), شاملةً مصفوفة `rows` بكامل حقولها (بما فيها `sarf` و `net`).
+3. للاستعادة: اضغط **📥 استعادة** (`api/backup/restore.php`) واختر ملف JSON الخاص بـ v2.
 
-- ✅ تأكد أن MySQL يعمل في XAMPP (أخضر)
-- ✅ تأكد أن قاعدة `karta_erp` موجودة في phpMyAdmin
-- ✅ تحقق من `config/database.php`:
-  ```php
-  'host'     => '127.0.0.1',
-  'dbname'   => 'karta_erp',
-  'username' => 'root',
-  'password' => '',  // فارغة = الافتراضي في XAMPP
-  ```
+### الطريقة 2: النسخ التلقائي لقاعدة `karta_erp_v2` عبر `mysqldump`
+ملف الدفعة `karta/scripts/karta-backup.bat` مضبوط للنسخ من قاعدة `karta_erp_v2` إلى المجلد المستقل `C:\karta-v2-backups`:
 
-### مشكلة: الأجهزة الأخرى لا تستطيع الوصول
-
-- ✅ تأكد أن كل الأجهزة على نفس الشبكة
-- ✅ تحقق من IP السيرفر: `ipconfig` في CMD
-- ✅ تأكد أن Apache يستمع على `0.0.0.0:80`
-- ✅ أوقف جدار الحماية مؤقتاً للاختبار:
-  ```
-  netsh advfirewall set allprofiles state off
-  ```
-  (أعد تشغيله بعد التأكد: `netsh advfirewall set allprofiles state on`)
-
-### مشكلة: صفحة بيضاء أو خطأ 500
-
-- ✅ تحقق من سجل الأخطاء:
-  ```
-  C:\xampp\htdocs\system52\karta\logs\app.log
-  C:\xampp\apache\logs\error.log
-  ```
-- ✅ تأكد أن PHP يعمل: افتح `http://localhost/system52/karta/api/health/ping.php`
-
-### مشكلة: "لا يمكن تسجيل الدخول"
-
-- ✅ تأكد أنك شغّلت `setup.php` (مرة واحدة)
-- ✅ تأكد من كتابة اسم المستخدم وكلمة المرور بشكل صحيح
-- ✅ جرّب: `admin` / `admin123`
-
-### مشكلة: الخط العربي لا يظهر بشكل صحيح
-
-- ✅ هذا طبيعي على LAN بدون إنترنت — خط Cairo يُحمّل من Google Fonts
-- ✅ الحل: حمّل خط Cairo وضعه في مجلد المشروع (خطوة اختيارية)
+1. **إنشاء مجلد النسخ الاحتياطي:**
+   ```cmd
+   mkdir C:\karta-v2-backups
+   ```
+2. **تسجيل المهمة المجدولة في Windows (كل 3 أيام الساعة 02:00 صباحاً):**
+   ```cmd
+   schtasks /Create /TN "KartaERPv2-AutoBackup" /TR "C:\xampp\htdocs\karta_v2\karta\scripts\karta-backup.bat" /SC DAILY /MO 3 /ST 02:00 /F
+   ```
+3. **استعادة نسخة SQL إلى قاعدة `karta_erp_v2` عند الطوارئ:**
+   ```cmd
+   C:\xampp\mysql\bin\mysql.exe --user=root --host=127.0.0.1 --port=3306 karta_erp_v2 < "C:\karta-v2-backups\karta-v2-auto-YYYY-MM-DD_HH-MM.sql"
+   ```
 
 ---
 
-## ملاحظات مهمة
+## 8. إعداد الشبكة المحلية (LAN) واستكشاف الأخطاء
 
-### النسخ الاحتياطي
+### إتاحة الوصول من الأجهزة الفرعية على الشبكة
+1. اعرف عنوان IPv4 لجهاز السيرفر عبر الأمر `ipconfig` في CMD (مثال: `192.168.1.100`).
+2. تأكد في `C:\xampp\apache\conf\httpd.conf` أن السطر هو `Listen 0.0.0.0:80` أو `Listen 80`.
+3. اسمح لـ `C:\xampp\apache\bin\httpd.exe` بالمرور عبر **Windows Defender Firewall** للشبكات الخاصة (Private Networks).
+4. من الأجهزة الفرعية، افتح:
+   `http://192.168.1.100/karta_v2/karta/login.html`
 
-يوفر النظام طريقتين للنسخ الاحتياطي:
-
-#### الطريقة 1: نسخ يدوي (JSON) — من المتصفح
-
-1. سجّل دخول كـ **admin**
-2. اضغط على زر **💾 نسخة احتياطية** في الشريط الجانبي
-3. سيتم تحميل ملف JSON على جهازك
-4. للاستعادة: اضغط **📥 استعادة** → اختر الملف → تأكيد
-
-#### الطريقة 2: نسخ تلقائي (SQL) — كل 3 أيام
-
-النظام يتضمن ملف batch جاهز للنسخ التلقائي عبر mysqldump.
-
-**الإعداد (مرة واحدة):**
-
-1. **أنشئ مجلد النسخ الاحتياطية:**
-```
-mkdir C:\karta-backups
-```
-
-2. **سجّل المهمة المجدولة** — افتح CMD واكتب:
-```
-schtasks /Create /TN "KartaERP-AutoBackup" /TR "C:\xampp\htdocs\system52\karta\scripts\karta-backup.bat" /SC DAILY /MO 3 /ST 02:00 /F
-```
-
-3. **فعّل تشغيل المهمة الفائتة:**
-   - افتح **Task Scheduler** (جدولة المهام)
-   - ابحث عن **KartaERP-AutoBackup**
-   - اضغط يمين → **Properties** → تبويب **Settings**
-   - ✅ فعّل: **"Run task as soon as possible after a scheduled start is missed"**
-   - اضغط **OK**
-
-**ما يحدث تلقائياً:**
-- كل 3 أيام الساعة 02:00 صباحاً، يتم إنشاء نسخة SQL كاملة
-- تُحفظ في: `C:\karta-backups\karta-auto-YYYY-MM-DD_HH-MM.sql`
-- يُحتفظ بآخر 5 نسخ فقط (الأقدم تُحذف تلقائياً)
-- يُسجّل النتيجة (نجاح/فشل) في: `C:\karta-backups\backup.log`
-- إذا كان الجهاز مغلقاً وقت الـ backup → يُنفذ عند التشغيل
-
-**التحقق من عمل النسخ التلقائي:**
-```
-type C:\karta-backups\backup.log
-```
-ابحث عن: `SUCCESS: Backup created`
-
-**الاستعادة من نسخة SQL (عند الكوارث):**
-
-1. أوقف Apache من XAMPP Control Panel
-2. افتح CMD واكتب:
-```
-C:\xampp\mysql\bin\mysql.exe --user=root --host=127.0.0.1 --port=3306 karta_erp < "C:\karta-backups\karta-auto-2026-06-23_02-00.sql"
-```
-(استبدل اسم الملف بالنسخة المطلوبة)
-3. أعد تشغيل Apache
-4. افتح النظام في المتصفح → البيانات مُستعادة
-
-**إلغاء المهمة المجدولة:**
-```
-schtasks /Delete /TN "KartaERP-AutoBackup" /F
-```
-
-### تغيير كلمات المرور
-
-بعد التثبيت الأولي:
-1. ادخل كـ `admin`
-2. يمكن تغيير كلمات المرور من phpMyAdmin مباشرة:
-   - جدول `users` → عدّل `password_hash`
-   - استخدم: https://bcrypt-generator.com لتوليد hash جديد
-
-### التوقيت
-
-النظام يستخدم توقيت **Africa/Cairo** تلقائياً.
-لا حاجة لتعديل أي إعداد.
-
-### الأداء
-
-النظام مُحسّن لـ LAN:
-- كل البيانات المالية في MySQL (لا IndexedDB)
-- كل العمليات ذرية (BEGIN/COMMIT/ROLLBACK)
-- الجلسات تستمر 8 ساعات
+### حل المشكلات الشائعة
+- **خطأ اتصال قاعدة البيانات (`MySQL not connected` أو `Unknown database 'karta_erp_v2'`):**
+  - تأكد أن خدمة MySQL تعمل في XAMPP Control Panel.
+  - تأكد من استيراد `database.sql` أولاً لإنشاء قاعدة `karta_erp_v2` ثم بقية ملفات SQL الـ 13.
+  - راجع إعدادات `karta/config/database.php`.
+- **عدم القدرة على تسجيل الدخول:**
+  - شغّل `setup.php` مرة واحدة لتوليد كلمات المرور المشفرة بـ Bcrypt، ثم احذف `setup.php`.
+- **مراجعة السجلات عند ظهور خطأ 500:**
+  - افحص `karta/logs/app.log` و `C:\xampp\apache\logs\error.log`.
 
 ---
 
-## هيكل الروابط
+## 9. الفحوصات الآلية المنفذة وقائمة الاختبار اليدوي على XAMPP
 
-| الصفحة | الرابط |
-|--------|--------|
-| تسجيل الدخول | `/system52/karta/login.html` |
-| النظام الرئيسي | `/system52/karta/index.html` |
-| فحص الصحة | `/system52/karta/api/health/ping.php` |
-| phpMyAdmin | `/phpmyadmin` |
-| الاختبارات | `/system52/karta/tests_v2/run_tests_v2.php` |
+### أ. ما تم التحقق منه آلياً في بيئة التطوير (Node.js)
+تم تنفيذ الفحوصات التالية آلياً واجتيازها بنجاح:
+- فحص صحة صياغة جميع ملفات JavaScript (`node --check` على 40 ملفاً في `karta/`).
+- التحقق من إزالة حقول الرأس (`recipient_name`, `company_name`, `company_phone`) وإزالة عمودي (`discount`, `army`) مع بقاء عمود `office` على مستوى الصف.
+- التحقق من وجود عمود `الصرف` (`sarf` / `.receipt-sarf`) في `COL_DEFS` مباشرةً بعد `إضافة` وقبل `الصافي`، وكون `DATA_COL_COUNT === 18`.
+- التحقق من معادلة `calculateRowNet` (`4480` عند `sarf = 100`، و`4580` عند `sarf = 0` أو غيابه، و`4479.45` عند `sarf = 100.55`) وإجماليات النموذج (`calculateReceiptTotals`) وملخصات المكاتب (`OfficesService.getOfficeFinancialSummary`) وتصدير/استيراد Excel (`ExcelService`).
 
-> استبدل `localhost` بـ IP السيرفر عند الدخول من أجهزة أخرى.
+### ب. قائمة الاختبار اليدوي المطلوبة على Windows / XAMPP
+نظراً لأن خادم Apache وقاعدة بيانات MySQL والمتصفح الفعلي تعمل محلياً لديك عبر XAMPP، يُرجى تنفيذ خطوات التحقق اليدوي التالية بعد التثبيت:
+
+- [ ] **1. إنشاء نموذج صرف جديد (`#receipt`):**
+  - التأكد من ظهور 3 حقول فقط في رأس النموذج (**التاريخ**، **صاحب المركبة**، **إذن الصرف**) وعدم ظهور حقول المستلم أو اسم/هاتف الشركة في الرأس.
+  - التأكد من عدم وجود عمودي **خصم** و **جيش** في الجدول، وظهور عمود **الصرف** مباشرةً بعد **إضافة** وقبل **الصافي**.
+  - إدخال صف تجريبي (`وزن وش = 40`، `وزن م = 10`، `عجز = 2`، `نولون = 100`، `عهدة = 200`، `مكتب = 50`، `إضافة = 30`، `الصرف = 100`) والتأكد أن حقل **الصافي** يحسب فورياً `4480.00`.
+  - حفظ النموذج والتأكد من نجاح الحفظ في قاعدة `karta_erp_v2`.
+- [ ] **2. تعديل نموذج محفوظ وإعادة الفتح:**
+  - الانتقال إلى صفحة **كل الكارتات** (`#allReceipts`)، والتأكد من ظهور عمود **الصرف** وقيمته في جدول البطاقة.
+  - الضغط على **✏️ تعديل**، والتأكد من تحميل قيمة **الصرف** داخل حقل `.receipt-sarf`، وتعديلها (مثلاً إلى `250`) وحفظ التعديلات والتأكد من تحديث الصافي إلى `4330.00`.
+- [ ] **3. الإجماليات وحسابات الشركات (`#offices`):**
+  - التحقق من أن الإجماليات السفلية للنموذج (`الإجمالي`، `الصافي المستحق`، `الصافي الكلي`، `الباقي`) وإجمالي فاصل المركبة (`إجمالي ما سبق`) وصافي الشركة في صفحة **الشركات** تعكس خصم `الصرف` مرة واحدة بدقة.
+- [ ] **4. الطباعة المفردة والمجمعة:**
+  - تجربة زر **🖨️ طباعة** من داخل نموذج الصرف، ومن بطاقة النموذج في **كل الكارتات**، والطباعة المجمعة، والتأكد من ظهور عمود **الصرف** قبل **الصافي** وعدم ظهور الحقول/الأعمدة المحذوفة.
+- [ ] **5. الأرشيف (`#archive`):**
+  - أرشفة فترة تحتوي على نماذج صرف، واستعراضها من **مستعرض الأرشيف**، والتأكد من ظهور عمود **الصرف** والقيم الصحيحة للقراءة فقط.
+- [ ] **6. تصدير واستيراد Excel:**
+  - تصدير صفوف نموذج الصرف إلى ملف Excel، والتأكد من وجود عمود **الصرف** بعد **إضافة**، ثم إعادة استيراد الملف في نموذج جديد والتأكد من قراءة قيم **الصرف** وإعادة حساب **الصافي** تلقائياً.
+  - تجربة تصدير Excel من صفحة **كل الكارتات** والتأكد من ظهور عمود **الصرف** بين **اضافة** و **الصافي**.
+- [ ] **7. النسخ الاحتياطي والاستعادة:**
+  - إنشاء نسخة احتياطية JSON من النظام واستعادتها، والتأكد من احتفاظ جميع الصفوف بقيم **الصرف** و **الصافي** دون أي فقدان للبيانات.

@@ -83,7 +83,7 @@ try {
         // 2. Update receipt data
         $patch = [];
         $allowed = ['receipt_date','client_id','client_type','client_name',
-                     'recipient_name','company_name','company_phone','account_type',
+                     'account_type',
                      'total','net_due','net_total','paid','previous_balance','general_add',
                      'rows','notes','shipping_number'];
         foreach ($allowed as $f) { if (array_key_exists($f, $body)) $patch[$f] = $body[$f]; }

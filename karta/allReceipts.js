@@ -201,7 +201,6 @@ function _populateMultiSelectOptionsFromState() {
 
   // Column-level values
   const clientNames = [...new Set(receipts.map(r => r.client_name).filter(Boolean))].sort();
-  const companyNames = new Set(receipts.map(r => r.company_name).filter(Boolean));
   const receiptNumbers = [...new Set(receipts.map(r => r.receipt_number).filter(Boolean))];
   receiptNumbers.sort((a, b) => Number(a) - Number(b));
 
@@ -225,9 +224,7 @@ function _populateMultiSelectOptionsFromState() {
     }
   }
 
-  // Merge office names into company names
-  for (const o of officeSet) companyNames.add(o);
-  const allCompanies = [...companyNames].sort();
+  const allCompanies = [...officeSet].sort();
   const vehicles = [...vehicleSet].sort();
   const kartas = [...kartaSet].sort();
   const types = [...typeSet].sort();
@@ -723,8 +720,6 @@ function buildReceiptCardHtml(record, opts = {}) {
           <p style="font-size:1rem;font-weight:700;color:#1e3a8a;margin:0 0 4px;">
             <span>صاحب المركبة: ${esc(record.client_name || '—')}</span>
             <span style="margin:0 8px;color:#cbd5e1;">|</span>
-            <span>المستلم: ${esc(record.recipient_name || '—')}</span>
-            <span style="margin:0 8px;color:#cbd5e1;">|</span>
             <span>إذن الصرف: ${esc(record.receipt_number || '—')}</span>
             ${record.paid_at ? `<span style="margin:0 8px;color:#cbd5e1;">|</span><span>تاريخ الصرف: ${esc(record.paid_at.split('T')[0])}</span>` : ''}
           </p>
@@ -1044,7 +1039,6 @@ function buildReceiptPrintBlock(record) {
       </header>
       <div class="print-meta">
         ${esc(record.client_name || '')}
-        ${record.company_name ? ' · ' + esc(record.company_name) : ''}
         · ${esc(statusLabel)}
       </div>
       <table>
@@ -1109,8 +1103,7 @@ const _RECEIPT_PRINT_COLS = Object.freeze([
   { key: 'ohda',         label: 'عهدة',          type: 'number', printHide: false, conditional: false },
   { key: 'officeAmount', label: 'مكتب',          type: 'number', printHide: false, conditional: false },
   { key: 'add',          label: 'إضافة',         type: 'number', printHide: false, conditional: true  },
-  { key: 'discount',     label: 'خصم',           type: 'number', printHide: false, conditional: true  },
-  { key: 'army',         label: 'جيش',           type: 'number', printHide: false, conditional: true  },
+  { key: 'sarf',         label: 'الصرف',         type: 'number', printHide: false, conditional: false },
   { key: 'net',          label: 'الصافي',        type: 'number', printHide: false, conditional: false },
 ]);
 
@@ -1170,6 +1163,8 @@ function _receiptPrintGetCellValue(row, colKey) {
       return row.officeAmount ?? '';
     case 'add':
       return row.add ?? '';
+    case 'sarf':
+      return row.sarf ?? '';
     case 'net':
       return row.net ?? '';
     default:
@@ -1338,7 +1333,7 @@ function _receiptPrintBuildTotalsRow(record, kartaCount) {
  * Renders the document header block:
  *   - Header image (wasel.png) — absolute URL built from window.location, no DOM read.
  *   - Title, receipt number, date.
- *   - Owner name, recipient name.
+ *   - Owner name.
  *   - Payout status badge.
  *   - Optional shipping number and notes.
  */
@@ -1347,12 +1342,9 @@ function _receiptPrintBuildHeader(record) {
   const receiptDate   = esc(receiptDisplayDate(record.receipt_date));
   const dayName       = esc(receiptDayName(record.receipt_date));
   const ownerName     = esc(record.client_name || '—');
-  const recipientName = esc(record.recipient_name || '—');
   const meta          = getPayoutStatusMeta(record.payout_status);
   const statusLabel   = meta.printLabel;
   const statusColor   = meta.color;
-  const companyName   = record.company_name ? esc(record.company_name) : '';
-  const companyPhone  = record.company_phone ? esc(record.company_phone) : '';
   const shipping      = record.paid_at
     ? `<span>تاريخ الصرف: <strong>${esc(record.paid_at.split('T')[0])}</strong></span>`
     : '';
@@ -1387,7 +1379,6 @@ function _receiptPrintBuildHeader(record) {
       </div>
       <div class="print-header-info" style="margin-top:4px;">
         <span>صاحب المركبة: <strong>${ownerName}</strong></span>
-        <span>المستلم: <strong>${recipientName}</strong></span>
       </div>
     </div>`;
 }

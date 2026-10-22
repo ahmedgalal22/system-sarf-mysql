@@ -29,7 +29,7 @@ export const ReceiptRepository = {
    *
    * @param {object} params — search parameters (all optional):
    *   limit, offset, from_date, to_date,
-   *   client_name (string[]), company_name (string[]), receipt_number (string[]),
+   *   client_name (string[]), receipt_number (string[]),
    *   vehicle (string[]), karta (string[]), type (string[]),
    *   payout_status (string), sort (string), sort_dir (string),
    *   include_options ('1'|'0')

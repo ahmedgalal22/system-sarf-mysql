@@ -147,7 +147,7 @@ class ReceiptRepository {
      * @param string $username
      * @param array  $params {
      *   from_date, to_date, limit, offset,
-     *   client_name (string[]), company_name (string[]), receipt_number (string[]),
+     *   client_name (string[]), receipt_number (string[]),
      *   vehicle (string[]), karta (string[]), type (string[]),
      *   payout_status (string), sort (string), sort_dir (string),
      *   include_options (bool)
@@ -183,18 +183,6 @@ class ReceiptRepository {
                 $bindParams[$key] = $name;
             }
             $whereBase .= ' AND client_name IN (' . implode(',', $placeholders) . ')';
-        }
-
-        // Multi-value: company_name IN (...)
-        $companyNames = $params['company_name'] ?? [];
-        if (!empty($companyNames)) {
-            $placeholders = [];
-            foreach ($companyNames as $i => $name) {
-                $key = ':comp_' . $i;
-                $placeholders[] = $key;
-                $bindParams[$key] = $name;
-            }
-            $whereBase .= ' AND company_name IN (' . implode(',', $placeholders) . ')';
         }
 
         // Multi-value: receipt_number IN (...)
@@ -439,17 +427,6 @@ class ReceiptRepository {
     }
 
     /**
-     * Build distinct value lists for multi-select filter popups.
-     *
-     * Column-level values (client_name, company_name, receipt_number) use
-     * SELECT DISTINCT queries — fast with existing indexes.
-     *
-     * JSON-level values (vehicles, kartas, types) require iterating all
-     * receipts in the date range and extracting from the rows JSON.
-     *
-     * The options represent the ENTIRE date range, not a filtered subset.
-     */
-    /**
      * Compute JSON-derived summary fields from receipt rows.
      *
      * Iterates the `rows` JSON of each record to compute row_count, weight,
@@ -512,11 +489,6 @@ class ReceiptRepository {
         $stmt->execute($baseParams);
         $clientNames = $stmt->fetchAll(PDO::FETCH_COLUMN);
 
-        $companyNames = [];
-        $stmt = $this->db->prepare("SELECT DISTINCT company_name FROM receipts WHERE $baseWhere AND company_name IS NOT NULL AND company_name != '' ORDER BY company_name");
-        $stmt->execute($baseParams);
-        $companyNames = $stmt->fetchAll(PDO::FETCH_COLUMN);
-
         $receiptNumbers = [];
         $stmt = $this->db->prepare("SELECT DISTINCT receipt_number FROM receipts WHERE $baseWhere ORDER BY CAST(receipt_number AS UNSIGNED)");
         $stmt->execute($baseParams);
@@ -529,7 +501,7 @@ class ReceiptRepository {
         $vehicleSet = [];
         $kartaSet   = [];
         $typeSet    = [];
-        // Also collect office names from rows (for company filter completeness)
+        // Collect office names from rows (for row-level company filter)
         $officeSet  = [];
 
         while ($row = $stmt->fetch()) {
@@ -552,8 +524,7 @@ class ReceiptRepository {
             }
         }
 
-        // Merge office names into company names (deduplicated)
-        $allCompanies = array_unique(array_merge($companyNames, array_keys($officeSet)));
+        $allCompanies = array_keys($officeSet);
         sort($allCompanies);
 
         $vehicles = array_keys($vehicleSet);
@@ -665,7 +636,6 @@ class ReceiptRepository {
             'INSERT INTO receipts (
                 uuid, username, receipt_number, receipt_date,
                 client_id, client_type, client_name,
-                recipient_name, company_name, company_phone,
                 payout_status, paid_at, account_type,
                 total, net_due, net_total, paid, previous_balance, general_add,
                 `rows`, notes, shipping_number, request_id,
@@ -674,7 +644,6 @@ class ReceiptRepository {
             ) VALUES (
                 :uuid, :username, :receipt_number, :receipt_date,
                 :client_id, :client_type, :client_name,
-                :recipient_name, :company_name, :company_phone,
                 :payout_status, :paid_at, :account_type,
                 :total, :net_due, :net_total, :paid, :previous_balance, :general_add,
                 :rows, :notes, :shipping_number, :request_id,
@@ -691,9 +660,6 @@ class ReceiptRepository {
             ':client_id'        => $data['client_id'] ?? null,
             ':client_type'      => $data['client_type'] ?? null,
             ':client_name'      => $data['client_name'] ?? null,
-            ':recipient_name'   => $data['recipient_name'] ?? null,
-            ':company_name'     => $data['company_name'] ?? null,
-            ':company_phone'    => $data['company_phone'] ?? null,
             ':payout_status'    => $data['payout_status'] ?? 'unpaid',
             ':paid_at'          => $data['paid_at'] ?? null,
             ':account_type'     => $data['account_type'] ?? null,
@@ -751,7 +717,6 @@ class ReceiptRepository {
         // Build patch
         $allowed = [
             'receipt_date', 'client_id', 'client_type', 'client_name',
-            'recipient_name', 'company_name', 'company_phone',
             'payout_status', 'paid_at', 'account_type',
             'total', 'net_due', 'net_total', 'paid', 'previous_balance', 'general_add',
             'rows', 'notes', 'shipping_number',
