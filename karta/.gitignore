@@ -1,0 +1,7 @@
+logs/*.log
+
+uploads/*
+!uploads/.keep
+
+storage/*
+!storage/.keep

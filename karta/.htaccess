@@ -1,0 +1,40 @@
+# ═══════════════════════════════════════════════════════════════
+# Karta ERP — Apache Configuration
+# Place in: xampp/htdocs/karta/.htaccess
+# ═══════════════════════════════════════════════════════════════
+
+# Enable rewrite engine
+RewriteEngine On
+
+# Block access to sensitive directories
+RewriteRule ^config/ - [F,L]
+RewriteRule ^core/ - [F,L]
+RewriteRule ^logs/ - [F,L]
+RewriteRule ^storage/ - [F,L]
+
+# Block access to .sql files
+RewriteRule \.sql$ - [F,L]
+
+# Block access to hidden files
+RewriteRule (^\.|/\.) - [F,L]
+
+# Allow direct access to API PHP files
+RewriteRule ^api/.*\.php$ - [L]
+
+# Allow direct access to public assets
+RewriteRule ^public/ - [L]
+
+# Default charset
+AddDefaultCharset UTF-8
+
+# Disable directory listing
+Options -Indexes
+
+# PHP settings (if Apache allows)
+<IfModule mod_php.c>
+    php_value upload_max_filesize 20M
+    php_value post_max_size 25M
+    php_value max_execution_time 60
+    php_value session.cookie_httponly 1
+    php_value session.cookie_samesite Lax
+</IfModule>
