@@ -2,15 +2,13 @@
  * treasury.js — صفحة الخزنة
  * Internal structure: Constants → Services → Rendering → Events → Public API
  *
- * Treasury entries (effect column — MySQL ENUM):
- *   capital_deposit   ← إيداع رأس مال
- *   receipt_payout    ← صرف كارتة (تلقائي من updateReceiptStatus)
- *   salfa             ← سلفة لعميل/وسيط/شخص آخر
- *   expense           ← مصروف
- *   salary            ← مرتب
- *   bolsa_deduction   ← خصم بوالص من مندوب (من createBolsaForm)
- *   mandoub_cash_out  ← إيداع فلوس للمندوب (من adjustMandoubBalance)
- *   mandoub_cash_in   ← استلام فلوس من المندوب (من adjustMandoubBalance)
+ * Treasury entries (effect column):
+ *   capital_deposit    ← إيداع رأس مال
+ *   receipt_payout     ← صرف كارتة (تلقائي من updateReceiptStatus)
+ *   salfa              ← سلفة لصاحب مركبة/شخص آخر
+ *   expense            ← مصروف
+ *   salary             ← مرتب
+ *   receipt_adjustment ← فرق تعديل نموذج
  *
  * ─────────────────────────────────────────────────────────────────────────────
  * RUNTIME STABILIZATION AUDIT (v2 — Locked Down)
@@ -129,7 +127,6 @@ const TREASURY_TAB = Object.freeze({
   ALL      : 'all',
   PAYOUTS  : 'payouts',
   EXPENSES : 'expenses',
-  MANDOUB  : 'mandoub',
 });
 
 const ACCOUNT_TYPE = Object.freeze({
@@ -213,18 +210,11 @@ function _nowISO() {
 
 function _effectLabel(effect) {
   switch (effect) {
-    case EFFECTS.CAPITAL_DEPOSIT:  return 'إيداع رأس مال';
-    case EFFECTS.RECEIPT_PAYOUT:   return 'صرف كارتة';
-    case EFFECTS.SALFA:            return 'سلفة';
-    case EFFECTS.EXPENSE:          return 'مصروف';
-    case EFFECTS.SALARY:           return 'مرتب';
-    case EFFECTS.BOLSA_DEDUCTION:  return 'خصم بوالص';
-    case EFFECTS.MANDOUB_CASH_OUT: return 'إيداع للمندوب';
-    case EFFECTS.MANDOUB_CASH_IN:  return 'استلام من المندوب';
-    case EFFECTS.CUSTODY_WITHDRAW: return 'تحويل لعهدة مناديب';
-    case EFFECTS.CUSTODY_DEPOSIT:  return 'إيداع عهدة مناديب';
-    case EFFECTS.CUSTODY_RETURN:   return 'إرجاع من عهدة مناديب';
-    case EFFECTS.CUSTODY_RETURN_IN:return 'إرجاع عهدة للخزنة';
+    case EFFECTS.CAPITAL_DEPOSIT:   return 'إيداع رأس مال';
+    case EFFECTS.RECEIPT_PAYOUT:    return 'صرف كارتة';
+    case EFFECTS.SALFA:             return 'سلفة';
+    case EFFECTS.EXPENSE:           return 'مصروف';
+    case EFFECTS.SALARY:            return 'مرتب';
     case EFFECTS.RECEIPT_ADJUSTMENT:return 'فرق تعديل نموذج';
     default: return effect || '—';
   }
@@ -395,98 +385,6 @@ async function createExpense(username, { subtype, description, employee_name, am
 }
 
 /**
- * Transfer from treasury to mandoub custody (تحويل من الخزنة لعهدة المناديب)
- * Atomic: withdraw from treasury + deposit in custody
- */
-async function transferToCustody(username, { amount, date, note }) {
-  if (!username) throw new Error('[Treasury] username required');
-  const cents = Money.toCents(amount);
-  if (cents <= 0) throw new Error('❌ المبلغ يجب أن يكون أكبر من صفر');
-  const isoDate = date || _todayISO();
-  const refId = _uuid();
-  const noteText = String(note || '').trim() || 'تحويل لعهدة المناديب';
-
-  // Step 1: Withdraw from treasury (cash leaves drawer — custody transfer, NOT expense)
-  const withdrawRes = await ApiClient.post('/financial/treasury-entry.php', {
-    type: TREASURY_ENTRY_TYPE.WITHDRAW,
-    effect: EFFECTS.CUSTODY_WITHDRAW,
-    amount: cents,
-    account_type: ACCOUNT_TYPE.CASH,
-    reference_type: 'custody_transfer',
-    reference_id: refId,
-    date: isoDate,
-    applied_at: _nowISO(),
-    is_reversed: false,
-    note: noteText,
-  });
-  if (!withdrawRes.success) throw new Error(withdrawRes.message || 'فشل السحب من الخزنة');
-
-  // Step 2: Deposit into custody (mandoub custody balance increases — mandoub effect)
-  const depositRes = await ApiClient.post('/financial/treasury-entry.php', {
-    type: TREASURY_ENTRY_TYPE.DEPOSIT,
-    effect: EFFECTS.CUSTODY_DEPOSIT,
-    amount: cents,
-    account_type: ACCOUNT_TYPE.CASH,
-    reference_type: 'custody_transfer',
-    reference_id: refId,
-    date: isoDate,
-    applied_at: _nowISO(),
-    is_reversed: false,
-    note: noteText,
-  });
-  if (!depositRes.success) throw new Error(depositRes.message || 'فشل الإيداع في العهدة');
-
-  window.dispatchEvent(new CustomEvent(DOMAIN_EVENT.TREASURY_CHANGED));
-  return { withdraw: withdrawRes.data.treasury, deposit: depositRes.data.treasury };
-}
-
-/**
- * Return from mandoub custody to treasury (إرجاع من عهدة المناديب للخزنة)
- * Atomic: withdraw from custody + deposit in treasury
- */
-async function returnFromCustody(username, { amount, date, note }) {
-  if (!username) throw new Error('[Treasury] username required');
-  const cents = Money.toCents(amount);
-  if (cents <= 0) throw new Error('❌ المبلغ يجب أن يكون أكبر من صفر');
-  const isoDate = date || _todayISO();
-  const refId = _uuid();
-  const noteText = String(note || '').trim() || 'إرجاع عهدة مناديب';
-
-  // Step 1: Withdraw from custody (mandoub custody balance decreases)
-  const withdrawRes = await ApiClient.post('/financial/treasury-entry.php', {
-    type: TREASURY_ENTRY_TYPE.WITHDRAW,
-    effect: EFFECTS.CUSTODY_RETURN,
-    amount: cents,
-    account_type: ACCOUNT_TYPE.CASH,
-    reference_type: 'custody_transfer',
-    reference_id: refId,
-    date: isoDate,
-    applied_at: _nowISO(),
-    is_reversed: false,
-    note: noteText,
-  });
-  if (!withdrawRes.success) throw new Error(withdrawRes.message || 'فشل السحب من العهدة');
-
-  // Step 2: Deposit into treasury (cash returns to drawer)
-  const depositRes = await ApiClient.post('/financial/treasury-entry.php', {
-    type: TREASURY_ENTRY_TYPE.DEPOSIT,
-    effect: EFFECTS.CUSTODY_RETURN_IN,
-    amount: cents,
-    account_type: ACCOUNT_TYPE.CASH,
-    reference_type: 'custody_transfer',
-    reference_id: refId,
-    date: isoDate,
-    applied_at: _nowISO(),
-    is_reversed: false,
-    note: noteText,
-  });
-  if (!depositRes.success) throw new Error(depositRes.message || 'فشل الإيداع في الخزنة');
-
-  window.dispatchEvent(new CustomEvent(DOMAIN_EVENT.TREASURY_CHANGED));
-  return { withdraw: withdrawRes.data.treasury, deposit: depositRes.data.treasury };
-}
-
-/**
  * Edit a treasury entry (تعديل حركة)
  *
  * STABILIZATION NOTE (ISSUE-3 + ISSUE-9):
@@ -578,18 +476,10 @@ async function getSummary(username, filters = null) {
   let total_payout = 0;
   let total_salfa = 0;
   let total_expense = 0;
-  let total_mandoub = 0;
-  let total_bolsa = 0;
 
   for (const e of entries) {
     const amt = Number(e.amount) || 0;
-    const isMandoub = TREASURY_MANDOUB_EFFECTS.includes(e.effect);
-    // Mandoub effects: track separately, do NOT include in treasury totals
-    if (isMandoub) {
-      if (e.effect === EFFECTS.MANDOUB_CASH_OUT) total_mandoub += amt;
-      if (e.effect === EFFECTS.BOLSA_DEDUCTION) total_bolsa += amt;
-      continue;
-    }
+    if (TREASURY_MANDOUB_EFFECTS.includes(e.effect)) continue;
     if (e.type === TREASURY_ENTRY_TYPE.DEPOSIT && e.effect !== EFFECTS.CUSTODY_RETURN_IN) {
       total_in += amt;
     }
@@ -599,7 +489,6 @@ async function getSummary(username, filters = null) {
   }
 
   // Full balance (no date filter — always from start)
-  // Exclude mandoub effects from treasury balance — they have their own balance
   const allActive = all.filter(e => !dbBool(e.is_reversed));
   let balance_in = 0;
   let balance_out = 0;
@@ -619,8 +508,6 @@ async function getSummary(username, filters = null) {
     total_payout: Money.toDecimal(total_payout),
     total_salfa: Money.toDecimal(total_salfa),
     total_expense: Money.toDecimal(total_expense),
-    total_mandoub: Money.toDecimal(total_mandoub),
-    total_bolsa: Money.toDecimal(total_bolsa),
   };
 }
 
@@ -642,14 +529,11 @@ async function getEntries(username, filters = null) {
     });
   }
 
-  if (filters?.tab === TREASURY_TAB.MANDOUB) {
-    entries = entries.filter(e => TREASURY_MANDOUB_EFFECTS.includes(e.effect));
-  } else if (filters?.tab === TREASURY_TAB.PAYOUTS) {
+  if (filters?.tab === TREASURY_TAB.PAYOUTS) {
     entries = entries.filter(e => TREASURY_PAYOUT_EFFECTS.includes(e.effect));
   } else if (filters?.tab === TREASURY_TAB.EXPENSES) {
     entries = entries.filter(e => TREASURY_EXPENSE_EFFECTS.includes(e.effect));
   } else {
-    // tab=all: exclude mandoub effects — they have their own tab and balance
     entries = entries.filter(e => !TREASURY_MANDOUB_EFFECTS.includes(e.effect));
   }
 
@@ -666,8 +550,6 @@ const TreasuryService = Object.freeze({
   depositCapital,
   createSalfa,
   createExpense,
-  transferToCustody,
-  returnFromCustody,
   editEntry,
   deleteEntry,
   getSummary,
@@ -683,7 +565,7 @@ const STATE = {
   from: '',
   to: '',
   editingId: null,
-  search: { all: '', payouts: '', expenses: '', mandoub: '' },
+  search: { all: '', payouts: '', expenses: '' },
   _salfaClients: [],       // ISSUE-7 FIX: client list stored in state, not on DOM node
   _shellRendered: false,   // ISSUE-1 FIX: idempotent shell rendering
 };
@@ -742,8 +624,6 @@ function _renderShell() {
         <button type="button" data-action="treasury-deposit" class="btn btn-success btn-sm">➕ إيداع رأس مال</button>
         <button type="button" data-action="treasury-salfa" class="btn btn-primary btn-sm">💰 سلفة</button>
         <button type="button" data-action="treasury-expense" class="btn btn-secondary btn-sm">📦 مصروف / مرتب</button>
-        <button type="button" data-action="treasury-custody" class="btn btn-sm" style="background:linear-gradient(135deg,#d97706,#f59e0b);color:#fff;border:none;font-weight:700;">👤 رصيد عهدة</button>
-        <button type="button" data-action="treasury-custody-return" class="btn btn-sm" style="background:linear-gradient(135deg,#0f766e,#14b8a6);color:#fff;border:none;font-weight:700;">↩️ إرجاع عهدة</button>
         <button type="button" data-action="treasury-receipt-adj" class="btn btn-sm" style="background:linear-gradient(135deg,#7c3aed,#a855f7);color:#fff;border:none;font-weight:700;">📋 فرق تعديل نموذج</button>
       </div>
 
@@ -769,7 +649,6 @@ function _renderShell() {
         <button type="button" data-action="treasury-tab" data-tab="all" class="tab-btn active-purple">📊 الكل</button>
         <button type="button" data-action="treasury-tab" data-tab="payouts" class="tab-btn">📋 صرف كارتات وسلفيات</button>
         <button type="button" data-action="treasury-tab" data-tab="expenses" class="tab-btn">📦 مصروفات ومرتبات</button>
-        <button type="button" data-action="treasury-tab" data-tab="mandoub" class="tab-btn">👤 عهد المناديب</button>
       </div>
 
       <!-- Search + Print -->
@@ -813,19 +692,13 @@ function _renderSummary(summary) {
       <p class="text-xl font-bold" style="color:#fff">${Money.fmt(value)}</p>
     </div>`;
 
-  if (STATE.tab === TREASURY_TAB.MANDOUB) {
-    container.innerHTML = `
-      ${card('رصيد عهد المناديب', summary.mandoub_balance, 'linear-gradient(135deg,#d97706,#f59e0b)')}
-    `;
-  } else {
-    container.innerHTML = `
-      ${card('رصيد الخزنة', summary.balance, 'linear-gradient(135deg,#1e40af,#3b82f6)')}
-      ${card('إجمالي الداخل', summary.total_in, 'linear-gradient(135deg,#059669,#10b981)')}
-      ${card('صرف الكارتات', summary.total_payout, 'linear-gradient(135deg,#7c3aed,#8b5cf6)')}
-      ${card('السلفيات', summary.total_salfa, 'linear-gradient(135deg,#0891b2,#06b6d4)')}
-      ${card('المصروفات والمرتبات', summary.total_expense, 'linear-gradient(135deg,#dc2626,#ef4444)')}
-    `;
-  }
+  container.innerHTML = `
+    ${card('رصيد الخزنة', summary.balance, 'linear-gradient(135deg,#1e40af,#3b82f6)')}
+    ${card('إجمالي الداخل', summary.total_in, 'linear-gradient(135deg,#059669,#10b981)')}
+    ${card('صرف الكارتات', summary.total_payout, 'linear-gradient(135deg,#7c3aed,#8b5cf6)')}
+    ${card('السلفيات', summary.total_salfa, 'linear-gradient(135deg,#0891b2,#06b6d4)')}
+    ${card('المصروفات والمرتبات', summary.total_expense, 'linear-gradient(135deg,#dc2626,#ef4444)')}
+  `;
 }
 
 function _renderEntries(entries) {
@@ -879,9 +752,7 @@ function _renderTabs() {
 function _syncSearchPlaceholder() {
   const searchEl = document.getElementById('treasurySearch');
   if (!searchEl) return;
-  if (STATE.tab === TREASURY_TAB.MANDOUB) {
-    searchEl.placeholder = '🔍 ابحث داخل عهد المناديب...';
-  } else if (STATE.tab === TREASURY_TAB.PAYOUTS) {
+  if (STATE.tab === TREASURY_TAB.PAYOUTS) {
     searchEl.placeholder = '🔍 ابحث داخل صرف الكارتات والسلفيات...';
   } else if (STATE.tab === TREASURY_TAB.EXPENSES) {
     searchEl.placeholder = '🔍 ابحث داخل المصروفات والمرتبات...';
@@ -962,12 +833,10 @@ function _openDepositModal() {
 }
 
 async function _openSalfaModal() {
-  const username = _currentUsername();
-  // Load clients list via repositories
+  // Load vehicle owners list via repository (exclude brokers)
   const owners = await ClientRepository.getAllOwners();
-  // All owners + brokers are in vehicle_owners table (unified)
   const clients = owners
-    .filter(o => o.deleted_at === null && o.name)
+    .filter(o => o.deleted_at === null && o.name && o.owner_type !== 'broker')
     .map(o => ({ id: o.id, type: CLIENT_TYPE.OWNER, name: o.name || '' }));
 
   // ISSUE-7 FIX: Store client list in STATE, not on a DOM node
@@ -1000,7 +869,7 @@ async function _openSalfaModal() {
 async function _openReceiptAdjModal() {
   const owners = await ClientRepository.getAllOwners();
   const clients = owners
-    .filter(o => o.deleted_at === null && o.name)
+    .filter(o => o.deleted_at === null && o.name && o.owner_type !== 'broker')
     .map(o => ({ id: o.id, type: CLIENT_TYPE.OWNER, name: o.name || '' }));
   STATE._adjClients = clients;
   const options = clients.map(c => `<option value="${_esc(c.name)}" data-id="${c.id}" data-type="${c.type}"></option>`).join('');
@@ -1065,44 +934,6 @@ function _openExpenseModal() {
       <input id="tExpenseNote" type="text" class="input input-sm" placeholder="اختياري">
     </div>
     <button type="button" data-action="treasury-save-expense" class="btn btn-primary btn-full mt-2">حفظ</button>
-  `);
-}
-
-function _openCustodyModal() {
-  _openModal('تحويل لعهدة المناديب', `
-    <p class="text-xs text-muted mb-3">سيتم سحب المبلغ من الخزنة وإيداعه في رصيد عهدة المناديب</p>
-    <div class="form-group mb-0">
-      <label class="label mb-1" for="tCustodyAmount">المبلغ</label>
-      <input id="tCustodyAmount" type="number" min="0" step="0.01" class="input input-sm" placeholder="0.00">
-    </div>
-    <div class="form-group mb-0">
-      <label class="label mb-1" for="tCustodyDate">التاريخ</label>
-      <input id="tCustodyDate" type="date" class="input input-sm" value="${_todayISO()}">
-    </div>
-    <div class="form-group mb-0">
-      <label class="label mb-1" for="tCustodyNote">ملاحظة</label>
-      <input id="tCustodyNote" type="text" class="input input-sm" placeholder="اختياري">
-    </div>
-    <button type="button" data-action="treasury-save-custody" class="btn btn-primary btn-full mt-2">تحويل</button>
-  `);
-}
-
-function _openCustodyReturnModal() {
-  _openModal('إرجاع عهدة مناديب', `
-    <p class="text-xs text-muted mb-3">سيتم سحب المبلغ من رصيد العهدة وإعادته للخزنة</p>
-    <div class="form-group mb-0">
-      <label class="label mb-1" for="tCustodyRetAmount">المبلغ</label>
-      <input id="tCustodyRetAmount" type="number" min="0" step="0.01" class="input input-sm" placeholder="0.00">
-    </div>
-    <div class="form-group mb-0">
-      <label class="label mb-1" for="tCustodyRetDate">التاريخ</label>
-      <input id="tCustodyRetDate" type="date" class="input input-sm" value="${_todayISO()}">
-    </div>
-    <div class="form-group mb-0">
-      <label class="label mb-1" for="tCustodyRetNote">ملاحظة</label>
-      <input id="tCustodyRetNote" type="text" class="input input-sm" placeholder="اختياري">
-    </div>
-    <button type="button" data-action="treasury-save-custody-return" class="btn btn-primary btn-full mt-2">إرجاع</button>
   `);
 }
 
@@ -1306,58 +1137,6 @@ async function _saveExpense() {
   }
 }
 
-async function _saveCustody() {
-  if (_isSavingTreasury) return;
-  _isSavingTreasury = true;
-  const btn = document.querySelector('[data-action="treasury-save-custody"]');
-  if (btn) btn.disabled = true;
-  try {
-    const amount = parseFloat(_modalVal('tCustodyAmount')) || 0;
-    const date = _modalVal('tCustodyDate');
-    const note = _modalVal('tCustodyNote');
-    if (amount <= 0) { _showModalError('❌ المبلغ مطلوب'); _isSavingTreasury = false; if (btn) btn.disabled = false; return; }
-    if (!date) { _showModalError('❌ التاريخ مطلوب'); _isSavingTreasury = false; if (btn) btn.disabled = false; return; }
-
-    _suppressEventRefresh = true;
-    await TreasuryService.transferToCustody(_currentUsername(), { amount, date, note });
-    _suppressEventRefresh = false;
-    _closeModal();
-    await _refreshPage();
-  } catch (err) {
-    _showModalError(err.message || '❌ حدث خطأ');
-  } finally {
-    _suppressEventRefresh = false;
-    _isSavingTreasury = false;
-    if (btn) btn.disabled = false;
-  }
-}
-
-async function _saveCustodyReturn() {
-  if (_isSavingTreasury) return;
-  _isSavingTreasury = true;
-  const btn = document.querySelector('[data-action="treasury-save-custody-return"]');
-  if (btn) btn.disabled = true;
-  try {
-    const amount = parseFloat(_modalVal('tCustodyRetAmount')) || 0;
-    const date = _modalVal('tCustodyRetDate');
-    const note = _modalVal('tCustodyRetNote');
-    if (amount <= 0) { _showModalError('❌ المبلغ مطلوب'); _isSavingTreasury = false; if (btn) btn.disabled = false; return; }
-    if (!date) { _showModalError('❌ التاريخ مطلوب'); _isSavingTreasury = false; if (btn) btn.disabled = false; return; }
-
-    _suppressEventRefresh = true;
-    await TreasuryService.returnFromCustody(_currentUsername(), { amount, date, note });
-    _suppressEventRefresh = false;
-    _closeModal();
-    await _refreshPage();
-  } catch (err) {
-    _showModalError(err.message || '❌ حدث خطأ');
-  } finally {
-    _suppressEventRefresh = false;
-    _isSavingTreasury = false;
-    if (btn) btn.disabled = false;
-  }
-}
-
 // ═══════════════════════════════════════════════════════════════════════════════
 // Print — Data-Driven (ISSUE-2 FIX)
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -1372,7 +1151,7 @@ async function _saveCustodyReturn() {
  * Zero DOM-driven financial values.
  */
 function _printTreasuryTab() {
-  const tabLabels = { all: 'جميع الحركات', payouts: 'صرف كارتات وسلفيات', expenses: 'مصروفات ومرتبات', mandoub: 'عهد المناديب' };
+  const tabLabels = { all: 'جميع الحركات', payouts: 'صرف كارتات وسلفيات', expenses: 'مصروفات ومرتبات' };
   const tabTitle = tabLabels[STATE.tab] || 'الخزنة';
 
   const entries = _lastRenderedEntries;
@@ -1451,28 +1230,18 @@ function _computeFilteredSummary(entries) {
   let total_expense = 0;
   let balance_in = 0;
   let balance_out = 0;
-  let mandoub_in = 0;
-  let mandoub_out = 0;
 
   for (const e of entries) {
+    if (TREASURY_MANDOUB_EFFECTS.includes(e.effect)) continue;
     const amt = Money.toCents(e.amount);
-    const isMandoub = TREASURY_MANDOUB_EFFECTS.includes(e.effect);
-
-    if (isMandoub) {
-      // Mandoub entries: separate balance, do NOT affect treasury balance
-      if (e.type === TREASURY_ENTRY_TYPE.DEPOSIT) mandoub_in += amt;
-      if (e.type === TREASURY_ENTRY_TYPE.WITHDRAW) mandoub_out += amt;
-    } else {
-      // Treasury entries: normal balance
-      if (e.type === TREASURY_ENTRY_TYPE.DEPOSIT) {
-        if (e.effect !== EFFECTS.CUSTODY_RETURN_IN) total_in += amt;
-        balance_in += amt;
-      }
-      if (e.type === TREASURY_ENTRY_TYPE.WITHDRAW) balance_out += amt;
-      if (e.effect === EFFECTS.RECEIPT_PAYOUT) total_payout += amt;
-      if (e.effect === EFFECTS.SALFA) total_salfa += amt;
-      if (e.effect === EFFECTS.EXPENSE || e.effect === EFFECTS.SALARY) total_expense += amt;
+    if (e.type === TREASURY_ENTRY_TYPE.DEPOSIT) {
+      if (e.effect !== EFFECTS.CUSTODY_RETURN_IN) total_in += amt;
+      balance_in += amt;
     }
+    if (e.type === TREASURY_ENTRY_TYPE.WITHDRAW) balance_out += amt;
+    if (e.effect === EFFECTS.RECEIPT_PAYOUT) total_payout += amt;
+    if (e.effect === EFFECTS.SALFA) total_salfa += amt;
+    if (e.effect === EFFECTS.EXPENSE || e.effect === EFFECTS.SALARY) total_expense += amt;
   }
 
   return {
@@ -1481,7 +1250,6 @@ function _computeFilteredSummary(entries) {
     total_payout: Money.toDecimal(total_payout),
     total_salfa: Money.toDecimal(total_salfa),
     total_expense: Money.toDecimal(total_expense),
-    mandoub_balance: Money.toDecimal(mandoub_in - mandoub_out),
   };
 }
 
@@ -1621,26 +1389,6 @@ function attachTreasuryListeners() {
     }
     if (e.target.closest('[data-action="treasury-save-expense"]')) {
       await _saveExpense();
-      return;
-    }
-
-    // Custody
-    if (e.target.closest('[data-action="treasury-custody"]')) {
-      _openCustodyModal();
-      return;
-    }
-    if (e.target.closest('[data-action="treasury-save-custody"]')) {
-      await _saveCustody();
-      return;
-    }
-
-    // Custody return
-    if (e.target.closest('[data-action="treasury-custody-return"]')) {
-      _openCustodyReturnModal();
-      return;
-    }
-    if (e.target.closest('[data-action="treasury-save-custody-return"]')) {
-      await _saveCustodyReturn();
       return;
     }
 

@@ -142,7 +142,6 @@ async function _handlePreview() {
       treasury: 'الخزنة',
       vehicle_ledger: 'دفتر الحسابات',
       receipts: 'النماذج',
-      bolsaForms: 'البوالص',
       mainCapitalTreasury: 'رأس المال',
     };
 

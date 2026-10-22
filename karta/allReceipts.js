@@ -1872,9 +1872,7 @@ async function initAllReceiptsPage() {
   window.refreshAllReceiptsPage = () => refreshAllReceiptsPage('list');
 
   // Phase 2 TASK F — coalesced single-refresh-per-burst listeners.
-  // Replaces 4 independent listeners that each kicked an async refresh.
   window.addEventListener('receipts:changed',    _scheduleAllReceiptsRefresh);
-  window.addEventListener('agents:changed',      _scheduleAllReceiptsRefresh);
   window.addEventListener('offices:changed',     _scheduleAllReceiptsRefresh);
   window.addEventListener('treasury:changed',    _scheduleAllReceiptsRefresh);
 

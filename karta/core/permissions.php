@@ -21,7 +21,6 @@ function getPermissions(): array {
             'receipts'   => ['read', 'write', 'delete'],
             'offices'    => ['read', 'write', 'delete'],
             'entities'   => ['read', 'write', 'delete'],
-            'bolsa'      => ['read', 'write', 'delete'],
             'dashboard'  => ['read'],
             'archive'    => ['read', 'write'],
             'users'      => ['read', 'write'],
@@ -32,7 +31,6 @@ function getPermissions(): array {
             'receipts'   => ['read', 'write', 'delete'],
             'offices'    => ['read', 'write', 'delete'],
             'entities'   => ['read', 'write', 'delete'],
-            'bolsa'      => ['read', 'write', 'delete'],
             'dashboard'  => [],  // NO access
             'archive'    => [],  // NO access
             'users'      => [],  // NO access

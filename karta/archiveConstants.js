@@ -15,7 +15,6 @@ export const ARCHIVABLE_STORES = Object.freeze([
   'treasury',
   'vehicle_ledger',
   'receipts',
-  'bolsaForms',
   'mainCapitalTreasury',
 ]);
 
@@ -24,7 +23,6 @@ export const ARCHIVE_DATE_FIELD = Object.freeze({
   treasury:              'date',
   vehicle_ledger:        'date',
   receipts:              'receipt_date',
-  bolsaForms:            'bolsa_date',
   mainCapitalTreasury:   'date',
 });
 

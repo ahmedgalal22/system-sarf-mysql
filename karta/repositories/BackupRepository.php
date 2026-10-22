@@ -18,7 +18,6 @@ class BackupRepository {
         'users',
         'vehicle_owners',
         'vehicles',
-        'agents',
         'offices',
         'hamola_details',
         'drivers',
@@ -27,7 +26,6 @@ class BackupRepository {
         'receipts',
         'treasury',
         'vehicle_ledger',
-        'bolsa_forms',
         'main_capital_treasury',
         'archive_batches',
         'financial_snapshots',
@@ -81,8 +79,8 @@ class BackupRepository {
 
         $backup = [
             'system' => [
-                'name'       => 'Karta ERP',
-                'version'    => '1.0.0',
+                'name'       => 'Karta ERP v2',
+                'version'    => '2.0.0',
                 'format'     => 'mysql-full-snapshot',
                 'created_at' => $now,
                 'created_by' => $username,
@@ -198,7 +196,7 @@ class BackupRepository {
     // ── CHECKSUM ──────────────────────────────────────────────────────────
 
     private function computeChecksum(array $backup): string {
-        $parts = ['karta-v1'];
+        $parts = ['karta-v2-v1'];
         foreach (self::TABLE_ORDER as $table) {
             $count = count($backup['tables'][$table] ?? []);
             $parts[] = "$table:$count";

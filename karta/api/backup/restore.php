@@ -72,8 +72,8 @@ try {
         $stats = $repo->restore($backup, $authUser['username']);
 
         bumpVersions($db, [
-            'vehicle_owners', 'agents', 'offices', 'vehicles',
-            'receipts', 'treasury', 'vehicle_ledger', 'bolsa_forms',
+            'vehicle_owners', 'offices', 'vehicles',
+            'receipts', 'treasury', 'vehicle_ledger',
             'main_capital', 'archive_batches', 'drivers', 'notes'
         ]);
         $db->commit();

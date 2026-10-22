@@ -58,7 +58,7 @@ try {
             'restored_at' => $now,
         ], $username);
 
-        bumpVersions($db, ['receipts', 'treasury', 'vehicle_ledger', 'bolsa_forms', 'main_capital', 'archive_batches']);
+        bumpVersions($db, ['receipts', 'treasury', 'vehicle_ledger', 'main_capital', 'archive_batches']);
         $db->commit();
         jsonSuccess([
             'batch_id'        => $batchId,

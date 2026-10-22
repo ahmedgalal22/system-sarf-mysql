@@ -8,7 +8,7 @@
  */
 
 return [
-    'name'            => 'KARTA_SESSION',
+    'name'            => 'KARTA_V2_SESSION',
     'lifetime'        => 28800,      // 8 hours
     'path'            => '/',
     'domain'          => '',         // Empty = auto-detect (works on LAN IPs)

@@ -76,7 +76,7 @@ try {
                 'restored_at'         => null,
             ], $username);
 
-            bumpVersions($db, ['receipts', 'treasury', 'vehicle_ledger', 'bolsa_forms', 'main_capital', 'archive_batches']);
+            bumpVersions($db, ['receipts', 'treasury', 'vehicle_ledger', 'main_capital', 'archive_batches']);
             $db->commit();
             jsonSuccess([
                 'batch_id'        => $batchId,
@@ -127,10 +127,10 @@ try {
             'integrity_hash'    => $hash,
         ]);
 
-        // Archive records in all 5 tables
+        // Archive records in all 4 tables
         $archived = $repo->archiveRecords($username, $fromDate, $toDate, $batchUuid, $now);
 
-        bumpVersions($db, ['receipts', 'treasury', 'vehicle_ledger', 'bolsa_forms', 'main_capital', 'archive_batches']);
+        bumpVersions($db, ['receipts', 'treasury', 'vehicle_ledger', 'main_capital', 'archive_batches']);
         $db->commit();
         jsonSuccess([
             'batch_id'        => $batchUuid,

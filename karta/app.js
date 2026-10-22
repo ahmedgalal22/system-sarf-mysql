@@ -4,9 +4,7 @@
 
 import { AuthModule }  from './auth.js';
 import { initReceiptPage } from './receipts.js';
-import { initBolsaPage } from './bolsas.js';
 import { initAllReceiptsPage } from './allReceipts.js';
-import { initAllBolsasPage, destroyAllBolsasPage } from './allBolsas.js';
 import { attachOwnersPageListeners, loadOwners } from './entities.js';
 import { attachOfficesPageListeners, initOfficesPage, loadOffices } from './offices.js';
 import { initTreasuryPage } from './treasury.js';
@@ -20,21 +18,15 @@ import { verifyServerReady } from './services/serverVerification.js';
 import { activateServerMode, API_CONFIG } from './services/apiConfig.js';
 import { SyncService } from './services/syncService.js';
 
-let _bolsaInited = false;
-const LAST_PAGE_KEY = 'financial_last_page';
-const LAST_PAGE_CTX_KEY = 'financial_last_page_ctx';
+const LAST_PAGE_KEY = 'karta_v2_last_page';
+const LAST_PAGE_CTX_KEY = 'karta_v2_last_page_ctx';
 const PAGE_MAP = {
   homePage: 'homePage',
   dashboardPage: 'dashboardPage',
   receipt: 'receiptPage',
   allReceipts: 'allReceiptsPage',
-  allBolsas: 'allBolsasPage',
-  allBolsasPage: 'allBolsasPage',
-  bolsa: 'bolsaPage',
-  bolsaPage: 'bolsaPage',
   ownersPage: 'ownersPage',
   ownerDetailsPage: 'ownerDetailsPage',
-  agentDetailsPage: 'agentDetailsPage',
   officesPage: 'officesPage',
   treasuryPage: 'treasuryPage',
   archivePage: 'archivePage',
@@ -47,13 +39,8 @@ const PAGE_KEY_NORMALIZE = {
   receiptPage: 'receipt',
   allReceipts: 'allReceipts',
   allReceiptsPage: 'allReceipts',
-  allBolsas: 'allBolsas',
-  allBolsasPage: 'allBolsas',
-  bolsa: 'bolsaPage',
-  bolsaPage: 'bolsaPage',
   ownersPage: 'ownersPage',
   ownerDetailsPage: 'ownerDetailsPage',
-  agentDetailsPage: 'agentDetailsPage',
   officesPage: 'officesPage',
   treasuryPage: 'treasuryPage',
   archivePage: 'archivePage',
@@ -80,7 +67,7 @@ function _readLastPageContext() {
 }
 
 function _resolvePageElement(pageName) {
-  // allow passing direct section id (e.g. "bolsaPage")
+  // allow passing direct section id
   const direct = document.getElementById(pageName);
   if (direct) return direct;
   return document.getElementById(PAGE_MAP[pageName]);
@@ -109,14 +96,6 @@ async function showPage(pageName) {
   }
 
   const pages = document.querySelectorAll('.page');
-
-  // Destroy allBolsas listeners when navigating AWAY from it (Step 4 migration).
-  const leavingBolsas = pageName !== 'allBolsas' && pageName !== 'allBolsasPage';
-  const bolsasPage = document.getElementById('allBolsasPage');
-  if (leavingBolsas && bolsasPage && bolsasPage.dataset.initialized === '1') {
-    destroyAllBolsasPage();
-  }
-
   pages.forEach(p => p.classList.add('hidden'));
 
   const target = _resolvePageElement(pageName);
@@ -140,17 +119,8 @@ async function showPage(pageName) {
   if (pageName === 'officesPage' || targetId === 'officesPage') {
     await loadOffices();
   }
-  if (pageName === 'bolsaPage' || pageName === 'bolsa' || targetId === 'bolsaPage') {
-    if (!_bolsaInited) {
-      initBolsaPage();
-      _bolsaInited = true;
-    }
-  }
   if (pageName === 'allReceipts' || targetId === 'allReceiptsPage') {
     await initAllReceiptsPage();
-  }
-  if (pageName === 'allBolsas' || targetId === 'allBolsasPage') {
-    await initAllBolsasPage();
   }
   if (pageName === 'dashboardPage' || targetId === 'dashboardPage') {
     if (role === 'admin') {
@@ -244,15 +214,12 @@ async function boot() {
     } else if (lastPage === 'ownerDetailsPage' && ctx?.ownerId && typeof window.showOwnerDetails === 'function') {
       await window.showOwnerDetails(ctx.ownerId, ctx.ownerType || 'owner');
       restored = true;
-    } else if (lastPage === 'agentDetailsPage' && ctx?.mandoubId && typeof window.showMandoubDetails === 'function') {
-      await window.showMandoubDetails(ctx.mandoubId);
-      restored = true;
     }
 
     if (!restored) {
       let fallbackPage = lastPage;
       if (lastPage === 'officeDetailsPage') fallbackPage = 'officesPage';
-      if (lastPage === 'ownerDetailsPage' || lastPage === 'agentDetailsPage') fallbackPage = 'ownersPage';
+      if (lastPage === 'ownerDetailsPage') fallbackPage = 'ownersPage';
       if (!fallbackPage || !_resolvePageElement(fallbackPage)) fallbackPage = 'homePage';
       await showPage(fallbackPage);
     }
@@ -319,7 +286,7 @@ function _initMySQLBackup() {
         const blob = await res.blob();
         const cd = res.headers.get('Content-Disposition') || '';
         const fnMatch = cd.match(/filename="?([^"]+)"?/);
-        const filename = fnMatch ? fnMatch[1] : `karta-backup-${new Date().toISOString().slice(0,10)}.json`;
+        const filename = fnMatch ? fnMatch[1] : `karta-v2-backup-${new Date().toISOString().slice(0,10)}.json`;
         const a = document.createElement('a');
         a.href = URL.createObjectURL(blob);
         a.download = filename;

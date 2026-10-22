@@ -19,7 +19,6 @@ import { generateId as _uuid } from './utils/idGenerator.js';
 
 const STORE = 'offices';
 const RECEIPTS_STORE = 'receipts';
-const BOLSA_STORE = 'bolsaForms';
 
 const _hamolaCache = new Map();
 
@@ -314,14 +313,6 @@ async function deleteHamolaRow(username, office_id, row_id) {
 const _calcWeight = calculateWeightTotal;
 const _calcReceiptNet = calculateRowNet;
 
-function _calcBolsaNet(row) {
-  const total = Number(row.total);
-  if (Number.isFinite(total)) return total;
-  const w = (Number(row.weight) || 0) + (Number(row.weight2) || 0);
-  const price = Number(row.price) || 0;
-  return price * w;
-}
-
 function _resolveRange(filters) {
   if (!filters || typeof filters !== 'object') return null;
 
@@ -345,7 +336,11 @@ function _resolveRange(filters) {
   }
 
   const from = filters.from ? new Date(filters.from).getTime() : null;
-  const to = filters.to ? new Date(filters.to).getTime() : null;
+  const to = filters.to
+    ? (/^\d{4}-\d{2}-\d{2}$/.test(String(filters.to).trim())
+        ? new Date(String(filters.to).trim() + 'T23:59:59.999Z').getTime()
+        : new Date(filters.to).getTime())
+    : null;
   if ((filters.from && Number.isNaN(from)) || (filters.to && Number.isNaN(to))) {
     throw new Error('[OfficesService] invalid date range.');
   }
@@ -376,29 +371,27 @@ async function getOfficeFinancialSummary(username, filters = null) {
   }
 
   const range = _resolveRange(filters);
-  const useBolsa = Boolean(range);
 
-  if (useBolsa) {
-    const forms = await OfficeRepository.getBolsaForms(username);
-    const filtered = range
-      ? forms.filter((f) => {
-          const t = new Date(f.bolsa_date || 0).getTime();
-          return t >= range.from && t <= range.to;
-        })
-      : forms;
+  if (range) {
+    const receipts = await OfficeRepository.getReceipts(username);
+    const filtered = receipts.filter((r) => {
+      if (r.deleted_at != null || r.is_archived) return false;
+      const rawDate = r.receipt_date || r.date || r.created_at || 0;
+      const t = new Date(rawDate).getTime();
+      return t >= range.from && t <= range.to;
+    });
 
-    for (const form of filtered) {
-      const rows = Array.isArray(form.rows) ? form.rows : [];
+    for (const receipt of filtered) {
+      const rows = Array.isArray(receipt.rows) ? receipt.rows : [];
       for (const row of rows) {
+        if (row?._type === 'separator' || row?.type === 'separator' || row?.row_type === 'separator') continue;
         const officeName = String(row.office || '').trim();
         if (!officeName) continue;
         const office = nameMap.get(officeName.toLowerCase());
-        if (!office) {
-          throw new Error(`[OfficesService] unknown office: ${officeName}`);
-        }
+        if (!office) continue;
         const item = summary.get(String(office.id));
-        item.weight += (Number(row.weight) || 0) + (Number(row.weight2) || 0);
-        item.net += _calcBolsaNet(row);
+        item.weight += _calcWeight(row);
+        item.net += _calcReceiptNet(row);
       }
     }
   } else {
@@ -604,7 +597,7 @@ let _detailsOfficeId = null;
 let _officeCardsSearchQuery = '';
 let _officeCardsCache = [];
 let _hamolaEditId = null;
-const LAST_PAGE_CTX_KEY = 'financial_last_page_ctx';
+const LAST_PAGE_CTX_KEY = 'karta_v2_last_page_ctx';
 
 function _requireSession() {
   const session = AuthModule.getSession();

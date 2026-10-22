@@ -3,11 +3,11 @@
 -- MySQL 5.7+ / MariaDB 10.3+
 -- ═══════════════════════════════════════════════════════════════
 
-CREATE DATABASE IF NOT EXISTS karta_erp
+CREATE DATABASE IF NOT EXISTS karta_erp_v2
   CHARACTER SET utf8mb4
   COLLATE utf8mb4_unicode_ci;
 
-USE karta_erp;
+USE karta_erp_v2;
 
 -- ───────────────────────────────────────────────────────────────
 -- Users table

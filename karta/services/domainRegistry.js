@@ -76,13 +76,6 @@ const DOMAIN_REGISTRY = Object.freeze({
     criticality: DOMAIN_CRITICALITY.FINANCIAL_CRITICAL,
     apiPath:     '/entities/receipts',
   },
-  bolsaForms: {
-    owner:       DOMAIN_OWNER.SERVER,
-    transport:   DOMAIN_TRANSPORT.MYSQL,
-    status:      DOMAIN_STATUS.SERVER_OWNED,
-    criticality: DOMAIN_CRITICALITY.FINANCIAL_CRITICAL,
-    apiPath:     '/entities/bolsa-forms',
-  },
   mainCapitalTreasury: {
     owner:       DOMAIN_OWNER.SERVER,
     transport:   DOMAIN_TRANSPORT.MYSQL,
@@ -115,13 +108,6 @@ const DOMAIN_REGISTRY = Object.freeze({
     status:      DOMAIN_STATUS.SERVER_OWNED,
     criticality: DOMAIN_CRITICALITY.NORMAL,
     apiPath:     '/entities/vehicleOwners',
-  },
-  agents: {
-    owner:       DOMAIN_OWNER.SERVER,
-    transport:   DOMAIN_TRANSPORT.MYSQL,
-    status:      DOMAIN_STATUS.SERVER_OWNED,
-    criticality: DOMAIN_CRITICALITY.NORMAL,
-    apiPath:     '/entities/agents',
   },
   offices: {
     owner:       DOMAIN_OWNER.SERVER,

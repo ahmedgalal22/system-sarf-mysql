@@ -19,10 +19,6 @@ export const OfficeRepository = {
   async delete(id, meta) {
     return DBProvider.delete('offices', String(id), meta);
   },
-  // ── Bolsa forms (read-only from offices context) ────────────────────────
-  async getBolsaForms(username) {
-    return DBProvider.findByFields('bolsaForms', { username });
-  },
 
   // ── Receipts (read-only from offices context) ───────────────────────────
   async getReceipts(username) {

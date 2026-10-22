@@ -3,7 +3,7 @@
 -- Run after database.sql and database_vehicles.sql
 -- ═══════════════════════════════════════════════════════════════
 
-USE karta_erp;
+USE karta_erp_v2;
 
 -- ───────────────────────────────────────────────────────────────
 -- Receipt number counter

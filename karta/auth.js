@@ -3,7 +3,7 @@
  * ─────────────────────────────────────────────────────────────────────────────
  * Phase 4.9: PHP Session is the SOLE authentication authority.
  *
- * Login:  POST /api/auth/login.php → PHP session + KARTA_SESSION cookie
+ * Login:  POST /api/auth/login.php → PHP session + KARTA_V2_SESSION cookie
  * Check:  GET  /api/auth/session.php → validates PHP session
  * Logout: POST /api/auth/logout.php → destroys PHP session
  *
@@ -28,7 +28,7 @@ let _sessionCache = null; // { username, role } or null
 
 /**
  * Login via PHP API.
- * On success: PHP session is created, KARTA_SESSION cookie is set by browser,
+ * On success: PHP session is created, KARTA_V2_SESSION cookie is set by browser,
  * and session data is cached in memory for sync access.
  */
 async function login(username, password) {

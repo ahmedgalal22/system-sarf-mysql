@@ -31,7 +31,6 @@ export const ArchiveRepository = {
       'receipts': '/entities/receipts/list.php?include_archived=1',
       'treasury': '/entities/treasury/list.php?include_archived=1',
       'vehicle_ledger': '/entities/vehicle-ledger/list.php?include_archived=1',
-      'bolsaForms': '/entities/bolsa-forms/list.php?include_archived=1',
       'mainCapitalTreasury': '/entities/capital/list.php?include_archived=1',
     };
     const path = storeApiMap[storeName];

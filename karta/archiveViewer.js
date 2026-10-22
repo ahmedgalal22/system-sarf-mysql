@@ -41,7 +41,6 @@ const VIEWER = {
     treasury: [],
     vehicle_ledger: [],
     receipts: [],
-    bolsaForms: [],
     mainCapitalTreasury: [],
   },
 };
@@ -66,7 +65,6 @@ async function _loadBatchData(batchId) {
 const TAB_LABELS = {
   treasury: '💰 الخزنة',
   receipts: '📄 النماذج',
-  bolsaForms: '📋 البوالص',
   vehicle_ledger: '📒 دفتر الحسابات',
   mainCapitalTreasury: '🏦 رأس المال',
   snapshot: '📊 اللقطة المالية',
@@ -133,7 +131,6 @@ function _renderTabContent() {
   switch (VIEWER.tab) {
     case 'treasury': _renderTreasuryTab(container, filtered); break;
     case 'receipts': _renderReceiptsTab(container, filtered); break;
-    case 'bolsaForms': _renderBolsaTab(container, filtered); break;
     case 'vehicle_ledger': _renderLedgerTab(container, filtered); break;
     case 'mainCapitalTreasury': _renderCapitalTab(container, filtered); break;
     default: container.innerHTML = '<div style="padding:24px;color:#9ca3af;">غير متاح</div>';
@@ -210,22 +207,6 @@ function _renderReceiptsTab(container, entries) {
   const cardsHtml = sorted.map(record => buildReceiptCardHtml(record, { readOnly: true })).join('');
 
   container.innerHTML = summaryHtml + cardsHtml;
-}
-
-function _renderBolsaTab(container, entries) {
-  container.innerHTML = `
-    <p style="margin-bottom:12px;color:#6b7280;font-size:0.875rem;">عدد البوالص: ${entries.length}</p>
-    <div class="table-wrapper" style="max-height:60vh;overflow-y:auto;">
-      <table class="table"><thead><tr>
-        <th>التاريخ</th><th>المندوب</th><th>عدد الصفوف</th>
-      </tr></thead><tbody>
-      ${entries.map(b => `<tr>
-        <td>${_dateStr(b.bolsa_date)}</td>
-        <td>${_esc(b.agent_name || b.agent_id || '—')}</td>
-        <td>${Array.isArray(b.rows) ? b.rows.length : 0}</td>
-      </tr>`).join('')}
-      </tbody></table>
-    </div>`;
 }
 
 function _renderLedgerTab(container, entries) {

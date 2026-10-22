@@ -26,29 +26,6 @@ export const ClientRepository = {
     return DBProvider.delete('vehicleOwners', id, meta);
   },
 
-  // ── Agents (mandoubs + brokers) ─────────────────────────────────────────
-  async getAgentById(id) {
-    return DBProvider.get('agents', id);
-  },
-  async getAllAgents() {
-    return DBProvider.getAll('agents');
-  },
-  async getAgents(username) {
-    return DBProvider.getAll('agents', { username });
-  },
-  async findAgentsByFields(filters) {
-    return DBProvider.findByFields('agents', filters);
-  },
-  async saveAgent(payload, meta) {
-    return DBProvider.save('agents', payload, meta);
-  },
-  async updateAgent(id, patch, meta) {
-    return DBProvider.update('agents', id, patch, meta);
-  },
-  async deleteAgent(id, meta) {
-    return DBProvider.delete('agents', id, meta);
-  },
-
   // ── Vehicles ────────────────────────────────────────────────────────────
   async getVehicleById(id) {
     return DBProvider.get('vehicles', id);

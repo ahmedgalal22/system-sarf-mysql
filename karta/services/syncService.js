@@ -32,12 +32,10 @@ const ENDPOINT = '/sync/versions.php';
  */
 const ENTITY_EVENT_MAP = Object.freeze({
   vehicle_owners:  'owners:changed',
-  agents:          'agents:changed',
   offices:         'offices:changed',
   hamola_details:  'offices:changed',
   receipts:        'receipts:changed',
   treasury:        'treasury:changed',
-  bolsa_forms:     'bolsaForms:changed',
   main_capital:    'capital:changed',
   vehicle_ledger:  'receipts:changed',
   archive_batches: 'archive:changed',

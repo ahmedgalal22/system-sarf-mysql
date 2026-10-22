@@ -150,28 +150,25 @@ async function getArchiveSnapshot(batchId) {
 }
 
 async function previewArchive(username, fromDate, toDate) {
-  // Preview counts non-archived records in range across 5 stores.
-  // Phase 8A: Parallel API calls via Promise.all (5 independent reads).
-  const stores = ['receipts', 'treasury', 'vehicle_ledger', 'bolsa_forms', 'main_capital_treasury'];
+  // Preview counts non-archived records in range across 4 stores.
+  // Phase 8A: Parallel API calls via Promise.all (4 independent reads).
+  const stores = ['receipts', 'treasury', 'vehicle_ledger', 'main_capital_treasury'];
   const storeApiMap = {
     'receipts': '/entities/receipts/list.php',
     'treasury': '/entities/treasury/list.php',
     'vehicle_ledger': '/entities/vehicle-ledger/list.php',
-    'bolsa_forms': '/entities/bolsa-forms/list.php',
     'main_capital_treasury': '/entities/capital/list.php',
   };
   const dateFieldMap = {
     'receipts': 'receipt_date',
     'treasury': 'date',
     'vehicle_ledger': 'date',
-    'bolsa_forms': 'bolsa_date',
     'main_capital_treasury': 'date',
   };
   const storeKeyMap = {
     'receipts': 'receipts',
     'treasury': 'treasury',
     'vehicle_ledger': 'vehicle_ledger',
-    'bolsa_forms': 'bolsaForms',
     'main_capital_treasury': 'mainCapitalTreasury',
   };
 

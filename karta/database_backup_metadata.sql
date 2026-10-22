@@ -7,7 +7,7 @@
 -- If this table is lost, backup/restore continue normally.
 -- ═══════════════════════════════════════════════════════════════
 
-USE karta_erp;
+USE karta_erp_v2;
 
 CREATE TABLE IF NOT EXISTS backup_metadata (
   id               TINYINT UNSIGNED NOT NULL DEFAULT 1,

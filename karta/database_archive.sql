@@ -3,7 +3,7 @@
 -- Run after all financial tables exist.
 -- ═══════════════════════════════════════════════════════════════
 
-USE karta_erp;
+USE karta_erp_v2;
 
 CREATE TABLE IF NOT EXISTS archive_batches (
   id                INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,

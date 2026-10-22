@@ -17,20 +17,23 @@ const DATA_MODE = Object.freeze({
 let _currentMode = DATA_MODE.LOCAL;
 
 /**
- * Detect API base URL from current page location.
- * Works on localhost AND LAN (192.168.x.x) without hardcoding.
+ * Detect API base URL relative to the running application directory.
+ * Works on localhost AND LAN (192.168.x.x) under any folder name in htdocs
+ * without hardcoding 'karta' or falling back to another installation's API.
  */
-function _detectApiBase() {
-  const loc = window.location;
-  // If page is served from /karta/..., API is at /karta/api
-  // If page is at root, API is at /api
-  const pathParts = loc.pathname.split('/').filter(Boolean);
-  // Find 'karta' in path or use first segment
-  const kartaIdx = pathParts.indexOf('karta');
-  if (kartaIdx !== -1) {
-    return `${loc.protocol}//${loc.host}/${pathParts.slice(0, kartaIdx + 1).join('/')}/api`;
+function _detectApiBase(customLoc = null) {
+  if (!customLoc && typeof import.meta !== 'undefined' && import.meta.url && /^https?:\/\//i.test(import.meta.url)) {
+    return new URL('../api', import.meta.url).href.replace(/\/+$/, '');
   }
-  return `${loc.protocol}//${loc.host}/karta/api`;
+  const loc = customLoc || (typeof window !== 'undefined' ? window.location : null);
+  if (!loc) return '/api';
+  const rawPath = String(loc.pathname || '/').replace(/\/+$/, '');
+  const segments = rawPath.split('/').filter(Boolean);
+  if (segments.length > 0 && /\.[a-z0-9]+$/i.test(segments[segments.length - 1])) {
+    segments.pop();
+  }
+  const basePath = segments.length > 0 ? `/${segments.join('/')}` : '';
+  return `${loc.protocol}//${loc.host}${basePath}/api`;
 }
 
 const API_BASE = _detectApiBase();
@@ -78,6 +81,7 @@ function activateLocalMode() {
 export {
   API_CONFIG,
   DATA_MODE,
+  _detectApiBase,
   getMode,
   isServerMode,
   isLocalMode,

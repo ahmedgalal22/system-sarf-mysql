@@ -52,8 +52,9 @@ function detectApiBase(): string {
         return "http://localhost/{$webPath}/api";
     }
 
-    // Priority 4: Last resort — localhost with karta
-    return 'http://localhost/karta/api';
+    // Priority 4: Derive from current application directory name
+    $appFolder = basename(dirname(__DIR__));
+    return "http://localhost/{$appFolder}/api";
 }
 
 define('API_BASE', detectApiBase());

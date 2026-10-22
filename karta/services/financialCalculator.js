@@ -12,8 +12,6 @@ const _EFFECT = Object.freeze({
   SALFA            : 'salfa',
   EXPENSE          : 'expense',
   SALARY           : 'salary',
-  MANDOUB_CASH_OUT : 'mandoub_cash_out',
-  BOLSA_DEDUCTION  : 'bolsa_deduction',
 });
 
 /**
@@ -92,8 +90,6 @@ export function calculateTreasuryTotals(entries) {
   let total_payout = 0;
   let total_salfa = 0;
   let total_expense = 0;
-  let total_mandoub = 0;
-  let total_bolsa = 0;
 
   for (const e of (entries || [])) {
     if (!e) continue;
@@ -104,8 +100,6 @@ export function calculateTreasuryTotals(entries) {
     if (e.effect === _EFFECT.RECEIPT_PAYOUT) total_payout += amt;
     if (e.effect === _EFFECT.SALFA) total_salfa += amt;
     if (e.effect === _EFFECT.EXPENSE || e.effect === _EFFECT.SALARY) total_expense += amt;
-    if (e.effect === _EFFECT.MANDOUB_CASH_OUT) total_mandoub += amt;
-    if (e.effect === _EFFECT.BOLSA_DEDUCTION) total_bolsa += amt;
   }
 
   return {
@@ -113,7 +107,5 @@ export function calculateTreasuryTotals(entries) {
     total_payout: Money.toDecimal(total_payout),
     total_salfa: Money.toDecimal(total_salfa),
     total_expense: Money.toDecimal(total_expense),
-    total_mandoub: Money.toDecimal(total_mandoub),
-    total_bolsa: Money.toDecimal(total_bolsa),
   };
 }

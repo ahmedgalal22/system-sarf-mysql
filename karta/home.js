@@ -16,7 +16,7 @@ async function _getStats() {
   const username = _currentUsername();
   if (!username) return { owners: 0, offices: 0, receipts: 0, pending: 0 };
 
-  const owners = (await ClientRepository.getAllOwners()).filter(o => o.deleted_at === null).length;
+  const owners = (await ClientRepository.getAllOwners()).filter(o => o.deleted_at === null && o.owner_type !== 'broker').length;
   const offices = (await OfficeRepository.getAll(username)).filter(o => o.deleted_at === null).length;
   const allReceipts = (await ReceiptRepository.getAll(username)).filter(r => r.deleted_at === null);
   const receipts = allReceipts.length;

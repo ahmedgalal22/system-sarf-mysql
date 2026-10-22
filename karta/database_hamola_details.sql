@@ -4,7 +4,7 @@
 -- Each row is one load route for an office (was JSON in offices.hamola_rows)
 -- ═══════════════════════════════════════════════════════════════
 
-USE karta_erp;
+USE karta_erp_v2;
 
 CREATE TABLE IF NOT EXISTS hamola_details (
   id                INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,

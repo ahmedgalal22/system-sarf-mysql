@@ -36,7 +36,6 @@ const ROW_PAYMENT = {
 };
 
 const STORE = 'receipts';
-const BOLSA_STORE = 'bolsaForms';
 
 // _uuid imported from utils/idGenerator.js
 
@@ -239,114 +238,6 @@ function assignReceiptNumber(data, number) {
   };
 }
 
-// ─── PRIVATE: bolsa linkage helper (TASK E — Phase 2) ────────────────────────
-//
-// Single source of truth for "this receipt's rows reference these karta
-// numbers; rewrite bolsa rows so used_in_receipt / used_receipt_id
-// reflect that exactly".
-//
-// Used by:
-//   - create()  →  newKartaNos = receipt's kartas, receiptId = new id
-//   - update()  →  newKartaNos = receipt's kartas, receiptId = existing id
-//   - remove()  →  newKartaNos = ∅ (empty Set), receiptId = the one being deleted
-//
-// In every case the rule is identical:
-//   for every bolsa row R in the current user's bolsaForms:
-//     if R was previously linked to receiptId AND its kartaNo is NOT in
-//        newKartaNos                       → UNLINK  (used_in_receipt=false,
-//                                                     used_receipt_id=null)
-//     if R was NOT linked to receiptId AND its kartaNo IS in newKartaNos
-//        AND that kartaNo has not already been taken by another linked row
-//                                          → LINK
-//     otherwise leave R unchanged.
-//
-// Per-form patches are coalesced so we issue at most ONE update per form,
-// and only forms whose `rows` array actually changed are returned.
-//
-// Returns: { ops: Array<runOp>, missingKartas: string[] }
-//   - ops:           ready to pass as extraOps to FinancialService.{create,update,delete}Receipt
-//   - missingKartas: kartas in `newKartaNos` that don't exist in any bolsa row.
-//                    Surfaced as a soft warning (existing behavior — non-blocking).
-//
-// Reads via the by_username index (NOT a global getAll), so it's already
-// tenant-scoped.  No additional full scans were introduced — create() used
-// to do exactly this same scan; we just centralise it.
-async function _buildBolsaLinkAndUnlinkOps(receiptId, username, newKartaNos) {
-  const receiptIdStr = String(receiptId || '').trim();
-  if (!receiptIdStr) {
-    return { ops: [], missingKartas: [] };
-  }
-  // newKartaNos may be a Set or array; normalise.
-  const desiredSet = new Set(
-    (newKartaNos instanceof Set ? [...newKartaNos] : (Array.isArray(newKartaNos) ? newKartaNos : []))
-      .map(k => String(k ?? '').trim())
-      .filter(Boolean)
-  );
-
-  const bolsaForms = await DBProvider.getByIndex(BOLSA_STORE, 'by_username', username);
-
-  // Per-form mutable working copy; only kept if it ends up different from original.
-  const updatedRowsByForm = new Map(); // formId → rows[] (shallow copies)
-  const formById = new Map(); // formId → original form (for reference)
-  for (const form of bolsaForms) {
-    if (!form || !Array.isArray(form.rows)) continue;
-    formById.set(String(form.id), form);
-  }
-
-  // To detect "this karta has been taken by another bolsa row" within the
-  // SAME save (in case the same kartaNo appears in multiple bolsa rows —
-  // possible for legacy data), we link only the FIRST match per kartaNo.
-  const linkedKartas = new Set();
-  const seenKartasInBolsas = new Set();
-
-  for (const [formId, form] of formById) {
-    let modified = false;
-    const rows = form.rows.map((row, _idx) => {
-      const k = row && row.kartaNo != null ? String(row.kartaNo).trim() : '';
-      const wasLinkedToThisReceipt =
-        row && row.used_in_receipt === true
-        && String(row.used_receipt_id || '') === receiptIdStr;
-      const shouldBeLinked = k && desiredSet.has(k) && !linkedKartas.has(k);
-
-      if (k) seenKartasInBolsas.add(k);
-
-      if (shouldBeLinked) {
-        linkedKartas.add(k);
-        if (!wasLinkedToThisReceipt
-            || row.used_in_receipt !== true
-            || String(row.used_receipt_id || '') !== receiptIdStr) {
-          modified = true;
-          return { ...row, used_in_receipt: true, used_receipt_id: receiptIdStr };
-        }
-        // Already correctly linked; leave as-is.
-        return row;
-      }
-
-      // Not desired-linked.  If it was previously linked to THIS receipt → unlink.
-      if (wasLinkedToThisReceipt) {
-        modified = true;
-        return { ...row, used_in_receipt: false, used_receipt_id: null };
-      }
-      return row;
-    });
-
-    if (modified) updatedRowsByForm.set(formId, rows);
-  }
-
-  const ops = [...updatedRowsByForm.entries()].map(([formId, rows]) => ({
-    op: 'update',
-    store: BOLSA_STORE,
-    id: formId,
-    patch: { rows },
-  }));
-
-  // Kartas the receipt wants but no bolsa row carries — only meaningful for
-  // create/update; deletion passes an empty set so this stays empty there.
-  const missingKartas = [...desiredSet].filter(k => !seenKartasInBolsas.has(k));
-
-  return { ops, missingKartas };
-}
-
 // ─── PUBLIC: create ───────────────────────────────────────────────────────────
 
 async function create(username, rawData) {
@@ -357,25 +248,14 @@ async function create(username, rawData) {
   const normalized     = _normalize(rawData);
   const servicePayload = _buildServicePayload(normalized);
 
-  // ── Bolsa linkage: collect karta numbers used by this receipt ──────────────
   const dataRows = normalized.rows.filter(r => r._type !== ROW_TYPES.SEPARATOR);
   const kartaNos = new Set(
     dataRows.map(r => (r.kartano != null ? String(r.kartano).trim() : '')).filter(Boolean)
   );
 
-  let _bolsaWarning = null;
-  let bolsaOps = [];
-
+  let warning = null;
   if (kartaNos.size === 0) {
-    _bolsaWarning = 'تنبيه: لا توجد أرقام كارتة في هذا الإيصال';
-  } else {
-    // Phase 2 TASK E — unified link/unlink helper.  For create there's no
-    // prior linkage to undo, so the call collapses to a pure "link" pass.
-    const linkage = await _buildBolsaLinkAndUnlinkOps(normalized.id, username, kartaNos);
-    bolsaOps = linkage.ops;
-    if (linkage.missingKartas.length > 0) {
-      _bolsaWarning = `تنبيه: الكارتات التالية غير موجودة في البوالص: ${linkage.missingKartas.join('، ')}`;
-    }
+    warning = 'تنبيه: لا توجد أرقام كارتة في هذا الإيصال';
   }
 
   // ── Receipt-number allocation + atomic save (with retry on constraint clash) ──
@@ -389,10 +269,10 @@ async function create(username, rawData) {
   for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
     try {
       const payloadWithNumber = assignReceiptNumber(servicePayload, String(nextNumber));
-      const result = await FinancialService.createReceipt(username, payloadWithNumber, bolsaOps);
+      const result = await FinancialService.createReceipt(username, payloadWithNumber, []);
 
-      if (_bolsaWarning) console.warn('[ReceiptsModule]', _bolsaWarning);
-      return { result, normalized, warning: _bolsaWarning };
+      if (warning) console.warn('[ReceiptsModule]', warning);
+      return { result, normalized, warning };
     } catch (err) {
       if (isConstraintError(err) && attempt < MAX_RETRIES) {
         const fresh = await allocateReceiptNumber(username);
@@ -416,18 +296,7 @@ async function update(username, id, rawData) {
   const normalized     = _normalize({ ...rawData, id });
   const servicePayload = _buildServicePayload(normalized);
 
-  // Phase 2 TASK E — recompute bolsa linkage on every receipt update.
-  // The helper handles both unlink (rows that used to point at this receipt
-  // but whose kartaNo is no longer in the new set) and link (rows whose
-  // kartaNo entered the new set).  All applied atomically with the
-  // receipt update inside one DB transaction.
-  const dataRows = normalized.rows.filter(r => r._type !== ROW_TYPES.SEPARATOR);
-  const kartaNos = new Set(
-    dataRows.map(r => (r.kartano != null ? String(r.kartano).trim() : '')).filter(Boolean)
-  );
-  const { ops: bolsaOps } = await _buildBolsaLinkAndUnlinkOps(id, username, kartaNos);
-
-  const result = await FinancialService.updateReceipt(username, id, servicePayload, bolsaOps);
+  const result = await FinancialService.updateReceipt(username, id, servicePayload, []);
 
   return { result, normalized };
 }
@@ -438,12 +307,7 @@ async function remove(username, id) {
   if (!username) throw new Error('[ReceiptsModule:delete] username is required.');
   if (!id)       throw new Error('[ReceiptsModule:delete] id is required.');
 
-  // Phase 2 TASK E — atomically unlink any bolsa rows that pointed back
-  // at this receipt.  Pass an empty kartaNos Set so the helper produces
-  // pure-unlink ops (no link side).  Atomic with the receipt soft-delete.
-  const { ops: unlinkOps } = await _buildBolsaLinkAndUnlinkOps(id, username, new Set());
-
-  const res = await FinancialService.deleteReceipt(username, id, unlinkOps);
+  const res = await FinancialService.deleteReceipt(username, id, []);
   window.dispatchEvent(new CustomEvent('receipts:changed'));
   return res;
 }
@@ -521,25 +385,6 @@ async function getReceiptByNumber(receipt_number) {
   return rows[0] || null;
 }
 
-function _agentOwner(record) {
-  const direct = typeof record?.username === 'string' ? record.username.trim() : '';
-  if (direct) return direct;
-  const created = typeof record?.created_by === 'string' ? record.created_by.trim() : '';
-  if (created) return created;
-  return null;
-}
-
-function _isAgentOwnedBy(record, username) {
-  const owner = _agentOwner(record);
-  return owner !== null && owner === String(username);
-}
-
-async function getAgents(username = null) {
-  const owner = typeof username === 'string' && username.trim() ? username.trim() : _currentUsername();
-  const all = await ClientRepository.getAgents(owner);
-  return all.filter(a => _isAgentOwnedBy(a, owner));
-}
-
 async function getDrivers(username) {
   if (!username) throw new Error('[ReceiptsModule:getDrivers] username is required.');
   return ClientRepository.getDrivers(username);
@@ -554,11 +399,6 @@ async function saveDriverName(username, name) {
   if (!alreadyExists) {
     await ClientRepository.addDriver({ username, name: n }, { username });
   }
-}
-
-async function getBolsaForms(username) {
-  if (!username) throw new Error('[ReceiptsModule:getBolsaForms] username is required.');
-  return DBProvider.getByIndex(BOLSA_STORE, 'by_username', username);
 }
 
 async function getVehicleById(vehicle_id) {
@@ -595,10 +435,8 @@ const ReceiptsModule = Object.freeze({
   peekNextReceiptNumber,
   allocateReceiptNumber,
   getReceiptByNumber,
-  getAgents,
   getDrivers,
   saveDriverName,
-  getBolsaForms,
   getVehicleById,
   getVehiclesByPlate,
   getOfficesForUser,
@@ -634,7 +472,6 @@ function _enterReceiptEditMode(receiptData) {
 
 let receiptRowCounter = 0;
 let _isSaving         = false;
-let _bolsaRowsCache   = null;
 let _clientsCache     = [];
 const _vehicleAnalysisCache = new Map();
 
@@ -1451,9 +1288,9 @@ async function _receiptPopulateClientVehicles() {
 }
 
 async function loadClientsList() {
-  // All owners + brokers are in vehicle_owners table (unified)
+  // Vehicle owners only (exclude brokers)
   const allOwners = (await OwnersModule.getAllOwners())
-    .filter(o => o.deleted_at === null)
+    .filter(o => o.deleted_at === null && o.owner_type !== 'broker')
     .map(o => ({
       id: String(o.id),
       type: 'owner',
@@ -1646,7 +1483,6 @@ function addReceiptRow(count = 1) {
     newRow.dataset.calcAttached = '1';
     attachRowCalculation(newRow);
     fillFromPreviousRow(newRow);
-    attachKartaAutoFill(newRow);
     attachKeyboardNav(newRow);
     attachInputRestrictions(newRow);
     // Apply client's vehicle/driver datalists to new row
@@ -1677,7 +1513,6 @@ function addRowAfter(refRow) {
 
   newRow.dataset.calcAttached = '1';
   attachRowCalculation(newRow);
-  attachKartaAutoFill(newRow);
   attachKeyboardNav(newRow);
   attachInputRestrictions(newRow);
   ensureReceiptArrowRow();
@@ -2242,73 +2077,6 @@ function attachInputRestrictions(row) {
   });
 }
 
-// ─── KARTA AUTOFILL ───────────────────────────────────────────────────────────
-
-function attachKartaAutoFill(row) {
-  const kartaInput = row.querySelector('.receipt-kartano');
-  if (!kartaInput) return;
-
-  kartaInput.addEventListener('change', async function () {
-    const kartaNo  = this.value.trim();
-    const username = _currentUsername();
-    if (!kartaNo || !username) return;
-
-    if (!_bolsaRowsCache) {
-      _bolsaRowsCache = await ReceiptsModule.getBolsaForms(username);
-    }
-
-    let foundRow = null;
-    for (const form of _bolsaRowsCache) {
-      if (!form.rows) continue;
-      const match = form.rows.find(r => r.kartaNo && r.kartaNo.toString().trim() === kartaNo);
-      if (match) { foundRow = match; break; }
-    }
-    if (!foundRow) return;
-
-    const hasData = ['receipt-date', 'receipt-data', 'receipt-car', 'receipt-weight', 'receipt-weight2', 'receipt-office']
-      .some(cls => { const el = row.querySelector('.' + cls); return el && el.value.trim() !== ''; });
-
-    if (hasData && !confirm('⚠️ الصف فيه بيانات موجودة — هل تريد استبدالها ببيانات الكارتة؟')) return;
-
-    const set = (cls, val) => {
-      const el = row.querySelector('.' + cls);
-      if (el && val !== undefined && val !== null) el.value = val;
-    };
-
-    set('receipt-date',    foundRow.rowdate    || '');
-    set('receipt-data',    foundRow.driver     || '');
-    // receipt-owner removed from table
-    set('receipt-car',     foundRow.carNo      || '');
-    set('receipt-weight',  foundRow.weight     || '');
-    set('receipt-weight2', foundRow.weight2    || '');
-    set('receipt-type',    foundRow.type       || '');
-    set('receipt-ohda',    foundRow.ohda       || '');
-    set('receipt-noloon',  foundRow.noloon     || '');
-    // bolsa field محذوف من الواجهة — لا نحتاج set له
-
-    const officeInput = row.querySelector('.receipt-office');
-    if (officeInput && foundRow.office) {
-      officeInput.value = foundRow.office;
-      officeInput.dispatchEvent(new Event('change'));
-      setTimeout(function () {
-        set('receipt-loading', foundRow.loading   || '');
-        set('receipt-taktik',  foundRow.direction || '');
-        ['receipt-weight', 'receipt-weight2', 'receipt-deficit',
-         'receipt-noloon', 'receipt-ohda', 'receipt-office-amount',
-         'receipt-add'].forEach(cls => {
-          row.querySelector('.' + cls)?.dispatchEvent(new Event('input'));
-        });
-      }, 600);
-    }
-
-    ['receipt-weight', 'receipt-weight2', 'receipt-deficit',
-     'receipt-noloon', 'receipt-ohda', 'receipt-office-amount',
-     'receipt-add'].forEach(cls => {
-      row.querySelector('.' + cls)?.dispatchEvent(new Event('input'));
-    });
-  });
-}
-
 // ─── VEHICLE OWNER → PREVIOUS BALANCE ────────────────────────────────────────
 
 async function _onClientChange(input) {
@@ -2344,12 +2112,6 @@ async function _getVehicleAnalysis(vehicleId) {
   }
 
   let owner = await OwnersModule.getOwnerById(String(vehicle.owner_id));
-  if (!owner) {
-    const agent = await DBProvider.get('agents', String(vehicle.owner_id));
-    if (agent && agent.deleted_at === null) {
-      owner = agent;
-    }
-  }
   if (!owner) {
     const client = _selectedClient();
     if (client) {
@@ -2626,12 +2388,6 @@ async function collectReceiptRows() {
       } catch(_e) { /* silent — non-critical */ }
     }
     let vehicleOwner = await OwnersModule.getOwnerById(String(vehicle.owner_id));
-    if (!vehicleOwner) {
-      const agent = await DBProvider.get('agents', String(vehicle.owner_id));
-      if (agent && agent.deleted_at === null) {
-        vehicleOwner = agent;
-      }
-    }
     if (!vehicleOwner && clientOwner) {
       vehicleOwner = clientOwner;
       try {
@@ -2882,13 +2638,7 @@ async function saveReceipt() {
   rawData.account_type = null;
 
   try {
-    const saveResult = await ReceiptsModule.create(username, rawData);
-
-    // Feature 6: إظهار تحذير البوالص كـ alert مرئي للمستخدم (لا يمنع الحفظ)
-    if (saveResult?.warning) {
-      console.warn('[BolsaWarning]', saveResult.warning);
-      alert(`⚠️ ${saveResult.warning}`);
-    }
+    await ReceiptsModule.create(username, rawData);
 
     _vehicleAnalysisCache.clear();
     rawData.rows
@@ -3107,7 +2857,6 @@ function printReceipt() {
 // ─── CLEAR / CANCEL ───────────────────────────────────────────────────────────
 
 function clearReceiptSilent() {
-  _bolsaRowsCache   = null;
   _isSaving         = false;
   _vehicleAnalysisCache.clear();
   _exitEditMode();
@@ -3175,7 +2924,6 @@ function _exitEditMode() {
 
 async function loadReceiptForEdit(receiptData) {
   _enterReceiptEditMode(receiptData);
-  _bolsaRowsCache   = null;
 
   const setV = (id, val) => { const el = document.getElementById(id); if (el) el.value = val || ''; };
   setV('receiptDate',       receiptData.receipt_date   || receiptData.receiptDate   || '');
@@ -3273,7 +3021,6 @@ async function loadReceiptForEdit(receiptData) {
 
     tr.dataset.calcAttached = '1';
     attachRowCalculation(tr);
-    attachKartaAutoFill(tr);
     attachKeyboardNav(tr);
     attachInputRestrictions(tr);
   });
@@ -3512,7 +3259,6 @@ function _handleReceiptExcelImport() {
         tbody.appendChild(tr);
         tr.dataset.calcAttached = '1';
         attachRowCalculation(tr);
-        attachKartaAutoFill(tr);
         attachKeyboardNav(tr);
         attachInputRestrictions(tr);
 
@@ -3614,12 +3360,6 @@ document.addEventListener('focusin', function (e) {
 
 window.addEventListener('owners:changed', () => {
   loadClientsList();
-});
-window.addEventListener('agents:changed', () => {
-  loadClientsList();
-});
-window.addEventListener('bolsaForms:changed', () => {
-  _bolsaRowsCache = null;
 });
 window.addEventListener('offices:changed', () => {
   loadOfficesForReceipt();

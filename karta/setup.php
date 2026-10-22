@@ -90,7 +90,7 @@ try {
     echo "<p>تأكد من:</p>";
     echo "<ul>";
     echo "<li>XAMPP MySQL يعمل</li>";
-    echo "<li>قاعدة البيانات karta_erp موجودة</li>";
+    echo "<li>قاعدة البيانات karta_erp_v2 موجودة</li>";
     echo "<li>بيانات الاتصال صحيحة في config/database.php</li>";
     echo "</ul>";
 }

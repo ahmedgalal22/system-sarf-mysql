@@ -11,14 +11,8 @@ import { ExcelService } from './excelService.js';
 import { DateUtils } from './dateUtils.js';
 import { ClientRepository } from './services/clientRepository.js';
 import { ReceiptRepository } from './services/receiptRepository.js';
-import { TreasuryRepository } from './services/treasuryRepository.js';
 import { ApiClient } from './services/apiClient.js';
 import { generateId as _uuid } from './utils/idGenerator.js';
-
-
-// ========================================
-// Services — AgentsService
-// ========================================
 
 
 // _uuid imported from utils/idGenerator.js
@@ -37,163 +31,6 @@ function _resolveUsername(username, context) {
   }
   return sessionUser;
 }
-
-function _agentOwner(record) {
-  const direct = typeof record?.username === 'string' ? record.username.trim() : '';
-  if (direct) return direct;
-  const created = typeof record?.created_by === 'string' ? record.created_by.trim() : '';
-  if (created) return created;
-  return null;
-}
-
-function _isAgentOwnedBy(record, username) {
-  const owner = _agentOwner(record);
-  return owner !== null && owner === String(username);
-}
-
-// getAllBrokers removed — broker tab eliminated
-
-async function getAllMandoubs(username = null) {
-  const owner = _resolveUsername(username, 'AgentsService:getAllMandoubs');
-  const all = await ClientRepository.getAllAgents();
-  return all.filter(a =>
-    a.deleted_at === null
-    && _isAgentOwnedBy(a, owner)
-  );
-}
-
-async function getMandoubById(agent_id, username = null) {
-  if (!agent_id) return null;
-  const owner = _resolveUsername(username, 'AgentsService:getMandoubById');
-  const key = Number.isNaN(Number(agent_id)) ? agent_id : Number(agent_id);
-  const a = await ClientRepository.getAgentById(key);
-  if (!a || a.deleted_at !== null) return null;
-  if (!_isAgentOwnedBy(a, owner)) return null;
-  return a;
-}
-
-async function _mandoubLedger(agent_id) {
-  // Reuse treasury as the ledger store (no new stores allowed).
-  const key = String(agent_id);
-  const bolsaEntries = await TreasuryRepository.findByFields({
-    is_reversed: false,
-    reference_type: 'bolsa',
-    agent_id: key,
-  });
-  const balanceEntries = await TreasuryRepository.findByFields({
-    is_reversed: false,
-    reference_type: 'mandoub_balance',
-    agent_id: key,
-  });
-  const entries = [...bolsaEntries, ...balanceEntries];
-  return entries
-    .slice()
-    .sort((a, b) => new Date(b.date || b.applied_at || b.created_at || 0) - new Date(a.date || a.applied_at || a.created_at || 0));
-}
-
-async function getMandoubSnapshot(agent_id, _preloadedAgent = null) {
-  const agent = _preloadedAgent || await getMandoubById(agent_id);
-  if (!agent) throw new Error('❌ المندوب غير موجود');
-  const ledger = await _mandoubLedger(agent.id);
-  let total_withdraw = 0;
-  let total_deposit = 0;
-  for (const e of ledger) {
-    const amount = Money.toDecimal(e.amount); // treasury stores cents
-    if (e.type === 'withdraw') total_withdraw += amount;
-    if (e.type === 'deposit') total_deposit += amount;
-  }
-  const balance = Money.toDecimal(Number(agent.balance || 0));
-  return {
-    agent,
-    balance,
-    total_withdraw: Money.round(total_withdraw),
-    total_deposit: Money.round(total_deposit),
-    ledger,
-  };
-}
-
-async function deductFromAgent(username, agent_id, amount, bolsa_id, date = null) {
-  if (!username) throw new Error('[AgentsService:deductFromAgent] username is required.');
-
-  const amt = Money.round(amount);
-  if (amt <= 0) throw new Error('❌ قيمة الخصم يجب أن تكون أكبر من صفر');
-
-  const isoDate = (date && !Number.isNaN(Date.parse(date))) ? date : _todayISO();
-  const cents = Money.toCents(amt);
-
-  const apiRes = await ApiClient.post('/financial/mandoub-deposit.php', {
-    agent_id: Number.isNaN(Number(agent_id)) ? agent_id : Number(agent_id),
-    amount: cents,
-    date: isoDate,
-    reference_id: bolsa_id,
-    reference_type: 'bolsa',
-    effect: 'bolsa_deduction',
-    note: `خصم مندوب من تفريغ البوالص`,
-  });
-  if (!apiRes.success) throw new Error(apiRes.message || '❌ فشل خصم المندوب');
-  return { agent: apiRes.data.agent, ledger: apiRes.data.treasury };
-}
-
-/**
- * adjustMandoubBalance(username, agent_id, type, amount, date, note, fromTreasury)
- *
- * type = 'deposit'  → المندوب يأخد فلوس (رصيده يزيد)
- * type = 'withdraw' → المندوب يرجّع فلوس (رصيده يقل)
- *
- * fromTreasury:
- *   true  → الفلوس من/إلى الدُّرج (يُسجّل في treasury)
- *   false → تعديل رصيد فقط بدون حركة كاش (مثال: تصحيح رصيد)
- *   default: true
- *
- * Treasury direction (من منظور الخزنة):
- *   deposit  للمندوب → withdraw من الخزنة (كاش طلع من الدُّرج)
- *   withdraw من المندوب → deposit في الخزنة (كاش رجع للدُّرج)
- */
-async function adjustMandoubBalance(username, agent_id, type, amount, date = null, note = '', fromTreasury = true) {
-  if (!username) throw new Error('[AgentsService:adjustMandoubBalance] username is required.');
-  const t = type === 'withdraw' ? 'withdraw' : 'deposit';
-  const amt = Money.round(amount);
-  if (amt <= 0) throw new Error('❌ المبلغ يجب أن يكون أكبر من صفر');
-  const isoDate = (date && !Number.isNaN(Date.parse(date))) ? date : _todayISO();
-  const now = DateUtils.nowLocal();
-
-  const delta = t === 'withdraw' ? -amt : amt;
-  const cents = Money.toCents(amt);
-  const refId = _uuid();
-
-  // Treasury direction is OPPOSITE of mandoub direction:
-  //   mandoub deposit  (gets money)   → treasury withdraw (cash leaves drawer)
-  //   mandoub withdraw (returns money) → treasury deposit  (cash enters drawer)
-  const treasuryType = t === 'deposit' ? 'withdraw' : 'deposit';
-  const treasuryEffect = t === 'deposit' ? 'mandoub_cash_out' : 'mandoub_cash_in';
-
-  // Use atomic PHP endpoint — agent balance + treasury in one transaction
-  const endpoint = t === 'deposit'
-    ? '/financial/mandoub-deposit.php'
-    : '/financial/mandoub-withdraw.php';
-
-  const apiRes = await ApiClient.post(endpoint, {
-    agent_id: Number.isNaN(Number(agent_id)) ? agent_id : Number(agent_id),
-    amount: cents,
-    date: isoDate,
-    reference_id: refId,
-    treasury_type: treasuryType,
-    treasury_effect: treasuryEffect,
-    note: String(note || '').trim() || (t === 'deposit' ? 'إيداع للمندوب' : 'استلام من المندوب'),
-  });
-  if (!apiRes.success) throw new Error(apiRes.message || '❌ فشل العملية');
-
-  window.dispatchEvent(new CustomEvent('agents:changed'));
-  return { agent: apiRes.data.agent, ledger: apiRes.data.treasury || null };
-}
-
-const AgentsService = Object.freeze({
-  getAllMandoubs,
-  getMandoubById,
-  getMandoubSnapshot,
-  deductFromAgent,
-  adjustMandoubBalance,
-});
 
 
 
@@ -340,33 +177,28 @@ async function getOwnerById(id) {
 
 
 
-async function getClientsByTab(tab) {
+async function getClientsByTab(_tab) {
   const owners = await ClientRepository.getAllOwners();
   return owners
-    .filter(o => o.deleted_at === null)
+    .filter(o => o.deleted_at === null && o.owner_type !== 'broker')
     .map(o => ({ id: String(o.id), type: 'owner', name: o.name || '', phone: o.phone || null }))
     .filter(x => x.name);
 }
 
-async function getClientByType(type, id) {
-  // Both 'owner' and 'broker' live in vehicle_owners table
+async function getClientByType(_type, id) {
   const owner = await ClientRepository.getOwnerById(String(id));
-  if (!owner || owner.deleted_at !== null) return null;
-  const resolvedType = owner.owner_type === 'broker' ? 'broker' : 'owner';
-  return { id: String(owner.id), type: resolvedType, name: owner.name || '', phone: owner.phone || null };
+  if (!owner || owner.deleted_at !== null || owner.owner_type === 'broker') return null;
+  return { id: String(owner.id), type: 'owner', name: owner.name || '', phone: owner.phone || null };
 }
 
 async function getClientBalance(client_id, client_type) {
   if (!client_type) throw new Error('[OwnersModule:getClientBalance] client_type is required.');
-  // broker is financially identical to owner — same ledger, same balance
-  const financialType = client_type === 'broker' ? 'owner' : client_type;
-  return FinancialService.getClientBalance(client_id, financialType);
+  return FinancialService.getClientBalance(client_id, 'owner');
 }
 
 async function getClientLedger(client_id, client_type) {
   if (!client_type) throw new Error('[OwnersModule:getClientLedger] client_type is required.');
-  const financialType = client_type === 'broker' ? 'owner' : client_type;
-  return FinancialService.getClientLedger(client_id, financialType);
+  return FinancialService.getClientLedger(client_id, 'owner');
 }
 
 async function createClientBalanceEntry(username, payload) {
@@ -378,33 +210,11 @@ async function getOwnerVehicles(owner_id) {
   return vehicles.filter(v => String(v.owner_id || '') === String(owner_id));
 }
 
-async function getAgentReceipts(agent_id) {
-  const receipts = await ReceiptRepository.getAll(_currentUsername());
-  return receipts
-    .filter(r =>
-      r.deleted_at === null &&
-      (
-        (r.client_type === 'agent' && String(r.client_id) === String(agent_id)) ||
-        String(r.agent_id || '') === String(agent_id)
-      )
-    )
-    .sort((a, b) => new Date(b.receipt_date || 0) - new Date(a.receipt_date || 0));
-}
-
-async function addAccount(username, kind, payload) {
+async function addAccount(username, _kind, payload) {
   if (!username) throw new Error('[OwnersModule:addAccount] username is required.');
   const name = _toText(payload?.name).trim();
   const notes = _toText(payload?.notes).trim();
   if (!name) throw new Error('❌ الاسم مطلوب');
-
-  if (kind === 'mandoub') {
-    const all = await ClientRepository.getAllAgents();
-    const exists = all.filter(a => a.deleted_at === null && String(a.name || '').trim().toLowerCase() === name.toLowerCase());
-    if (exists.length > 0) throw new Error('اسم المندوب مستخدم بالفعل');
-    await ClientRepository.saveAgent({ username, name, phone: payload?.phone || null, balance: 0 }, { username });
-    window.dispatchEvent(new CustomEvent('agents:changed'));
-    return;
-  }
 
   await createOwner(username, { name, phone: payload?.phone || null, notes });
 }
@@ -423,12 +233,7 @@ const OwnersModule = Object.freeze({
   getClientLedger,
   createClientBalanceEntry,
   getOwnerVehicles,
-  getAgentReceipts,
   addAccount,
-  getMandoubSnapshot: (agent_id) => AgentsService.getMandoubSnapshot(String(agent_id)),
-  getAllMandoubs: () => AgentsService.getAllMandoubs(),
-  adjustMandoubBalance: (username, agent_id, entryType, amount, date, note, fromTreasury) =>
-    AgentsService.adjustMandoubBalance(username, String(agent_id), entryType, amount, date, note, fromTreasury),
 });
 
 window.OwnersModule = OwnersModule;
@@ -439,10 +244,9 @@ window.OwnersModule = OwnersModule;
 // Owners Page — Rendering / Events
 // ========================================
 
-let _activeAccountTab = 'customers'; // customers | mandoubs
 let _selectedClient = null;
 let _balanceActionType = 'deposit';
-const LAST_PAGE_CTX_KEY = 'financial_last_page_ctx';
+const LAST_PAGE_CTX_KEY = 'karta_v2_last_page_ctx';
 
 function _fmt(n) {
   return Money.fmt(n);
@@ -534,9 +338,7 @@ function _renderShell() {
   const page = document.getElementById('ownersPage');
   if (!page) return;
 
-  const isCustomers = _activeAccountTab === 'customers';
-
-  page.innerHTML = isCustomers ? _renderCustomersShell() : _renderMandoubsShell();
+  page.innerHTML = _renderCustomersShell();
 }
 
 function _renderCustomersShell() {
@@ -544,42 +346,27 @@ function _renderCustomersShell() {
     <!-- البطاقة العلوية -->
     <div class="ent-top-card">
       <div class="ent-header-row">
-        <h2 class="ent-page-title">إدارة أصحاب المركبات والوسطاء</h2>
+        <h2 class="ent-page-title">إدارة أصحاب المركبات</h2>
         <div class="ent-header-actions">
-          <div class="ent-dropdown-wrap" id="addNameDropdownWrap">
-            <button type="button" data-action="toggle-add-dropdown" class="ent-btn-add">➕ إضافة اسم</button>
-            <div id="addNameDropdown" class="hidden ent-dropdown">
-              <button type="button" data-action="add-owner-type" data-kind="owner" class="ent-dropdown-item ent-dropdown-item--blue">🚗 صاحب مركبة</button>
-              <button type="button" data-action="add-owner-type" data-kind="broker" class="ent-dropdown-item ent-dropdown-item--purple">💼 وسيط</button>
-            </div>
-          </div>
+          <button type="button" data-action="add-owner-type" data-kind="owner" class="ent-btn-add">➕ إضافة صاحب مركبة</button>
           <button type="button" data-action="print-owners" class="ent-btn-print">🖨️ طباعة</button>
-          <button type="button" data-action="export-owners-excel" class="ent-btn-print" style="background:#0f766e;" title="تصدير أصحاب المركبات والوسطاء إلى Excel">📤 تصدير Excel</button>
-          <button type="button" data-action="import-owners-excel" class="ent-btn-print" style="background:#7c3aed;" title="استيراد أصحاب المركبات والوسطاء من Excel">📥 استيراد Excel</button>
+          <button type="button" data-action="export-owners-excel" class="ent-btn-print" style="background:#0f766e;" title="تصدير أصحاب المركبات إلى Excel">📤 تصدير Excel</button>
+          <button type="button" data-action="import-owners-excel" class="ent-btn-print" style="background:#7c3aed;" title="استيراد أصحاب المركبات من Excel">📥 استيراد Excel</button>
         </div>
-      </div>
-
-      <!-- التبويبات -->
-      <div class="ent-tabs">
-        <button type="button" data-account-tab="customers" class="ent-tab ent-tab--active">أصحاب المركبات والوسطاء</button>
-        <button type="button" data-account-tab="mandoubs" class="ent-tab">المناديب</button>
       </div>
 
       <!-- شريط البحث -->
       <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;" class="ent-search-wrap">
-        <input id="ownerSearchInput" type="text" class="ent-search-input" placeholder="🔍 ابحث عن صاحب مركبة أو وسيط..." style="flex:1;min-width:200px;">
+        <input id="ownerSearchInput" type="text" class="ent-search-input" placeholder="🔍 ابحث عن صاحب مركبة..." style="flex:1;min-width:200px;">
         <div style="background:linear-gradient(135deg,#1e40af,#3b82f6);color:#fff;padding:8px 20px;border-radius:12px;font-weight:700;font-size:0.875rem;white-space:nowrap;">
           الرصيد الكلي: <span id="totalBalanceDisplay">0.00</span>
         </div>
       </div>
 
-      <!-- زر طباعة المحدد -->
-
     </div>
 
-    <!-- القائمتان -->
-    <div class="ent-columns-grid" id="ownersColumnsGrid">
-      <!-- عمود أصحاب المركبات -->
+    <!-- قائمة أصحاب المركبات -->
+    <div class="ent-columns-grid" id="ownersColumnsGrid" style="grid-template-columns: 1fr;">
       <div class="ent-column-card">
         <div class="ent-column-header">
           <h3 class="ent-column-title ent-column-title--blue">🚗 أصحاب المركبات</h3>
@@ -599,60 +386,6 @@ function _renderCustomersShell() {
           </table>
         </div>
       </div>
-
-      <!-- عمود الوسطاء -->
-      <div class="ent-column-card">
-        <div class="ent-column-header">
-          <h3 class="ent-column-title ent-column-title--purple">💼 الوسطاء</h3>
-        </div>
-        <div class="table-wrapper ent-column-scroll">
-          <table class="table">
-            <thead style="background:linear-gradient(135deg,#7c3aed,#6d28d9);">
-              <tr>
-                <th style="color:#fff;">الاسم</th>
-                <th style="color:#fff;">الهاتف</th>
-                <th style="color:#fff;">الرصيد</th>
-                <th style="color:#fff;">كارتات</th>
-                <th style="color:#fff;">إجراءات</th>
-              </tr>
-            </thead>
-            <tbody id="brokersTableBody"></tbody>
-          </table>
-        </div>
-      </div>
-    </div>
-  `;
-}
-
-function _renderMandoubsShell() {
-  return `
-    <div class="ent-top-card">
-      <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;margin-bottom:16px;">
-        <h2 style="font-size:1.5rem;font-weight:800;color:#1f2937;margin:0;">إدارة المناديب</h2>
-        <button type="button" data-action="add-mandoub-btn" style="background:linear-gradient(135deg,#0f766e,#0d9488);color:#fff;border:none;border-radius:12px;padding:8px 18px;font-weight:700;font-size:0.8125rem;cursor:pointer;font-family:inherit;box-shadow:0 2px 8px rgba(15,118,110,0.3);">➕ إضافة مندوب</button>
-      </div>
-
-      <!-- التبويبات -->
-      <div style="display:flex;border-bottom:2px solid #e5e7eb;margin-bottom:16px;">
-        <button type="button" data-account-tab="customers" style="padding:14px 28px;border:none;border-bottom:3px solid transparent;background:transparent;color:#9ca3af;font-weight:500;font-size:0.9375rem;cursor:pointer;font-family:inherit;">أصحاب المركبات والوسطاء</button>
-        <button type="button" data-account-tab="mandoubs" style="padding:14px 28px;border:none;border-bottom:3px solid #1f2937;background:#f3f4f6;color:#1f2937;font-weight:700;font-size:0.9375rem;cursor:pointer;font-family:inherit;margin-left:8px;">المناديب</button>
-      </div>
-    </div>
-
-    <div style="background:#fff;border-radius:16px;box-shadow:0 4px 16px rgba(0,0,0,0.08);overflow:hidden;">
-      <div class="table-wrapper">
-        <table class="table">
-          <thead>
-            <tr>
-              <th>الاسم</th>
-              <th>رقم الهاتف</th>
-              <th>الرصيد</th>
-              <th>إجراءات</th>
-            </tr>
-          </thead>
-          <tbody id="customersTable"></tbody>
-        </table>
-      </div>
     </div>
   `;
 }
@@ -667,21 +400,19 @@ function _openEditModal(id, kind, currentName, currentPhone) {
   // Ensure modal exists first (before setting edit state)
   let modal = document.getElementById('ownerAddModal');
   if (!modal) {
-    _openAddModal('temp', kind);
+    _openAddModal('صاحب مركبة', 'owner');
     modal = document.getElementById('ownerAddModal');
     modal?.classList.add('hidden');
   }
 
   // NOW set edit state (after modal creation won't reset it)
-  _addModalKind = kind;
+  _addModalKind = 'owner';
   _editingAccountId = id;
-  _editingAccountKind = kind;
+  _editingAccountKind = 'owner';
 
   const header = document.getElementById('addModalHeader');
   if (header) {
-    if (kind === 'broker') header.style.background = 'linear-gradient(135deg,#7c3aed,#6d28d9)';
-    else if (kind === 'mandoub') header.style.background = 'linear-gradient(135deg,#0f766e,#0d9488)';
-    else header.style.background = 'linear-gradient(135deg,#2563eb,#1d4ed8)';
+    header.style.background = 'linear-gradient(135deg,#2563eb,#1d4ed8)';
   }
   const titleEl = document.getElementById('addModalTitle');
   if (titleEl) titleEl.textContent = '✏️ تعديل البيانات';
@@ -694,8 +425,8 @@ function _openEditModal(id, kind, currentName, currentPhone) {
   modal?.classList.remove('hidden');
 }
 
-function _openAddModal(title, kind) {
-  _addModalKind = kind;
+function _openAddModal(title = 'صاحب مركبة', _kind = 'owner') {
+  _addModalKind = 'owner';
   let modal = document.getElementById('ownerAddModal');
   if (!modal) {
     const div = document.createElement('div');
@@ -704,7 +435,7 @@ function _openAddModal(title, kind) {
         <div style="background:#fff;border-radius:24px;box-shadow:0 25px 50px rgba(0,0,0,0.25);width:100%;max-width:32rem;max-height:90vh;overflow:auto;">
           <div id="addModalHeader" style="padding:20px 24px;border-radius:24px 24px 0 0;display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;z-index:10;">
             <div>
-              <h3 style="color:#fff;font-size:1.25rem;font-weight:700;margin:0;" id="addModalTitle">➕ إضافة اسم</h3>
+              <h3 style="color:#fff;font-size:1.25rem;font-weight:700;margin:0;" id="addModalTitle">➕ إضافة صاحب مركبة</h3>
               <p style="color:rgba(255,255,255,0.8);font-size:0.8125rem;margin:4px 0 0;">أدخل البيانات ثم اضغط حفظ</p>
             </div>
             <button type="button" data-action="close-add-modal" style="background:rgba(255,255,255,0.2);border:none;border-radius:8px;color:#fff;padding:6px 10px;cursor:pointer;font-size:1.125rem;">✕</button>
@@ -729,12 +460,9 @@ function _openAddModal(title, kind) {
     modal = document.getElementById('ownerAddModal');
   }
 
-  // Set header color based on kind
   const header = document.getElementById('addModalHeader');
   if (header) {
-    if (kind === 'broker') header.style.background = 'linear-gradient(135deg,#7c3aed,#6d28d9)';
-    else if (kind === 'mandoub') header.style.background = 'linear-gradient(135deg,#0f766e,#0d9488)';
-    else header.style.background = 'linear-gradient(135deg,#2563eb,#1d4ed8)';
+    header.style.background = 'linear-gradient(135deg,#2563eb,#1d4ed8)';
   }
   const titleEl = document.getElementById('addModalTitle');
   if (titleEl) titleEl.textContent = '➕ إضافة ' + title;
@@ -759,16 +487,9 @@ async function _saveFromAddModal() {
     const phoneVal = (document.querySelector('#addModalRows .add-m-phone')?.value || '').trim() || null;
     if (!nameVal) { if (msg) { msg.textContent = '❌ الاسم مطلوب'; msg.classList.add('is-visible'); } return; }
     try {
-      if (_editingAccountKind === 'owner' || _editingAccountKind === 'broker') {
-        // Both owners and brokers live in vehicle_owners table
-        await OwnersModule.updateOwner(_currentUsername(), _editingAccountId, { name: nameVal });
-        await ClientRepository.updateOwner(_editingAccountId, { phone: phoneVal }, { username: _currentUsername() });
-        window.dispatchEvent(new CustomEvent('owners:changed'));
-      } else {
-        const key = Number.isNaN(Number(_editingAccountId)) ? _editingAccountId : Number(_editingAccountId);
-        await ClientRepository.updateAgent(key, { name: nameVal, phone: phoneVal }, { username: _currentUsername() });
-        window.dispatchEvent(new CustomEvent('agents:changed'));
-      }
+      await OwnersModule.updateOwner(_currentUsername(), _editingAccountId, { name: nameVal });
+      await ClientRepository.updateOwner(_editingAccountId, { phone: phoneVal }, { username: _currentUsername() });
+      window.dispatchEvent(new CustomEvent('owners:changed'));
     } catch (err) { if (msg) { msg.textContent = err.message; msg.classList.add('is-visible'); } return; }
     _editingAccountId = null;
     _editingAccountKind = null;
@@ -792,15 +513,7 @@ async function _saveFromAddModal() {
   const username = _currentUsername();
   for (const entry of entries) {
     try {
-      if (_addModalKind === 'broker') {
-        // Save as vehicle owner with owner_type='broker' — duplicate check scoped to brokers only
-        const exists = await ClientRepository.findOwnersByName(entry.name, 'broker');
-        if (exists.length > 0) throw new Error('الاسم مستخدم بالفعل: ' + entry.name);
-        await ClientRepository.saveOwner({ username, name: entry.name, phone: entry.phone, notes: null, owner_type: 'broker' }, { username });
-        window.dispatchEvent(new CustomEvent('owners:changed'));
-      } else {
-        await OwnersModule.addAccount(username, _addModalKind, { name: entry.name, phone: entry.phone });
-      }
+      await OwnersModule.addAccount(username, 'owner', { name: entry.name, phone: entry.phone });
     } catch (err) {
       if (msg) { msg.textContent = err.message || '❌ حدث خطأ'; msg.classList.add('is-visible'); }
       return;
@@ -816,7 +529,7 @@ async function _saveFromAddModal() {
 
 function _updateTotalBalance() {
   let total = 0;
-  document.querySelectorAll('#ownersTableBody tr, #brokersTableBody tr').forEach(tr => {
+  document.querySelectorAll('#ownersTableBody tr').forEach(tr => {
     if (tr.style.display === 'none') return;
     const cells = tr.querySelectorAll('td');
     if (cells.length >= 3) {
@@ -832,7 +545,6 @@ function _printEntities(mode) {
   // Collect rows to print
   let rows = [];
   const ownerRows = document.querySelectorAll('#ownersTableBody tr');
-  const brokerRows = document.querySelectorAll('#brokersTableBody tr');
 
   const collectFromNodeList = (nodeList, groupName) => {
     nodeList.forEach(tr => {
@@ -849,7 +561,6 @@ function _printEntities(mode) {
   };
 
   collectFromNodeList(ownerRows, 'أصحاب المركبات');
-  collectFromNodeList(brokerRows, 'الوسطاء');
 
   if (rows.length === 0) {
     alert('لا توجد بيانات للطباعة');
@@ -946,75 +657,36 @@ async function _getUnpaidKartaCount(clientId, clientType = 'owner') {
   return counts[key] || 0;
 }
 
-function _buildClientRow(client, kartaCount, kind) {
-  const accentColor = kind === 'broker' ? '#7c3aed' : '#2563eb';
+function _buildClientRow(client, kartaCount, _kind = 'owner') {
   return `
     <tr data-client-name="${(client.name || '').toLowerCase()}">
-      <td data-action="view-client" data-id="${client.id}" data-type="${client.type || 'owner'}" class="ent-name-cell ent-name-cell--${kind === 'broker' ? 'purple' : 'blue'}">
+      <td data-action="view-client" data-id="${client.id}" data-type="owner" class="ent-name-cell ent-name-cell--blue">
         ${client.name}
       </td>
       <td>${client.phone || '—'}</td>
       <td class="${_balanceClass(client.balance)}">${_fmt(client.balance)}</td>
       <td class="text-center">${kartaCount > 0 ? '<span class="ent-karta-badge">' + kartaCount + '</span>' : '—'}</td>
       <td>
-        <button type="button" data-action="edit-account" data-id="${client.id}" data-kind="${kind}" class="ent-action-btn ent-action-btn--edit" title="تعديل">✏️</button>
-        <button type="button" data-action="delete-account" data-id="${client.id}" data-kind="${kind}" class="ent-action-btn ent-action-btn--delete" title="حذف">🗑️</button>
+        <button type="button" data-action="edit-account" data-id="${client.id}" data-kind="owner" class="ent-action-btn ent-action-btn--edit" title="تعديل">✏️</button>
+        <button type="button" data-action="delete-account" data-id="${client.id}" data-kind="owner" class="ent-action-btn ent-action-btn--delete" title="حذف">🗑️</button>
       </td>
     </tr>`;
 }
 
 async function loadOwners() {
-  // Build shell only when needed: first render or tab switch.
-  // On data refresh within same tab, reuse existing DOM to prevent flicker.
-  const needsMandoubShell = _activeAccountTab === 'mandoubs' && !document.getElementById('customersTable');
-  const needsCustomerShell = _activeAccountTab === 'customers' && !document.getElementById('ownersTableBody');
-  if (needsMandoubShell || needsCustomerShell) {
+  if (!document.getElementById('ownersTableBody')) {
     _renderShell();
   }
 
-  if (_activeAccountTab === 'mandoubs') {
-    const tbody = document.getElementById('customersTable');
-    if (!tbody) return;
-    // Show loading indicator while keeping existing rows visible
-    if (tbody.children.length === 0) {
-      tbody.innerHTML = '<tr><td colspan="4" class="text-muted text-center p-6">⏳ جاري التحميل...</td></tr>';
-    }
-    const mandoubs = await OwnersModule.getAllMandoubs();
-    const snaps = await Promise.all(mandoubs.map(a => AgentsService.getMandoubSnapshot(String(a.id), a)));
-    if (snaps.length === 0) {
-      tbody.innerHTML = '<tr><td colspan="4" class="text-muted text-center p-6">لا توجد بيانات</td></tr>';
-      return;
-    }
-    tbody.innerHTML = snaps.map(s => `
-      <tr>
-        <td>
-<span data-action="view-mandoub" data-id="${String(s.agent.id)}" style="cursor:pointer;color:#0f766e;font-weight:700;display:block;width:100%;" onmouseover="this.parentElement.style.background='#f0fdfa'" onmouseout="this.parentElement.style.background=''">${s.agent.name || '-'}</span>
-        </td>
-        <td>${s.agent.phone || '—'}</td>
-        <td class="${_balanceClass(s.balance)}">${_fmt(s.balance)}</td>
-        <td>
-          <button type="button" data-action="edit-account" data-id="${String(s.agent.id)}" data-kind="mandoub" class="ent-action-btn ent-action-btn--edit" title="تعديل">✏️</button>
-          <button type="button" data-action="delete-account" data-id="${String(s.agent.id)}" data-kind="mandoub" class="ent-action-btn ent-action-btn--delete" title="حذف">🗑️</button>
-        </td>
-      </tr>
-    `).join('');
-    return;
-  }
-
-  // ── Customers tab: owners + brokers ──
   const ownersTbody = document.getElementById('ownersTableBody');
-  const brokersTbody = document.getElementById('brokersTableBody');
-  if (!ownersTbody || !brokersTbody) return;
+  if (!ownersTbody) return;
 
-  // Show loading indicators on first render only
+  // Show loading indicator on first render only
   if (ownersTbody.children.length === 0) {
     ownersTbody.innerHTML = '<tr><td colspan="5" class="text-muted text-center p-6">⏳ جاري التحميل...</td></tr>';
   }
-  if (brokersTbody.children.length === 0) {
-    brokersTbody.innerHTML = '<tr><td colspan="5" class="text-muted text-center p-6">⏳ جاري التحميل...</td></tr>';
-  }
 
-  // Owners (exclude brokers — they appear in the brokers section below)
+  // Owners (exclude brokers)
   const owners = await ClientRepository.getAllOwners();
   const ownerList = owners.filter(o => o.deleted_at === null && o.name && o.owner_type !== 'broker').map(o => ({
     id: String(o.id), type: 'owner', name: o.name || '', phone: o.phone || null
@@ -1032,29 +704,6 @@ async function loadOwners() {
     }).join('');
   }
 
-  // Brokers (from vehicle_owners with owner_type='broker')
-  const allOwnersForBrokers = await ClientRepository.getAllOwners();
-  const brokerOwners = allOwnersForBrokers.filter(o =>
-    o.deleted_at === null
-    && o.owner_type === 'broker'
-    && o.name
-  );
-  const brokerList = brokerOwners.map(o => ({
-    id: String(o.id), type: 'broker', name: o.name || '', phone: o.phone || null
-  }));
-  const brokerSnaps = await Promise.all(brokerList.map(_clientSnapshot));
-  const brokerKartas = await Promise.all(brokerList.map(b => _getUnpaidKartaCount(b.id, 'owner')));
-
-  const sortedBrokers = _sortByPriority(brokerSnaps);
-  if (sortedBrokers.length === 0) {
-    brokersTbody.innerHTML = '<tr><td colspan="5" class="text-muted text-center p-6">لا توجد وسطاء</td></tr>';
-  } else {
-    brokersTbody.innerHTML = sortedBrokers.map((client) => {
-      const idx = brokerSnaps.indexOf(client);
-      return _buildClientRow(client, brokerKartas[idx], 'broker');
-    }).join('');
-  }
-
   // Update total balance
   _updateTotalBalance();
 
@@ -1064,137 +713,12 @@ async function loadOwners() {
     searchInput.dataset.bound = '1';
     searchInput.addEventListener('input', function() {
       const query = this.value.trim().toLowerCase();
-      document.querySelectorAll('#ownersTableBody tr, #brokersTableBody tr').forEach(tr => {
+      document.querySelectorAll('#ownersTableBody tr').forEach(tr => {
         const name = tr.dataset.clientName || '';
         tr.style.display = (!query || name.includes(query)) ? '' : 'none';
       });
       _updateTotalBalance();
     });
-  }
-}
-
-async function showMandoubDetails(agentId) {
-  const snap = await OwnersModule.getMandoubSnapshot(String(agentId));
-  const page = document.getElementById('agentDetailsPage');
-  if (!page) return;
-
-  sessionStorage.setItem(LAST_PAGE_CTX_KEY, JSON.stringify({
-    page: 'agentDetailsPage',
-    mandoubId: String(agentId),
-  }));
-
-  const entries = snap.ledger;
-  page.innerHTML = `
-    <div class="ent-details-page">
-      <div class="ent-details-header">
-        <button type="button" data-action="back-to-accounts" class="ent-btn-back">← رجوع</button>
-        <h2 class="ent-details-name">${snap.agent.name || '-'}</h2>
-        <span class="ent-details-type">مندوب</span>
-      </div>
-
-      <div class="stat-grid mb-8">
-        <div class="card">
-          <p class="text-muted text-xs mb-1 mb-2">الرصيد الحالي</p>
-          <p class="text-3xl font-bold ${_balanceClass(snap.balance)} mb-6">${_fmt(snap.balance)}</p>
-          <div class="flex gap-2 flex-wrap justify-end">
-            <button type="button" data-action="open-mandoub-balance-modal" data-entry-type="deposit" data-id="${String(snap.agent.id)}"
-              class="btn btn-success btn-sm">
-              إيداع
-            </button>
-            <button type="button" data-action="open-mandoub-balance-modal" data-entry-type="withdraw" data-id="${String(snap.agent.id)}"
-              class="btn btn-danger btn-sm">
-              سحب
-            </button>
-          </div>
-        </div>
-      </div>
-
-      <div class="filter-row mb-6 flex-wrap">
-        <div class="form-group mb-0">
-          <label class="label mb-2 text-muted text-xs" for="mandoubFromDate">من</label>
-          <input id="mandoubFromDate" type="date" class="input input-sm">
-        </div>
-        <div class="form-group mb-0">
-          <label class="label mb-2 text-muted text-xs" for="mandoubToDate">إلى</label>
-          <input id="mandoubToDate" type="date" class="input input-sm">
-        </div>
-        <button type="button" data-action="mandoub-apply-filter" data-id="${String(snap.agent.id)}" class="btn btn-primary btn-sm mb-4">
-          تطبيق
-        </button>
-        <button type="button" data-action="mandoub-clear-filter" data-id="${String(snap.agent.id)}" class="btn btn-secondary btn-sm mb-4">
-          مسح التحديد
-        </button>
-      </div>
-
-      <div class="table-wrapper mb-6">
-        <table class="table">
-          <thead>
-            <tr>
-              <th>التاريخ</th>
-              <th>النوع</th>
-              <th>المبلغ</th>
-              <th>ملاحظة</th>
-            </tr>
-          </thead>
-          <tbody id="mandoubLedgerBody">
-            ${
-              entries.length ? entries.map(e => {
-                const typeLabel = e.effect === 'mandoub_cash_out' ? 'إيداع'
-                               : e.effect === 'mandoub_cash_in'  ? 'سحب'
-                               : e.effect === 'bolsa_deduction'  ? 'خصم بوالص'
-                               : e.type === 'withdraw' ? 'إيداع' : 'سحب';
-                const noteText = e.effect === 'bolsa_deduction' ? 'خصم بوالص'
-                               : e.effect === 'mandoub_cash_out' ? (e.note || 'إيداع للمندوب')
-                               : e.effect === 'mandoub_cash_in'  ? (e.note || 'استلام من المندوب')
-                               : (e.note || '-');
-                return `
-                <tr>
-                  <td>${_dateLabel(e.date || e.applied_at)}</td>
-                  <td>${typeLabel}</td>
-                  <td class="font-semibold">${Money.fmtCents(e.amount)}</td>
-                  <td>${noteText}</td>
-                </tr>
-              `; }).join('') : `
-                <tr><td colspan="4" class="text-muted text-center">لا توجد حركات</td></tr>
-              `
-            }
-          </tbody>
-        </table>
-      </div>
-
-      <div id="mandoubBalanceModal" class="modal-overlay hidden">
-        <div class="modal">
-          <div class="modal-body">
-            <div class="flex items-center justify-between mb-6">
-              <button type="button" data-action="close-mandoub-balance-modal" class="btn btn-secondary btn-sm">إغلاق</button>
-              <h3 id="mandoubBalanceTitle" class="text-lg font-bold mb-0">إيداع</h3>
-            </div>
-            <div class="grid gap-4">
-              <div class="form-group mb-0">
-                <label class="label mb-2" for="mandoubBalanceDate">التاريخ</label>
-                <input id="mandoubBalanceDate" type="date" class="input input-sm">
-              </div>
-              <div class="form-group mb-0">
-                <label class="label mb-2" for="mandoubBalanceAmount">المبلغ</label>
-                <input id="mandoubBalanceAmount" type="number" min="0" step="0.01" class="input input-sm" placeholder="0.00">
-              </div>
-              <div class="form-group mb-0">
-                <label class="label mb-2" for="mandoubBalanceNote">ملاحظة</label>
-                <input id="mandoubBalanceNote" type="text" class="input input-sm" placeholder="اختياري">
-              </div>
-              <div id="mandoubBalanceMsg" class="field-msg-inline field-msg-inline--error" role="alert" aria-live="polite"></div>
-              <button type="button" data-action="save-mandoub-balance" class="btn btn-primary btn-full mt-4">
-                حفظ الحركة
-              </button>
-            </div>
-          </div>
-        </div>
-      </div>
-    </div>
-  `;
-
-  if (typeof window.showPage === 'function') {
-    await window.showPage('agentDetailsPage');
   }
 }
 
@@ -1370,7 +894,7 @@ async function showOwnerDetails(id, type = 'owner') {
       <div class="ent-details-header">
         <button type="button" data-action="back-to-customers" class="ent-btn-back">← رجوع</button>
         <h2 class="ent-details-name">${client.name}</h2>
-        <span class="ent-details-type">${client.type === 'broker' ? 'وسيط' : 'صاحب مركبة'}</span>
+        <span class="ent-details-type">صاحب مركبة</span>
       </div>
 
       <div class="stat-grid mb-8">
@@ -1484,19 +1008,10 @@ async function _saveBalanceEntry() {
 // ─── EXCEL HANDLERS ───────────────────────────────────────────────────────────
 
 /**
- * Reads all active vehicle owners + brokers and exports them to ONE Excel
- * file with the 4-column layout:
- *   | اسم صاحب المركبة | رقم الهاتف | اسم الوسيط | رقم الهاتف |
- *
- * Brokers are scoped to the current session user (same filter used by
- * loadOwners()), so the export mirrors exactly what the user sees on the
- * page. Owners are global (not username-scoped) — same as the UI.
+ * Reads all active vehicle owners and exports them to an Excel file.
  */
 async function _handleExportOwnersExcel() {
   try {
-    const username = _currentUsername();
-
-    // Owners — active only, name required, exclude brokers.
     const allOwners = await ClientRepository.getAllOwners();
     const owners = allOwners
       .filter(o => o.deleted_at === null && o.name && o.owner_type !== 'broker')
@@ -1506,26 +1021,12 @@ async function _handleExportOwnersExcel() {
       }))
       .filter(o => o.name);
 
-    // Brokers — vehicle_owners with owner_type='broker'
-    const allForExport = await ClientRepository.getAllOwners();
-    const brokers = allForExport
-      .filter(o =>
-        o.deleted_at === null
-        && o.owner_type === 'broker'
-        && o.name
-      )
-      .map(o => ({
-        name:  String(o.name  || '').trim(),
-        phone: String(o.phone || '').trim(),
-      }))
-      .filter(b => b.name);
-
-    if (owners.length === 0 && brokers.length === 0) {
+    if (owners.length === 0) {
       alert('لا توجد أسماء للتصدير.');
       return;
     }
 
-    ExcelService.exportEntitiesExcel({ owners, brokers });
+    ExcelService.exportEntitiesExcel({ owners });
   } catch (err) {
     console.error('[entities] Excel export entities failed:', err);
     alert(err.message || '❌ فشل تصدير Excel');
@@ -1533,49 +1034,16 @@ async function _handleExportOwnersExcel() {
 }
 
 /**
- * Adds a broker (vehicle_owner with owner_type='broker') to the DB.
- * Mirrors the duplicate-check logic used by the "Add Broker" modal in
- * _saveAddedNames() to keep behavior consistent across entry paths.
- *
- * Returns:
- *   'added'        — broker was inserted
- *   'skipped-dup'  — a non-mandoub agent with the same name already exists
- *
- * Throws on unexpected DB errors.
- */
-async function _addBrokerFromImport(username, name, phone) {
-  const trimmedName = String(name || '').trim();
-  if (!trimmedName) return 'skipped-dup';
-
-  // Duplicate check scoped to brokers only
-  const exists = await ClientRepository.findOwnersByName(trimmedName, 'broker');
-  if (exists.length > 0) return 'skipped-dup';
-
-  await ClientRepository.saveOwner({
-    username,
-    name: trimmedName,
-    phone: (String(phone || '').trim() || null),
-    notes: null,
-    owner_type: 'broker',
-  }, { username });
-
-  return 'added';
-}
-
-/**
- * Opens a file picker, parses owners + brokers from the combined Excel
- * file, then writes each list into its own store. Duplicates (case-
- * insensitive trimmed-name match) are silently skipped per spec — phone
- * mismatches do NOT overwrite existing records.
+ * Opens a file picker, parses vehicle owners from the Excel file, and
+ * writes them into the vehicleOwners store. Duplicates are skipped.
  */
 function _handleImportOwnersExcel() {
   ExcelService.openFilePicker(async (file) => {
     try {
       const username = _currentUsername();
-      const { owners, brokers } = await ExcelService.importEntitiesExcel(file);
+      const { owners } = await ExcelService.importEntitiesExcel(file);
 
       let ownersAdded = 0, ownersSkipped = 0;
-      let brokersAdded = 0, brokersSkipped = 0;
       const errors = [];
 
       // ── Owners → vehicleOwners store ──────────────────────────────────
@@ -1584,8 +1052,6 @@ function _handleImportOwnersExcel() {
           await createOwner(username, { name, phone });
           ownersAdded++;
         } catch (err) {
-          // createOwner throws when the name already exists — skip silently
-          // per spec (do NOT overwrite existing phone/data).
           if (String(err.message || '').includes('مستخدم بالفعل')) {
             ownersSkipped++;
           } else {
@@ -1594,27 +1060,12 @@ function _handleImportOwnersExcel() {
         }
       }
 
-      // ── Brokers → vehicle_owners (owner_type='broker') ───────────────
-      for (const { name, phone } of brokers) {
-        try {
-          const result = await _addBrokerFromImport(username, name, phone);
-          if (result === 'added')        brokersAdded++;
-          else if (result === 'skipped-dup') brokersSkipped++;
-        } catch (err) {
-          errors.push(`وسيط "${name}": ${err.message}`);
-        }
-      }
-
-      // Single refresh + single dispatch per affected store.
       await loadOwners();
-      if (ownersAdded  > 0) window.dispatchEvent(new CustomEvent('owners:changed'));
-      if (brokersAdded > 0) window.dispatchEvent(new CustomEvent('owners:changed'));
+      if (ownersAdded > 0) window.dispatchEvent(new CustomEvent('owners:changed'));
 
       const parts = [];
       if (ownersAdded   > 0) parts.push(`✅ تم إضافة ${ownersAdded} صاحب مركبة`);
       if (ownersSkipped > 0) parts.push(`⏭️ تم تخطي ${ownersSkipped} صاحب مركبة موجود مسبقاً`);
-      if (brokersAdded  > 0) parts.push(`✅ تم إضافة ${brokersAdded} وسيط`);
-      if (brokersSkipped > 0) parts.push(`⏭️ تم تخطي ${brokersSkipped} وسيط موجود مسبقاً`);
       if (errors.length > 0) parts.push(`❌ أخطاء: ${errors.join('، ')}`);
 
       alert(parts.join('\n') || 'لم يتم إضافة أي اسم.');
@@ -1638,30 +1089,10 @@ function attachOwnersPageListeners() {
   document.body.dataset.customerStatementBound = '1';
 
   document.addEventListener('click', async (e) => {
-    // ── Dropdown toggle ──
-    if (e.target.closest('[data-action="toggle-add-dropdown"]')) {
-      const dd = document.getElementById('addNameDropdown');
-      if (dd) dd.classList.toggle('hidden');
-      return;
-    }
-    // Close dropdown on outside click
-    if (!e.target.closest('#addNameDropdownWrap')) {
-      const dd = document.getElementById('addNameDropdown');
-      if (dd && !dd.classList.contains('hidden')) dd.classList.add('hidden');
-    }
-
-    // ── Add owner/broker type selection ──
+    // ── Add owner button ──
     const addTypeBtn = e.target.closest('[data-action="add-owner-type"]');
     if (addTypeBtn) {
-      document.getElementById('addNameDropdown')?.classList.add('hidden');
-      const kind = addTypeBtn.dataset.kind;
-      _openAddModal(kind === 'broker' ? 'وسيط' : 'صاحب مركبة', kind);
-      return;
-    }
-
-    // ── Add mandoub button ──
-    if (e.target.closest('[data-action="add-mandoub-btn"]')) {
-      _openAddModal('مندوب', 'mandoub');
+      _openAddModal('صاحب مركبة', 'owner');
       return;
     }
 
@@ -1686,8 +1117,6 @@ function attachOwnersPageListeners() {
       return;
     }
 
-
-
     // ── Print all ──
     if (e.target.closest('[data-action="print-owners"]')) {
       _printEntities('all');
@@ -1706,45 +1135,19 @@ function attachOwnersPageListeners() {
       return;
     }
 
-
-
-    const tab = e.target.closest('[data-account-tab]');
-    if (tab) {
-      _activeAccountTab = tab.dataset.accountTab;
-      await loadOwners();
-      return;
-    }
-
     const viewBtn = e.target.closest('[data-action="view-client"]');
     if (viewBtn) {
-      await showOwnerDetails(viewBtn.dataset.id, viewBtn.dataset.type);
-      return;
-    }
-
-    const mandoubBtn = e.target.closest('[data-action="view-mandoub"]');
-    if (mandoubBtn) {
-      await showMandoubDetails(mandoubBtn.dataset.id);
+      await showOwnerDetails(viewBtn.dataset.id, 'owner');
       return;
     }
 
     const editAccBtn = e.target.closest('[data-action="edit-account"]');
     if (editAccBtn) {
       const id = editAccBtn.dataset.id;
-      const kind = editAccBtn.dataset.kind;
-      // Get current data
-      let currentName = '', currentPhone = '';
-      if (kind === 'owner' || kind === 'broker') {
-        // Both owners and brokers live in vehicle_owners table
-        const owner = await OwnersModule.getOwnerById(id);
-        currentName = owner?.name || '';
-        currentPhone = owner?.phone || '';
-      } else {
-        const key = Number.isNaN(Number(id)) ? id : Number(id);
-        const agent = await ClientRepository.getAgentById(key);
-        currentName = agent?.name || '';
-        currentPhone = agent?.phone || '';
-      }
-      _openEditModal(id, kind, currentName, currentPhone);
+      const owner = await OwnersModule.getOwnerById(id);
+      const currentName = owner?.name || '';
+      const currentPhone = owner?.phone || '';
+      _openEditModal(id, 'owner', currentName, currentPhone);
       return;
     }
 
@@ -1752,18 +1155,10 @@ function attachOwnersPageListeners() {
     if (delAccBtn) {
       if (!confirm('هل تريد حذف هذا الحساب؟')) return;
       const id = delAccBtn.dataset.id;
-      const kind = delAccBtn.dataset.kind;
-      // Optimistic: remove row immediately
       const delRow = delAccBtn.closest('tr');
       if (delRow) delRow.remove();
       try {
-        if (kind === 'owner' || kind === 'broker') {
-          // Both owners and brokers live in vehicle_owners table
-          await OwnersModule.deleteOwner(_currentUsername(), id);
-        } else {
-          await ClientRepository.deleteAgent(Number.isNaN(Number(id)) ? id : Number(id), { username: _currentUsername() });
-          window.dispatchEvent(new CustomEvent('agents:changed'));
-        }
+        await OwnersModule.deleteOwner(_currentUsername(), id);
         _invalidateKartaCounts();
         loadOwners(); // background refresh (non-blocking)
       } catch (err) { alert(err.message); loadOwners(); }
@@ -1859,86 +1254,17 @@ function attachOwnersPageListeners() {
       return;
     }
 
-    if (e.target.closest('[data-action="back-to-customers"]')) {
+    if (e.target.closest('[data-action="back-to-customers"]') || e.target.closest('[data-action="back-to-accounts"]')) {
       if (typeof window.showPage === 'function') {
         await window.showPage('ownersPage');
       }
-    }
-
-    if (e.target.closest('[data-action="back-to-accounts"]')) {
-      if (typeof window.showPage === 'function') {
-        await window.showPage('ownersPage');
-      }
-    }
-
-    const filterBtn = e.target.closest('[data-action="mandoub-apply-filter"]');
-    if (filterBtn) {
-      const agentId = filterBtn.dataset.id;
-      const from = document.getElementById('mandoubFromDate')?.value || '';
-      const to = document.getElementById('mandoubToDate')?.value || '';
-      const snap = await OwnersModule.getMandoubSnapshot(String(agentId));
-      const body = document.getElementById('mandoubLedgerBody');
-      if (!body) return;
-      const filtered = snap.ledger.filter(e => {
-        const d = String(e.date || '').trim();
-        if (from && d < from) return false;
-        if (to && d > to) return false;
-        return true;
-      });
-      body.innerHTML = filtered.length ? filtered.map(e => {
-        const typeLabel = e.effect === 'mandoub_cash_out' ? 'إيداع'
-                       : e.effect === 'mandoub_cash_in'  ? 'سحب'
-                       : e.effect === 'bolsa_deduction'  ? 'خصم بوالص'
-                       : e.type === 'withdraw' ? 'إيداع' : 'سحب';
-        const noteText = e.effect === 'bolsa_deduction' ? 'خصم بوالص'
-                       : e.effect === 'mandoub_cash_out' ? (e.note || 'إيداع للمندوب')
-                       : e.effect === 'mandoub_cash_in'  ? (e.note || 'استلام من المندوب')
-                       : (e.note || '-');
-        return `
-        <tr>
-          <td class="p-2 text-right">${_dateLabel(e.date || e.applied_at)}</td>
-          <td class="p-2 text-right">${typeLabel}</td>
-          <td class="p-2 text-right font-semibold">${Money.fmtCents(e.amount)}</td>
-          <td class="p-2 text-right">${noteText}</td>
-        </tr>
-      `; }).join('') : `<tr><td colspan="4" class="text-center text-muted p-4">لا توجد حركات</td></tr>`;
-      return;
-    }
-
-    const mandoubClearBtn = e.target.closest('[data-action="mandoub-clear-filter"]');
-    if (mandoubClearBtn) {
-      const fromEl = document.getElementById('mandoubFromDate');
-      const toEl = document.getElementById('mandoubToDate');
-      if (fromEl) fromEl.value = '';
-      if (toEl) toEl.value = '';
-      const agentId = mandoubClearBtn.dataset.id;
-      const snap = await OwnersModule.getMandoubSnapshot(String(agentId));
-      const body = document.getElementById('mandoubLedgerBody');
-      if (!body) return;
-      body.innerHTML = snap.ledger.length ? snap.ledger.map(e => {
-        const typeLabel = e.effect === 'mandoub_cash_out' ? 'إيداع'
-                       : e.effect === 'mandoub_cash_in'  ? 'سحب'
-                       : e.effect === 'bolsa_deduction'  ? 'خصم بوالص'
-                       : e.type === 'withdraw' ? 'إيداع' : 'سحب';
-        const noteText = e.effect === 'bolsa_deduction' ? 'خصم بوالص'
-                       : e.effect === 'mandoub_cash_out' ? (e.note || 'إيداع للمندوب')
-                       : e.effect === 'mandoub_cash_in'  ? (e.note || 'استلام من المندوب')
-                       : (e.note || '-');
-        return `
-        <tr>
-          <td class="p-2 text-right">${_dateLabel(e.date || e.applied_at)}</td>
-          <td class="p-2 text-right">${typeLabel}</td>
-          <td class="p-2 text-right font-semibold">${Money.fmtCents(e.amount)}</td>
-          <td class="p-2 text-right">${noteText}</td>
-        </tr>
-      `; }).join('') : `<tr><td colspan="4" class="text-center text-muted p-4">لا توجد حركات</td></tr>`;
       return;
     }
 
     const clientFilterBtn = e.target.closest('[data-action="client-apply-filter"]');
     if (clientFilterBtn) {
       const id = clientFilterBtn.dataset.id;
-      const ctype = clientFilterBtn.dataset.type || _selectedClient?.type || null;
+      const ctype = clientFilterBtn.dataset.type || _selectedClient?.type || 'owner';
       const from = document.getElementById('clientFromDate')?.value || '';
       const to = document.getElementById('clientToDate')?.value || '';
       const body = document.getElementById('clientLedgerBody');
@@ -1968,7 +1294,7 @@ function attachOwnersPageListeners() {
       if (fromEl) fromEl.value = '';
       if (toEl) toEl.value = '';
       const id = clientClearBtn.dataset.id;
-      const ctype = clientClearBtn.dataset.type || _selectedClient?.type || null;
+      const ctype = clientClearBtn.dataset.type || _selectedClient?.type || 'owner';
       const body = document.getElementById('clientLedgerBody');
       if (!body) return;
       const ledger = await OwnersModule.getClientLedger(String(id), ctype);
@@ -1980,53 +1306,6 @@ function attachOwnersPageListeners() {
           <td class="p-2 text-right">${_ledgerNote(e1)}</td>
         </tr>
       `).join('') : `<tr><td colspan="4" class="text-center text-muted p-4">لا توجد حركات</td></tr>`;
-      return;
-    }
-
-    const openMandoubModal = e.target.closest('[data-action="open-mandoub-balance-modal"]');
-    if (openMandoubModal) {
-      const modal = document.getElementById('mandoubBalanceModal');
-      const title = document.getElementById('mandoubBalanceTitle');
-      const dateEl = document.getElementById('mandoubBalanceDate');
-      const amountEl = document.getElementById('mandoubBalanceAmount');
-      const noteEl = document.getElementById('mandoubBalanceNote');
-      const msgEl = document.getElementById('mandoubBalanceMsg');
-      if (msgEl) { msgEl.textContent = ''; msgEl.classList.remove('is-visible'); }
-      const entryType = openMandoubModal.dataset.entryType === 'withdraw' ? 'withdraw' : 'deposit';
-      if (modal) {
-        modal.dataset.entryType = entryType;
-        modal.dataset.agentId = openMandoubModal.dataset.id;
-      }
-      if (title) title.textContent = entryType === 'withdraw' ? 'سحب' : 'إيداع';
-      if (dateEl) dateEl.value = DateUtils.todayLocal();
-      if (amountEl) amountEl.value = '';
-      if (noteEl) noteEl.value = '';
-      modal?.classList.remove('hidden');
-      return;
-    }
-
-    if (e.target.closest('[data-action="close-mandoub-balance-modal"]')) {
-      document.getElementById('mandoubBalanceModal')?.classList.add('hidden');
-      return;
-    }
-
-    if (e.target.closest('[data-action="save-mandoub-balance"]')) {
-      const modal = document.getElementById('mandoubBalanceModal');
-      const msgEl = document.getElementById('mandoubBalanceMsg');
-      const agentId = modal?.dataset.agentId || '';
-      const entryType = modal?.dataset.entryType || 'deposit';
-      const date = document.getElementById('mandoubBalanceDate')?.value || '';
-      const amount = parseFloat(document.getElementById('mandoubBalanceAmount')?.value) || 0;
-      const note = document.getElementById('mandoubBalanceNote')?.value || '';
-      if (!date) { if (msgEl) { msgEl.textContent = '❌ التاريخ مطلوب'; msgEl.classList.add('is-visible'); } return; }
-      if (amount <= 0) { if (msgEl) { msgEl.textContent = '❌ المبلغ يجب أن يكون أكبر من صفر'; msgEl.classList.add('is-visible'); } return; }
-      try {
-        await OwnersModule.adjustMandoubBalance(_currentUsername(), String(agentId), entryType, amount, date, note);
-        modal?.classList.add('hidden');
-        await showMandoubDetails(agentId);
-      } catch (err) {
-        if (msgEl) { msgEl.textContent = err.message || '❌ حدث خطأ أثناء حفظ الحركة'; msgEl.classList.add('is-visible'); }
-      }
       return;
     }
   });
@@ -2041,17 +1320,11 @@ window.addEventListener('owners:changed', () => {
   loadOwners();
 });
 
-window.addEventListener('agents:changed', () => {
-  _invalidateKartaCounts();
-  loadOwners();
-});
-
 window.addEventListener('receipts:changed', () => {
   _invalidateKartaCounts();
 });
 
 window.showOwnerDetails = showOwnerDetails;
-window.showMandoubDetails = showMandoubDetails;
 
 
 // ========================================
@@ -2059,7 +1332,6 @@ window.showMandoubDetails = showMandoubDetails;
 // ========================================
 
 export {
-  AgentsService,
   VehiclesModule,
   resolveVehicle,
   OwnersModule,
@@ -2074,11 +1346,7 @@ export {
   getClientLedger,
   createClientBalanceEntry,
   getOwnerVehicles,
-  getAgentReceipts,
   addAccount,
-  getMandoubSnapshot,
-  getAllMandoubs,
-  adjustMandoubBalance,
   loadOwners,
   attachOwnersPageListeners,
   showOwnerDetails,

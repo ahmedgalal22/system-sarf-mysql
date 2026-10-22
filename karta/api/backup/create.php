@@ -48,7 +48,7 @@ try {
 
     // Stream as JSON download
     $now = date('Y-m-d_H-i');
-    $filename = "karta-backup-{$now}.json";
+    $filename = "karta-v2-backup-{$now}.json";
 
     header('Content-Type: application/json; charset=utf-8');
     header("Content-Disposition: attachment; filename=\"{$filename}\"");

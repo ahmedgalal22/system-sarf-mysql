@@ -7,16 +7,13 @@
  *   ExcelService.exportReceiptRows(rows, filename?)      → void (triggers download)
  *   ExcelService.importReceiptRows(file)                 → Promise<RowData[]>
  *
- *   ExcelService.exportBolsaRows(rows, filename?)        → void (triggers download)
- *   ExcelService.importBolsaRows(file)                   → Promise<RowData[]>
- *
  *   ExcelService.exportVehicleOwners(owners, filename?)  → void (triggers download)
  *   ExcelService.importVehicleOwners(file)               → Promise<{ name }[]>
  *
- *   ExcelService.exportEntitiesExcel({ owners, brokers }, filename?)
+ *   ExcelService.exportEntitiesExcel({ owners }, filename?)
  *                                                        → void (triggers download)
  *   ExcelService.importEntitiesExcel(file)
- *                                                        → Promise<{ owners: {name,phone}[], brokers: {name,phone}[] }>
+ *                                                        → Promise<{ owners: {name,phone}[] }>
  *
  *   ExcelService.openFilePicker(callback)                → void
  *
@@ -414,117 +411,6 @@ async function importReceiptRows(file) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// SECTION 2: تفريغ البوالص (Bolsa Rows)
-// ─────────────────────────────────────────────────────────────────────────────
-
-/**
- * Column definitions for bolsa Excel export/import.
- * Mirrors _collectRow() and _rowTemplate() from bolsas.js exactly.
- */
-const _BOLSA_COLS = Object.freeze([
-  { key: 'kartaNo',    header: 'رقم الكارتة',    type: 'text'   },
-  { key: 'rowdate',    header: 'التاريخ',         type: 'text'   },
-  { key: 'driver',     header: 'اسم السائق',      type: 'text'   },
-  { key: 'owner_name', header: 'صاحب المركبة',   type: 'text'   },
-  { key: 'carNo',      header: 'رقم المركبة',     type: 'text'   },
-  { key: 'weight',     header: 'وزن وش',          type: 'number' },
-  { key: 'office',     header: 'اسم الشركة',      type: 'text'   },
-  { key: 'loading',    header: 'التحميل',         type: 'text'   },
-  { key: 'direction',  header: 'الجهة',           type: 'text'   },
-  { key: 'type',       header: 'النوع',           type: 'text'   },
-  { key: 'ohda',       header: 'العهدة',          type: 'number' },
-  { key: 'dokhan',     header: 'اكرامية',         type: 'number' },
-  { key: 'noloon',     header: 'نولون',           type: 'number' },
-  { key: 'solar',      header: 'سولار',           type: 'number' },
-  { key: 'notes',      header: 'ملاحظات',         type: 'text'   },
-]);
-
-const _BOLSA_REQUIRED_HEADERS = _BOLSA_COLS.map(c => c.header);
-
-/**
- * exportBolsaRows(rows, filename?)
- *
- * Exports bolsa form rows to Excel.
- * Uses the raw row objects from the form or a saved record.
- *
- * @param {object[]} rows
- * @param {string}  [filename]
- */
-function exportBolsaRows(rows, filename) {
-  const XL = _xlsx();
-
-  if (!Array.isArray(rows) || rows.length === 0) {
-    throw new Error('لا توجد صفوف بيانات للتصدير.');
-  }
-
-  const sheetData = rows.map(row => {
-    const obj = {};
-    for (const col of _BOLSA_COLS) {
-      const raw = row[col.key] ?? '';
-      obj[col.header] = col.type === 'number'
-        ? (raw === '' || raw === null ? '' : _num(raw))
-        : _str(raw);
-    }
-    return obj;
-  });
-
-  const ws = XL.utils.json_to_sheet(sheetData, { header: _BOLSA_COLS.map(c => c.header) });
-  const wb = XL.utils.book_new();
-  XL.utils.book_append_sheet(wb, ws, 'بوالص');
-
-  _downloadWorkbook(wb, filename || `بوالص_${_todayLabel()}.xlsx`);
-}
-
-/**
- * importBolsaRows(file)
- *
- * Parses an Excel file and returns bolsa row objects.
- * Does NOT save to DB. Does NOT touch the DOM.
- *
- * @param {File} file
- * @returns {Promise<object[]>}
- */
-async function importBolsaRows(file) {
-  _assertExcelFile(file);
-
-  const buffer = await _readFileBuffer(file);
-  const { headers, rows } = _parseBuffer(buffer);
-
-  const matchedCols = _BOLSA_COLS.filter(col => headers.includes(col.header));
-  if (matchedCols.length === 0) {
-    throw new Error(
-      `الملف لا يحتوي على أعمدة مطابقة.\n` +
-      `الأعمدة المتوقعة: ${_BOLSA_REQUIRED_HEADERS.join('، ')}`
-    );
-  }
-
-  if (rows.length === 0) {
-    throw new Error('الملف لا يحتوي على بيانات.');
-  }
-
-  const result = rows
-    .filter(r => _BOLSA_COLS.some(col => _str(r[col.header]) !== ''))
-    .map(r => {
-      const row = {};
-      for (const col of _BOLSA_COLS) {
-        let cellVal = r[col.header] ?? '';
-        if (col.key === 'rowdate') {
-          cellVal = parseImportedDate(cellVal);
-        }
-        row[col.key] = col.type === 'number' ? _num(cellVal) : _str(cellVal);
-      }
-      row.weight2 = 0; // weight2 not in bolsa form — always 0
-      return row;
-    });
-
-  if (result.length === 0) {
-    throw new Error('الملف لا يحتوي على صفوف بيانات صالحة بعد التصفية.');
-  }
-
-  return result;
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
 // SECTION 3: أصحاب المركبات (Vehicle Owners)
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -611,108 +497,75 @@ async function importVehicleOwners(file) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// SECTION 3.5: كشف حساب العملاء — أصحاب المركبات + الوسطاء (ملف واحد)
+// SECTION 3.5: كشف حساب العملاء — أصحاب المركبات
 // ─────────────────────────────────────────────────────────────────────────────
-//
-// One Excel file with FOUR columns (note: two columns share the same header
-// "رقم الهاتف", which would collide if we used object-keyed json_to_sheet —
-// hence the AOA approach below):
-//
-//   | اسم صاحب المركبة | رقم الهاتف | اسم الوسيط | رقم الهاتف |
-//
-// Rules:
-//   - Each row may contain owner only, broker only, or both — they are NOT
-//     paired logically; they share rows purely for compact presentation.
-//   - Fully empty rows are skipped on import.
-//   - Within-file deduplication is case-insensitive (trimmed name).
-//   - DB-level duplicate handling (skip with phone-mismatch, etc.) is the
-//     caller's responsibility — this service stays pure.
-//
 
-/** Header labels for the combined entities sheet — order matters. */
+/** Header labels for the vehicle owners sheet. */
 const _ENTITIES_HEADERS = Object.freeze([
   'اسم صاحب المركبة',
-  'رقم الهاتف',
-  'اسم الوسيط',
   'رقم الهاتف',
 ]);
 
 /** Fixed column indexes inside the AOA structure. */
-const _ENT_COL_OWNER_NAME   = 0;
-const _ENT_COL_OWNER_PHONE  = 1;
-const _ENT_COL_BROKER_NAME  = 2;
-const _ENT_COL_BROKER_PHONE = 3;
+const _ENT_COL_OWNER_NAME  = 0;
+const _ENT_COL_OWNER_PHONE = 1;
 
 /**
- * exportEntitiesExcel({ owners, brokers }, filename?)
+ * exportEntitiesExcel({ owners }, filename?)
  *
- * Exports vehicle owners + brokers into ONE Excel file with the 4-column
- * layout above. Owners and brokers are written independently, sharing rows
- * only to keep the sheet compact; no relationship is implied between an
- * owner and the broker on the same row.
+ * Exports vehicle owners into an Excel file with 2 columns:
+ *   | اسم صاحب المركبة | رقم الهاتف |
  *
- * @param {{ owners?: {name:string, phone?:string|null}[],
- *           brokers?: {name:string, phone?:string|null}[] }} payload
+ * @param {{ owners?: {name:string, phone?:string|null}[] } | {name:string, phone?:string|null}[]} payload
  * @param {string} [filename]
  */
 function exportEntitiesExcel(payload, filename) {
   const XL = _xlsx();
 
-  const ownersIn  = Array.isArray(payload?.owners)  ? payload.owners  : [];
-  const brokersIn = Array.isArray(payload?.brokers) ? payload.brokers : [];
+  const ownersIn = Array.isArray(payload)
+    ? payload
+    : (Array.isArray(payload?.owners) ? payload.owners : []);
 
   // Clean & filter: keep only entries with a non-empty trimmed name.
   const owners = ownersIn
     .map(o => ({ name: _str(o?.name), phone: _str(o?.phone) }))
     .filter(o => o.name);
 
-  const brokers = brokersIn
-    .map(b => ({ name: _str(b?.name), phone: _str(b?.phone) }))
-    .filter(b => b.name);
-
-  if (owners.length === 0 && brokers.length === 0) {
+  if (owners.length === 0) {
     throw new Error('لا توجد أسماء للتصدير.');
   }
 
   // Build AOA: header row + data rows.
-  const rowCount = Math.max(owners.length, brokers.length);
   const aoa = [ _ENTITIES_HEADERS.slice() ];
-  for (let i = 0; i < rowCount; i++) {
+  for (let i = 0; i < owners.length; i++) {
     const o = owners[i];
-    const b = brokers[i];
-    const row = ['', '', '', ''];
+    const row = ['', ''];
     if (o) {
       row[_ENT_COL_OWNER_NAME]  = o.name;
       row[_ENT_COL_OWNER_PHONE] = o.phone || '';
-    }
-    if (b) {
-      row[_ENT_COL_BROKER_NAME]  = b.name;
-      row[_ENT_COL_BROKER_PHONE] = b.phone || '';
     }
     aoa.push(row);
   }
 
   const ws = XL.utils.aoa_to_sheet(aoa);
   const wb = XL.utils.book_new();
-  XL.utils.book_append_sheet(wb, ws, 'كشف حساب العملاء');
+  XL.utils.book_append_sheet(wb, ws, 'أصحاب المركبات');
 
-  _downloadWorkbook(wb, filename || `كشف_حساب_العملاء_${_todayLabel()}.xlsx`);
+  _downloadWorkbook(wb, filename || `أصحاب_المركبات_${_todayLabel()}.xlsx`);
 }
 
 /**
  * importEntitiesExcel(file)
  *
- * Parses a 4-column Excel file into separate owner + broker lists.
- * Reads via AOA because two columns share the same header label
- * ("رقم الهاتف"), which would collapse into a single key under
- * sheet_to_json's default object mode.
+ * Parses a vehicle owners Excel file into an { owners } list.
+ * Supports both the 2-column format (اسم صاحب المركبة | رقم الهاتف)
+ * and legacy 4-column files (ignoring any legacy broker columns).
  *
- * Skips fully empty rows. Deduplicates within the file (case-insensitive
- * on trimmed name). DB-level duplicate handling is the caller's concern.
+ * Skips empty rows and deduplicates within the file (case-insensitive
+ * on trimmed name).
  *
  * @param {File} file
- * @returns {Promise<{ owners: {name:string, phone:string}[],
- *                     brokers: {name:string, phone:string}[] }>}
+ * @returns {Promise<{ owners: {name:string, phone:string}[] }>}
  */
 async function importEntitiesExcel(file) {
   _assertExcelFile(file);
@@ -724,88 +577,59 @@ async function importEntitiesExcel(file) {
   if (!sheetName) throw new Error('الملف لا يحتوي على أوراق عمل.');
   const ws = wb.Sheets[sheetName];
 
-  // AOA mode preserves columns with duplicate headers.
   const aoa = XL.utils.sheet_to_json(ws, { header: 1, defval: '', blankrows: false });
 
   if (!Array.isArray(aoa) || aoa.length === 0) {
     throw new Error('الملف لا يحتوي على بيانات.');
   }
 
-  // First row = header. Locate columns by header label so we tolerate
-  // small reorderings — but only when both phone columns appear after
-  // their respective name columns.
   const headerRow = (aoa[0] || []).map(_str);
+  const ownerNameCol = headerRow.indexOf('اسم صاحب المركبة');
 
-  let ownerNameCol  = headerRow.indexOf('اسم صاحب المركبة');
-  let brokerNameCol = headerRow.indexOf('اسم الوسيط');
-
-  if (ownerNameCol === -1 && brokerNameCol === -1) {
+  if (ownerNameCol === -1) {
     throw new Error(
       'الملف لا يحتوي على الأعمدة المطلوبة.\n' +
       'الأعمدة المتوقعة: ' + _ENTITIES_HEADERS.join('، ')
     );
   }
 
-  // Phone columns: take the first "رقم الهاتف" header strictly to the
-  // right of each name column. Fallback to fixed positions if needed.
   function _nextPhoneAfter(idx) {
     if (idx < 0) return -1;
     for (let i = idx + 1; i < headerRow.length; i++) {
-      if (headerRow[i] === 'رقم الهاتف') return i;
+      if (headerRow[i] === 'رقم الهاتف' || headerRow[i] === 'رقم التليفون') return i;
     }
     return -1;
   }
 
-  let ownerPhoneCol  = _nextPhoneAfter(ownerNameCol);
-  let brokerPhoneCol = _nextPhoneAfter(brokerNameCol);
+  let ownerPhoneCol = _nextPhoneAfter(ownerNameCol);
+  if (ownerNameCol !== -1 && ownerPhoneCol === -1 && headerRow.length > ownerNameCol + 1) {
+    ownerPhoneCol = ownerNameCol + 1;
+  }
 
-  // Last-resort fallback: assume the canonical column order if a name
-  // column was found but its phone column wasn't.
-  if (ownerNameCol  !== -1 && ownerPhoneCol  === -1) ownerPhoneCol  = ownerNameCol  + 1;
-  if (brokerNameCol !== -1 && brokerPhoneCol === -1) brokerPhoneCol = brokerNameCol + 1;
-
-  const owners  = [];
-  const brokers = [];
-  const seenOwners  = new Set();
-  const seenBrokers = new Set();
+  const owners = [];
+  const seenOwners = new Set();
 
   for (let r = 1; r < aoa.length; r++) {
     const row = aoa[r] || [];
-
-    // Skip fully empty rows.
     const hasAny = row.some(cell => _str(cell) !== '');
     if (!hasAny) continue;
 
-    if (ownerNameCol !== -1) {
-      const name  = _str(row[ownerNameCol]);
-      const phone = ownerPhoneCol !== -1 ? _str(row[ownerPhoneCol]) : '';
-      if (name) {
-        const key = name.toLowerCase();
-        if (!seenOwners.has(key)) {
-          seenOwners.add(key);
-          owners.push({ name, phone });
-        }
-      }
-    }
-
-    if (brokerNameCol !== -1) {
-      const name  = _str(row[brokerNameCol]);
-      const phone = brokerPhoneCol !== -1 ? _str(row[brokerPhoneCol]) : '';
-      if (name) {
-        const key = name.toLowerCase();
-        if (!seenBrokers.has(key)) {
-          seenBrokers.add(key);
-          brokers.push({ name, phone });
-        }
+    const name  = _str(row[ownerNameCol]);
+    const phone = ownerPhoneCol !== -1 ? _str(row[ownerPhoneCol]) : '';
+    if (name) {
+      const key = name.toLowerCase();
+      if (!seenOwners.has(key)) {
+        seenOwners.add(key);
+        owners.push({ name, phone });
       }
     }
   }
 
-  if (owners.length === 0 && brokers.length === 0) {
+  if (owners.length === 0) {
     throw new Error('الملف لا يحتوي على أسماء صالحة بعد التصفية.');
   }
 
-  return { owners, brokers };
+  return { owners };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1010,15 +834,11 @@ const ExcelService = Object.freeze({
   exportReceiptRows,
   importReceiptRows,
 
-  // Bolsa rows
-  exportBolsaRows,
-  importBolsaRows,
-
   // Vehicle owners (legacy — names-only, single column)
   exportVehicleOwners,
   importVehicleOwners,
 
-  // Customer accounts page — owners + brokers in one file (4 columns)
+  // Customer accounts page — vehicle owners (2 columns)
   exportEntitiesExcel,
   importEntitiesExcel,
 

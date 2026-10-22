@@ -3,7 +3,7 @@
  * repositories/ArchiveRepository.php — Archive data access
  *
  * Manages archive_batches, financial_snapshots, and the is_archived flag
- * on the 5 financial tables (receipts, treasury, vehicle_ledger, bolsa_forms, main_capital_treasury).
+ * on the 4 financial tables (receipts, treasury, vehicle_ledger, main_capital_treasury).
  */
 
 class ArchiveRepository {
@@ -14,7 +14,6 @@ class ArchiveRepository {
         'receipts',
         'treasury',
         'vehicle_ledger',
-        'bolsa_forms',
         'main_capital_treasury',
     ];
 
@@ -23,7 +22,6 @@ class ArchiveRepository {
         'receipts'               => 'receipt_date',
         'treasury'               => 'date',
         'vehicle_ledger'         => 'date',
-        'bolsa_forms'            => 'bolsa_date',
         'main_capital_treasury'  => 'date',
     ];
 

@@ -2,8 +2,8 @@
  * sidebarLayout.js — resizable, collapsible, and responsive sidebar behavior
  */
 
-const STORAGE_WIDTH_KEY = 'financial_sidebar_width';
-const STORAGE_COLLAPSED_KEY = 'financial_sidebar_collapsed';
+const STORAGE_WIDTH_KEY = 'karta_v2_sidebar_width';
+const STORAGE_COLLAPSED_KEY = 'karta_v2_sidebar_collapsed';
 const DEFAULT_WIDTH = 260;
 const MIN_WIDTH = 60;
 const MAX_WIDTH = 500;
