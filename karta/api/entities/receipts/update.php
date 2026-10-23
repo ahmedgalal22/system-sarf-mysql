@@ -22,6 +22,8 @@ require_once __DIR__ . '/../../../core/permissions.php';
 require_once __DIR__ . '/../../../core/errorMapper.php';
 require_once __DIR__ . '/../../../api/middleware/auth.php';
 require_once __DIR__ . '/../../../repositories/ReceiptRepository.php';
+require_once __DIR__ . '/../../../repositories/OfficeRepository.php';
+require_once __DIR__ . '/../../../repositories/HamolaRepository.php';
 require_once __DIR__ . '/../../../core/versionTracker.php';
 
 if (!isMethod('PUT')) jsonMethodNotAllowed('PUT');
@@ -59,7 +61,20 @@ try {
             return;
         }
 
-        bumpVersion($db, 'receipts');
+        $officeRepo = new OfficeRepository($db);
+        $hamolaRepo = new HamolaRepository($db);
+        $syncedHamola = $hamolaRepo->syncFromReceiptRows(
+            $authUser['username'],
+            is_array($body['rows'] ?? null) ? $body['rows'] : [],
+            $officeRepo
+        );
+
+        $bumps = ['receipts'];
+        if (!empty($syncedHamola)) {
+            $bumps[] = 'hamola_details';
+            $bumps[] = 'offices';
+        }
+        bumpVersions($db, $bumps);
         $db->commit();
         $updated = $result['data'];
         decodeRowsField($updated);

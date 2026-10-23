@@ -32,6 +32,9 @@ require_once __DIR__ . '/../../../core/permissions.php';
 require_once __DIR__ . '/../../../core/errorMapper.php';
 require_once __DIR__ . '/../../../api/middleware/auth.php';
 require_once __DIR__ . '/../../../repositories/ReceiptRepository.php';
+require_once __DIR__ . '/../../../repositories/OfficeRepository.php';
+require_once __DIR__ . '/../../../repositories/HamolaRepository.php';
+require_once __DIR__ . '/../../../core/versionTracker.php';
 
 if (!isMethod('POST')) jsonMethodNotAllowed('POST');
 requirePermission($authUser['role'], 'receipts', 'write');
@@ -85,6 +88,17 @@ try {
             'request_id'       => $requestId,
             'created_by'       => $authUser['username'],
         ]);
+
+        $officeRepo = new OfficeRepository($db);
+        $hamolaRepo = new HamolaRepository($db);
+        $syncedHamola = $hamolaRepo->syncFromReceiptRows(
+            $authUser['username'],
+            is_array($body['rows'] ?? null) ? $body['rows'] : [],
+            $officeRepo
+        );
+        if (!empty($syncedHamola)) {
+            bumpVersions($db, ['hamola_details', 'offices']);
+        }
 
         $db->commit();
 

@@ -41,7 +41,7 @@ const STORE = 'receipts';
 
 function normalizeOptionalString(value) {
   if (value === undefined || value === null) return null;
-  const v = String(value).trim();
+  const v = String(value).trim().replace(/\s+/g, ' ');
   return v === '' ? null : v;
 }
 
@@ -265,8 +265,17 @@ async function create(username, rawData) {
       const payloadWithNumber = assignReceiptNumber(servicePayload, String(nextNumber));
       const result = await FinancialService.createReceipt(username, payloadWithNumber, []);
 
+      const syncedHamola = await OfficesService.syncHamolaFromReceiptRows(
+        username,
+        normalized.rows,
+        result?.synced_hamola ?? null
+      );
+      if (result && typeof result === 'object') {
+        result.synced_hamola = syncedHamola;
+      }
+
       if (warning) console.warn('[ReceiptsModule]', warning);
-      return { result, normalized, warning };
+      return { result, normalized, warning, syncedHamola };
     } catch (err) {
       if (isConstraintError(err) && attempt < MAX_RETRIES) {
         const fresh = await allocateReceiptNumber(username);
@@ -292,7 +301,16 @@ async function update(username, id, rawData) {
 
   const result = await FinancialService.updateReceipt(username, id, servicePayload, []);
 
-  return { result, normalized };
+  const syncedHamola = await OfficesService.syncHamolaFromReceiptRows(
+    username,
+    normalized.rows,
+    result?.synced_hamola ?? null
+  );
+  if (result && typeof result === 'object') {
+    result.synced_hamola = syncedHamola;
+  }
+
+  return { result, normalized, syncedHamola };
 }
 
 // ─── PUBLIC: delete ───────────────────────────────────────────────────────────
@@ -1652,144 +1670,212 @@ function attachRowCalculation(row) {
   add       && add.addEventListener('input',       calculateNet);
   sarf      && sarf.addEventListener('input',      calculateNet);
 
-  // ── Office → loading / taktik / noloon autofill ──
+  // ── Office → loading / taktik / type / noloon autofill (Bidirectional) ──
+
+  const typeInp = row.querySelector('.receipt-type');
 
   async function getOfficeHamolaForRow(officeName) {
-    if (!officeName) return [];
+    const key = OfficesService.normalizeCargoKey(officeName);
+    if (!key) return [];
     const username = _currentUsername();
     if (!username) return [];
     const offices = await ReceiptsModule.getOffices(username);
-    const office  = offices.find(o => o.name.trim() === officeName.trim());
+    const office  = offices.find(o => OfficesService.normalizeCargoKey(o.name) === key);
     if (!office?.id) return [];
     return office?.hamolaRows || [];
   }
 
   function setDL(id, values) {
+    if (typeof document === 'undefined') return;
     let dl = document.getElementById(id);
     if (!dl) { dl = document.createElement('datalist'); dl.id = id; document.body.appendChild(dl); }
     dl.innerHTML = values.map(v => `<option value="${v}"></option>`).join('');
   }
 
-  if (officeInp) {
-    officeInp.addEventListener('change', async function () {
-      const hamola   = await getOfficeHamolaForRow(this.value.trim());
-      const loadVals = [...new Set(
-        hamola.map(r => String(r.loading_place || r.loading || '').trim()).filter(Boolean)
-      )];
-      const uid      = 'r_' + Date.now() + '_' + Math.random().toString(36).slice(2, 5);
-      setDL('dl_rl_' + uid, loadVals);
-      if (loadingInp) loadingInp.setAttribute('list', 'dl_rl_' + uid);
-      row._hamolaData = hamola;
-      row._dirDlId = 'dl_rd_' + uid;
-      setDL(row._dirDlId, []);
-      if (taktikInp) taktikInp.setAttribute('list', row._dirDlId);
+  async function bindOfficeHamolaToRow(officeName, { preserveExistingValues = false } = {}) {
+    const hamola = await getOfficeHamolaForRow(officeName);
+    const loadVals = [...new Set(
+      hamola.map(r => OfficesService.normalizeCargoText(r.loading_place || r.loading || '')).filter(Boolean)
+    )];
+    const allDirVals = [...new Set(
+      hamola.map(r => OfficesService.normalizeCargoText(r.destination_place || r.direction || r.taktik || '')).filter(Boolean)
+    )];
+    const allTypeVals = [...new Set(
+      hamola.map(r => OfficesService.normalizeCargoText(r.item_type || r.type || '')).filter(Boolean)
+    )];
 
-      // Auto-fill loading+destination when only ONE valid option exists
+    const uid = row._dlUid || ('r_' + Date.now() + '_' + Math.random().toString(36).slice(2, 5));
+    row._dlUid = uid;
+    row._loadDlId = 'dl_rl_' + uid;
+    row._dirDlId  = 'dl_rd_' + uid;
+    row._typeDlId = 'dl_rt_' + uid;
+    row._hamolaData = hamola;
+
+    setDL(row._loadDlId, loadVals);
+    if (loadingInp) loadingInp.setAttribute('list', row._loadDlId);
+    setDL(row._dirDlId, allDirVals);
+    if (taktikInp) taktikInp.setAttribute('list', row._dirDlId);
+    setDL(row._typeDlId, allTypeVals);
+    if (typeInp) typeInp.setAttribute('list', row._typeDlId);
+
+    if (!preserveExistingValues) {
+      // Clear previous office's selections so invalid values from a prior office are never retained
+      if (loadingInp) loadingInp.value = '';
+      if (taktikInp)  taktikInp.value  = '';
+      if (typeInp)    typeInp.value    = '';
+      row._lastAutoFilledTaktik = null;
+      row._lastAutoFilledType   = null;
+
+      // Auto-fill loading when only ONE valid option exists for the new office
       if (loadVals.length === 1 && loadingInp) {
         loadingInp.value = loadVals[0];
-        loadingInp.dispatchEvent(new Event('change'));
-      } else if (loadingInp) {
-        loadingInp.value = '';
       }
-      if (taktikInp) taktikInp.value = '';
+    }
 
-      // ── Rebuild destination list when loading changes ──
-      function _rebuildDirList() {
-        const selectedLoad = (loadingInp?.value || '').trim();
-        const filtered = selectedLoad
-          ? hamola.filter(r => String(r.loading_place || r.loading || '').trim() === selectedLoad)
-          : hamola;
-        const newDirVals = [...new Set(
-          filtered.map(r => String(r.destination_place || r.direction || r.taktik || '').trim()).filter(Boolean)
-        )];
-        setDL(row._dirDlId, newDirVals);
-        row._currentDirVals = newDirVals;
-        // Auto-fill if only one destination
-        if (taktikInp) {
-          if (newDirVals.length === 1) {
-            taktikInp.value = newDirVals[0];
-            taktikInp.dispatchEvent(new Event('change'));
-          } else {
-            taktikInp.value = '';
-          }
-        }
-      }
-      row._currentDirVals = [];
+    // ── Rebuild destination list when loading changes (non-restrictive) ──
+    function _rebuildDirList(isInitialPreserved = false) {
+      const selectedLoadKey = OfficesService.normalizeCargoKey(loadingInp?.value || '');
+      const matchingLoadRows = selectedLoadKey
+        ? hamola.filter(r => OfficesService.normalizeCargoKey(r.loading_place || r.loading || '') === selectedLoadKey)
+        : [];
 
-      // ── Blur validation: remove previous listeners before adding new ones ──
-      // This prevents listener accumulation when office is changed multiple times.
-      [loadingInp, taktikInp].forEach(function (inp, idx) {
-        if (!inp) return;
-        const prevBlurKey = idx === 0 ? '_blurHandlerLoading' : '_blurHandlerTaktik';
-        if (row[prevBlurKey]) {
-          inp.removeEventListener('blur', row[prevBlurKey]);
-        }
-        const blurHandler = function () {
-          const vals = idx === 0 ? loadVals : (row._currentDirVals || []);
-          if (vals.length > 0 && this.value && !vals.includes(this.value.trim())) {
-            alert('الرجاء الاختيار من القائمة فقط');
-            this.value = '';
-          }
-        };
-        row[prevBlurKey] = blurHandler;
-        inp.addEventListener('blur', blurHandler);
-      });
+      const newDirVals = matchingLoadRows.length > 0
+        ? [...new Set(
+            matchingLoadRows
+              .map(r => OfficesService.normalizeCargoText(r.destination_place || r.direction || r.taktik || ''))
+              .filter(Boolean)
+          )]
+        : allDirVals;
 
-      // ── autoFillNoloon: remove previous listeners before adding new ones ──
-      function autoFillNoloon() {
-        const loadVal   = loadingInp?.value.trim() || '';
-        const taktikVal = taktikInp?.value.trim()  || '';
-        const matchRow  = hamola.find(h =>
-          String(h.loading_place || h.loading || '').trim() === loadVal
-          && String(h.destination_place || h.direction || h.taktik || '').trim() === taktikVal
-        );
-        if (!matchRow) return;
-        // النولون — display raw stored value (no forced .toFixed(2))
-        const noloonRaw = matchRow.nolon ?? matchRow.noloon;
-        const noloonVal = parseFloat(noloonRaw) || 0;
-        const noloonInp = row.querySelector('.receipt-noloon');
-        if (noloonInp && noloonVal > 0) {
-          noloonInp.value = String(noloonRaw);
-          noloonInp.dispatchEvent(new Event('input'));
+      setDL(row._dirDlId, newDirVals);
+      row._currentDirVals = newDirVals;
+
+      if (isInitialPreserved || !taktikInp) return;
+
+      if (matchingLoadRows.length > 0) {
+        if (newDirVals.length === 1 && (!taktikInp.value.trim() || taktikInp.value === row._lastAutoFilledTaktik)) {
+          taktikInp.value = newDirVals[0];
+          row._lastAutoFilledTaktik = newDirVals[0];
+        } else if (
+          row._lastAutoFilledTaktik
+          && taktikInp.value === row._lastAutoFilledTaktik
+          && !newDirVals.some(v => OfficesService.normalizeCargoKey(v) === OfficesService.normalizeCargoKey(taktikInp.value))
+        ) {
+          taktikInp.value = '';
+          row._lastAutoFilledTaktik = null;
         }
-        // المكتب — display raw stored value (no forced .toFixed(2))
-        const maktabRaw = matchRow.office_amount ?? matchRow.maktab;
-        const maktabVal = parseFloat(maktabRaw) || 0;
-        const maktabInp = row.querySelector('.receipt-office-amount');
-        if (maktabInp && maktabVal > 0) {
-          maktabInp.value = String(maktabRaw);
-          maktabInp.dispatchEvent(new Event('input'));
-        }
-        // النوع
-        const typeVal = String(matchRow.item_type ?? matchRow.type ?? '').trim();
-        const typeInp = row.querySelector('.receipt-type');
-        if (typeInp && typeVal) {
-          typeInp.value = typeVal;
-        }
+      } else if (row._lastAutoFilledTaktik && taktikInp.value === row._lastAutoFilledTaktik) {
+        // User changed loading to a custom value — clear stale auto-filled destination
+        taktikInp.value = '';
+        row._lastAutoFilledTaktik = null;
       }
-      // Remove previous listeners before re-adding
-      if (row._autoFillLoadingHandler && loadingInp) {
-        loadingInp.removeEventListener('change', row._autoFillLoadingHandler);
+    }
+
+    // ── autoFillNoloon: populate noloon / officeAmount / type when route exists in hamola ──
+    function autoFillNoloon(isInitialPreserved = false) {
+      const loadKey   = OfficesService.normalizeCargoKey(loadingInp?.value || '');
+      const taktikKey = OfficesService.normalizeCargoKey(taktikInp?.value || '');
+      const matchingRouteRows = (loadKey && taktikKey)
+        ? hamola.filter(h =>
+            OfficesService.normalizeCargoKey(h.loading_place || h.loading || '') === loadKey
+            && OfficesService.normalizeCargoKey(h.destination_place || h.direction || h.taktik || '') === taktikKey
+          )
+        : [];
+
+      const routeTypeVals = matchingRouteRows.length > 0
+        ? [...new Set(
+            matchingRouteRows
+              .map(r => OfficesService.normalizeCargoText(r.item_type || r.type || ''))
+              .filter(Boolean)
+          )]
+        : allTypeVals;
+      setDL(row._typeDlId, routeTypeVals.length > 0 ? routeTypeVals : allTypeVals);
+
+      if (isInitialPreserved || matchingRouteRows.length === 0) return;
+
+      const currentTypeKey = OfficesService.normalizeCargoKey(typeInp?.value || '');
+      const matchRow = (
+        currentTypeKey &&
+        matchingRouteRows.find(h => OfficesService.normalizeCargoKey(h.item_type || h.type || '') === currentTypeKey)
+      ) || matchingRouteRows[0];
+
+      if (!matchRow) return;
+
+      // النولون — display raw stored value (no forced .toFixed(2))
+      const noloonRaw = matchRow.nolon ?? matchRow.noloon;
+      const noloonVal = parseFloat(noloonRaw) || 0;
+      const noloonInp = row.querySelector('.receipt-noloon');
+      if (noloonInp && noloonVal > 0) {
+        noloonInp.value = String(noloonRaw);
+        noloonInp.dispatchEvent(new Event('input'));
       }
-      if (row._rebuildDirHandler && loadingInp) {
-        loadingInp.removeEventListener('change', row._rebuildDirHandler);
+      // المكتب — display raw stored value (no forced .toFixed(2))
+      const maktabRaw = matchRow.office_amount ?? matchRow.maktab;
+      const maktabVal = parseFloat(maktabRaw) || 0;
+      const maktabInp = row.querySelector('.receipt-office-amount');
+      if (maktabInp && maktabVal > 0) {
+        maktabInp.value = String(maktabRaw);
+        maktabInp.dispatchEvent(new Event('input'));
       }
-      if (row._autoFillTaktikHandler && taktikInp) {
-        taktikInp.removeEventListener('change', row._autoFillTaktikHandler);
+      // النوع — auto-fill when empty or previously auto-filled
+      const typeVal = OfficesService.normalizeCargoText(matchRow.item_type ?? matchRow.type ?? '');
+      if (typeInp && typeVal && (!typeInp.value.trim() || typeInp.value === row._lastAutoFilledType)) {
+        typeInp.value = typeVal;
+        row._lastAutoFilledType = typeVal;
       }
-      // Loading change: rebuild destination list THEN auto-fill noloon
-      function _onLoadingChange() { _rebuildDirList(); autoFillNoloon(); }
-      row._rebuildDirHandler = _onLoadingChange;
-      row._autoFillLoadingHandler = _onLoadingChange;
-      row._autoFillTaktikHandler = autoFillNoloon;
-      if (loadingInp) loadingInp.addEventListener('change', _onLoadingChange);
-      if (taktikInp)  taktikInp.addEventListener('change',  autoFillNoloon);
-      // Auto-trigger if loading was auto-filled (single option)
-      if (loadVals.length === 1) {
-        _rebuildDirList();
-        autoFillNoloon();
+    }
+
+    // Remove any legacy blur handlers if present
+    [loadingInp, taktikInp].forEach(function (inp, idx) {
+      if (!inp) return;
+      const prevBlurKey = idx === 0 ? '_blurHandlerLoading' : '_blurHandlerTaktik';
+      if (row[prevBlurKey]) {
+        inp.removeEventListener('blur', row[prevBlurKey]);
+        row[prevBlurKey] = null;
       }
     });
+
+    // Remove previous change listeners before re-adding
+    if (row._autoFillLoadingHandler && loadingInp) {
+      loadingInp.removeEventListener('change', row._autoFillLoadingHandler);
+    }
+    if (row._rebuildDirHandler && loadingInp) {
+      loadingInp.removeEventListener('change', row._rebuildDirHandler);
+    }
+    if (row._autoFillTaktikHandler && taktikInp) {
+      taktikInp.removeEventListener('change', row._autoFillTaktikHandler);
+    }
+
+    function _onLoadingChange() {
+      _rebuildDirList(false);
+      autoFillNoloon(false);
+    }
+    function _onTaktikChange() {
+      autoFillNoloon(false);
+    }
+
+    row._rebuildDirHandler      = _onLoadingChange;
+    row._autoFillLoadingHandler = _onLoadingChange;
+    row._autoFillTaktikHandler  = _onTaktikChange;
+    if (loadingInp) loadingInp.addEventListener('change', _onLoadingChange);
+    if (taktikInp)  taktikInp.addEventListener('change',  _onTaktikChange);
+
+    if (preserveExistingValues) {
+      _rebuildDirList(true);
+      autoFillNoloon(true);
+    } else if (loadVals.length === 1) {
+      _rebuildDirList(false);
+      autoFillNoloon(false);
+    }
+  }
+
+  if (officeInp) {
+    officeInp.addEventListener('change', async function () {
+      await bindOfficeHamolaToRow(this.value, { preserveExistingValues: false });
+    });
+    if (officeInp.value && officeInp.value.trim()) {
+      bindOfficeHamolaToRow(officeInp.value, { preserveExistingValues: true });
+    }
   }
 }
 
@@ -2482,10 +2568,10 @@ async function validateBeforeSave(rawData) {
 
   // office validation
   const offices        = await ReceiptsModule.getOffices(username);
-  const allOfficeNames = offices.map(o => o.name);
+  const allOfficeKeys  = new Set(offices.map(o => OfficesService.normalizeCargoKey(o.name)).filter(Boolean));
   const invalidOffices = [...new Set(
     rawData.rows
-      .filter(r => r._type !== 'separator' && r.office && !allOfficeNames.includes(r.office))
+      .filter(r => r._type !== 'separator' && r.office && !allOfficeKeys.has(OfficesService.normalizeCargoKey(r.office)))
       .map(r => r.office)
   )];
   if (invalidOffices.length > 0) {
@@ -2499,23 +2585,6 @@ async function validateBeforeSave(rawData) {
   if (missingOfficeInfo.length > 0) {
     alert('⚠️ يجب اختيار المكتب ومكان التحميل والجهة لكل صف قبل الحفظ.');
     return false;
-  }
-
-  // Route validation: verify each (office, loading, destination) exists in hamola_details
-  for (const r of rawData.rows.filter(r => r._type !== 'separator')) {
-    if (!r.office || !r.loading || !r.taktik) continue;
-    const rowOffice = offices.find(o => o.name === r.office);
-    if (rowOffice) {
-      const hamolaRows = Array.isArray(rowOffice.hamolaRows) ? rowOffice.hamolaRows : [];
-      const routeExists = hamolaRows.some(h =>
-        String(h.loading_place || h.loading || '').trim() === r.loading.trim()
-        && String(h.destination_place || h.direction || h.taktik || '').trim() === r.taktik.trim()
-      );
-      if (!routeExists) {
-        alert(`⚠️ المسار غير موجود في تفاصيل الحمولة:\nالمكتب: ${r.office}\nالتحميل: ${r.loading}\nالجهة: ${r.taktik}`);
-        return false;
-      }
-    }
   }
 
   const invalidVehicles = rawData.rows

@@ -326,6 +326,7 @@ async function createReceipt(username, data, extraOps = []) {
     ledger_deposit : Money.decimalizeRecord(ledger_deposit),
     ledger_withdraw: Money.decimalizeRecord(ledger_withdraw),
     ledger_due     : Money.decimalizeRecord(ledger_due),
+    synced_hamola  : Array.isArray(apiRes.data?.synced_hamola) ? apiRes.data.synced_hamola : null,
   };
 }
 
@@ -394,6 +395,7 @@ async function updateReceipt(username, id, data, extraOps = []) {
     ledger_deposit : Money.decimalizeRecord(ledger_deposit),
     ledger_withdraw: Money.decimalizeRecord(ledger_withdraw),
     ledger_due     : Money.decimalizeRecord(ledger_due),
+    synced_hamola  : Array.isArray(apiRes.data?.synced_hamola) ? apiRes.data.synced_hamola : null,
   };
 }
 

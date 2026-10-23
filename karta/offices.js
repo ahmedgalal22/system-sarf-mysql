@@ -255,24 +255,181 @@ async function getOfficeById(id, username) {
   return normalized;
 }
 
+export function normalizeCargoText(value) {
+  if (value === undefined || value === null) return '';
+  const trimmed = String(value).trim();
+  if (!trimmed) return '';
+  return trimmed.replace(/\s+/g, ' ');
+}
+
+export function normalizeCargoKey(value) {
+  const text = normalizeCargoText(value);
+  return text ? text.toLowerCase() : '';
+}
+
+export function findMissingCargoCombinations(rows, offices) {
+  if (!Array.isArray(rows) || rows.length === 0) return [];
+  if (!Array.isArray(offices) || offices.length === 0) return [];
+
+  const officeByName = new Map();
+  const exactByOffice = new Map();
+  const routeByOffice = new Map();
+
+  for (const o of offices) {
+    if (!o || !o.id) continue;
+    const oNameKey = normalizeCargoKey(o.name);
+    if (!oNameKey) continue;
+    const officeId = String(o.id);
+    officeByName.set(oNameKey, o);
+
+    const exactSet = new Set();
+    const routeSet = new Set();
+    const hamolaRows = Array.isArray(o.hamolaRows) ? o.hamolaRows : [];
+    for (const h of hamolaRows) {
+      if (!h) continue;
+      const lKey = normalizeCargoKey(h.loading_place ?? h.loading);
+      const dKey = normalizeCargoKey(h.destination_place ?? h.direction ?? h.taktik);
+      const tKey = normalizeCargoKey(h.item_type ?? h.type);
+      if (!lKey || !dKey) continue;
+      const routeKey = `${lKey}::${dKey}`;
+      routeSet.add(routeKey);
+      exactSet.add(`${routeKey}::${tKey}`);
+    }
+    exactByOffice.set(officeId, exactSet);
+    routeByOffice.set(officeId, routeSet);
+  }
+
+  const missing = [];
+  for (const r of rows) {
+    if (!r || typeof r !== 'object') continue;
+    const rowType = r._type || r.row_type || 'data';
+    if (rowType === 'separator') continue;
+
+    const officeName = normalizeCargoText(r.office);
+    const loading = normalizeCargoText(r.loading ?? r.loading_place);
+    const destination = normalizeCargoText(r.taktik ?? r.destination_place ?? r.direction);
+    const itemType = normalizeCargoText(r.type ?? r.item_type);
+
+    if (!officeName || !loading || !destination) continue;
+
+    const office = officeByName.get(normalizeCargoKey(officeName));
+    if (!office || !office.id) continue;
+
+    const officeId = String(office.id);
+    const exactSet = exactByOffice.get(officeId);
+    const routeSet = routeByOffice.get(officeId);
+    if (!exactSet || !routeSet) continue;
+
+    const loadKey = normalizeCargoKey(loading);
+    const destKey = normalizeCargoKey(destination);
+    const typeKey = normalizeCargoKey(itemType);
+    const routeKey = `${loadKey}::${destKey}`;
+    const exactKey = `${routeKey}::${typeKey}`;
+
+    if (exactSet.has(exactKey)) continue;
+    if (typeKey === '' && routeSet.has(routeKey)) continue;
+
+    exactSet.add(exactKey);
+    routeSet.add(routeKey);
+
+    missing.push({
+      office_id: office.id,
+      office_name: office.name,
+      loading_place: loading,
+      destination_place: destination,
+      item_type: itemType || null,
+      nolon: 0,
+      office_amount: 0,
+      price: 0,
+    });
+  }
+
+  return missing;
+}
+
 async function addHamolaRow(username, office_id, row) {
   _requireUsername(username, 'addHamolaRow');
   if (!office_id) throw new Error('[OfficesService:addHamolaRow] office_id is required.');
+
+  const loading_place = normalizeCargoText(row.loading_place ?? row.loading ?? '');
+  const destination_place = normalizeCargoText(row.destination_place ?? row.direction ?? row.taktik ?? '');
+  const item_type = normalizeCargoText(row.item_type ?? row.type ?? '') || null;
 
   // Validation + UUID generation handled server-side.
   // Frontend sends business fields only — no _normalizeHamolaRow (avoids client UUID).
   const res = await ApiClient.post('/entities/hamola/create.php', {
     office_id:         Number(office_id),
-    loading_place:     String(row.loading_place ?? row.loading ?? '').trim(),
-    destination_place: String(row.destination_place ?? row.direction ?? row.taktik ?? '').trim(),
+    loading_place,
+    destination_place,
     nolon:             Number(row.nolon ?? row.noloon ?? 0) || 0,
     office_amount:     Number(row.office_amount ?? row.maktab ?? 0) || 0,
-    item_type:         String(row.item_type ?? row.type ?? '').trim() || null,
+    item_type,
     price:             Number(row.price ?? 0) || 0,
   });
   if (!res.success) throw new Error(res.message || 'فشل إضافة الحمولة');
-  window.dispatchEvent(new CustomEvent('offices:changed'));
+
+  const cached = _getCachedHamola(username, office_id) || [];
+  if (res.data) {
+    const existsInCache = cached.some(
+      (h) => String(h.id) === String(res.data.id)
+        || (
+          normalizeCargoKey(h.loading_place ?? h.loading) === normalizeCargoKey(res.data.loading_place)
+          && normalizeCargoKey(h.destination_place ?? h.direction ?? h.taktik) === normalizeCargoKey(res.data.destination_place)
+          && normalizeCargoKey(h.item_type ?? h.type) === normalizeCargoKey(res.data.item_type)
+        )
+    );
+    if (!existsInCache) {
+      _cacheHamola(username, office_id, [...cached, _normalizeHamolaRow(res.data, true)]);
+    }
+  }
+
+  if (typeof window !== 'undefined' && typeof window.dispatchEvent === 'function') {
+    window.dispatchEvent(new CustomEvent('offices:changed'));
+  }
   return res.data;
+}
+
+async function syncHamolaFromReceiptRows(username, rows, serverSyncedHamola = null) {
+  _requireUsername(username, 'syncHamolaFromReceiptRows');
+  if (!Array.isArray(rows) || rows.length === 0) return [];
+
+  // When the PHP endpoint already synchronized hamola_details atomically inside
+  // the receipt transaction, update local cache and notify listeners without extra API writes.
+  if (Array.isArray(serverSyncedHamola)) {
+    if (serverSyncedHamola.length > 0) {
+      for (const rec of serverSyncedHamola) {
+        if (!rec || !rec.office_id) continue;
+        const oid = String(rec.office_id);
+        const cached = _getCachedHamola(username, oid) || [];
+        const exists = cached.some(
+          (h) => String(h.id) === String(rec.id)
+            || (
+              normalizeCargoKey(h.loading_place ?? h.loading) === normalizeCargoKey(rec.loading_place)
+              && normalizeCargoKey(h.destination_place ?? h.direction ?? h.taktik) === normalizeCargoKey(rec.destination_place)
+              && normalizeCargoKey(h.item_type ?? h.type) === normalizeCargoKey(rec.item_type)
+            )
+        );
+        if (!exists) {
+          _cacheHamola(username, oid, [...cached, _normalizeHamolaRow(rec, true)]);
+        }
+      }
+      if (typeof window !== 'undefined' && typeof window.dispatchEvent === 'function') {
+        window.dispatchEvent(new CustomEvent('offices:changed'));
+      }
+    }
+    return serverSyncedHamola;
+  }
+
+  const offices = await getOffices(username);
+  const missing = findMissingCargoCombinations(rows, offices);
+  if (missing.length === 0) return [];
+
+  const created = [];
+  for (const item of missing) {
+    const rec = await addHamolaRow(username, item.office_id, item);
+    if (rec) created.push(rec);
+  }
+  return created;
 }
 
 async function updateHamolaRow(username, office_id, row_id, patch) {
@@ -717,6 +874,10 @@ const OfficesService = Object.freeze({
   addHamolaRow,
   updateHamolaRow,
   deleteHamolaRow,
+  syncHamolaFromReceiptRows,
+  findMissingCargoCombinations,
+  normalizeCargoText,
+  normalizeCargoKey,
   getOfficeFinancialSummary,
   getOfficeLedger,
   depositToOffice,
@@ -755,6 +916,8 @@ const OfficesModule = Object.freeze({
     OfficesService.updateHamolaRow(_moduleSessionUsername(), office_id, row_id, patch),
   deleteHamolaRow: (office_id, row_id) =>
     OfficesService.deleteHamolaRow(_moduleSessionUsername(), office_id, row_id),
+  syncHamolaFromReceiptRows: (rows, serverSyncedHamola = null) =>
+    OfficesService.syncHamolaFromReceiptRows(_moduleSessionUsername(), rows, serverSyncedHamola),
   getOfficeSummary: (filters = null) =>
     OfficesService.getOfficeFinancialSummary(_moduleSessionUsername(), filters),
 });

@@ -14,6 +14,8 @@ require_once __DIR__ . '/../../api/middleware/auth.php';
 require_once __DIR__ . '/../../repositories/ReceiptRepository.php';
 require_once __DIR__ . '/../../repositories/TreasuryRepository2.php';
 require_once __DIR__ . '/../../repositories/VehicleLedgerRepository.php';
+require_once __DIR__ . '/../../repositories/OfficeRepository.php';
+require_once __DIR__ . '/../../repositories/HamolaRepository.php';
 require_once __DIR__ . '/../../core/versionTracker.php';
 
 if (!isMethod('POST')) jsonMethodNotAllowed('POST');
@@ -26,6 +28,8 @@ try {
     $receiptRepo = new ReceiptRepository($db);
     $treasuryRepo = new TreasuryRepo($db);
     $ledgerRepo = new VehicleLedgerRepository($db);
+    $officeRepo = new OfficeRepository($db);
+    $hamolaRepo = new HamolaRepository($db);
 
     // UUID resolution: frontend sends 'id', backend contract expects 'uuid'
     $uuid = $body['uuid'] ?? $body['id'] ?? null;
@@ -40,40 +44,6 @@ try {
         if ($existing) {
             decodeRowsField($existing);
             mapResult('DUPLICATE', $existing);
-        }
-    }
-
-    // Route validation: verify each row's (office, loading, destination) exists in hamola_details
-    $rows = $body['rows'] ?? [];
-    if (is_array($rows)) {
-        require_once __DIR__ . '/../../repositories/HamolaRepository.php';
-        $hamolaRepo = new HamolaRepository($db);
-        $allHamola = $hamolaRepo->getAllByUsername($username);
-        $hamolaByOffice = [];
-        foreach ($allHamola as $h) {
-            $key = strtolower(trim($h['loading_place'] ?? '')) . '::' . strtolower(trim($h['destination_place'] ?? ''));
-            $officeId = $h['office_id'];
-            if (!isset($hamolaByOffice[$officeId])) $hamolaByOffice[$officeId] = [];
-            $hamolaByOffice[$officeId][$key] = true;
-        }
-        require_once __DIR__ . '/../../repositories/OfficeRepository.php';
-        $officeRepo = new OfficeRepository($db);
-        $allOffices = $officeRepo->getAllByUsername($username);
-        $officeIdByName = [];
-        foreach ($allOffices as $o) { $officeIdByName[trim($o['name'])] = $o['id']; }
-
-        foreach ($rows as $r) {
-            if (($r['_type'] ?? '') === 'separator') continue;
-            $office = trim($r['office'] ?? '');
-            $loading = trim($r['loading'] ?? '');
-            $taktik = trim($r['taktik'] ?? '');
-            if (!$office || !$loading || !$taktik) continue;
-            $oid = $officeIdByName[$office] ?? null;
-            if (!$oid) continue;
-            $routeKey = strtolower($loading) . '::' . strtolower($taktik);
-            if (empty($hamolaByOffice[$oid][$routeKey])) {
-                jsonError("المسار غير موجود: $office → $loading → $taktik", 400);
-            }
         }
     }
 
@@ -133,13 +103,26 @@ try {
             }
         }
 
-        bumpVersions($db, ['receipts', 'vehicle_ledger', 'treasury']);
+        // Automatically register any missing office cargo combinations inside the same transaction
+        $syncedHamola = $hamolaRepo->syncFromReceiptRows(
+            $username,
+            is_array($body['rows'] ?? null) ? $body['rows'] : [],
+            $officeRepo
+        );
+
+        $bumps = ['receipts', 'vehicle_ledger', 'treasury'];
+        if (!empty($syncedHamola)) {
+            $bumps[] = 'hamola_details';
+            $bumps[] = 'offices';
+        }
+        bumpVersions($db, $bumps);
         $db->commit();
         decodeRowsField($receipt);
         jsonSuccess([
-            'receipt' => $receipt,
-            'ledger' => $ledgerResults,
-            'treasury' => $treasuryResults,
+            'receipt'       => $receipt,
+            'ledger'        => $ledgerResults,
+            'treasury'      => $treasuryResults,
+            'synced_hamola' => $syncedHamola,
         ], 'تم إنشاء الإيصال بنجاح', 201);
 
     } catch (PDOException $e) {

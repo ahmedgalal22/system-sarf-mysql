@@ -35,6 +35,152 @@ class HamolaRepository {
         return $stmt->fetchAll();
     }
 
+    public function normalizeCargoText(?string $value): string {
+        if ($value === null) return '';
+        $trimmed = trim((string) $value);
+        if ($trimmed === '') return '';
+        return preg_replace('/\s+/u', ' ', $trimmed) ?? $trimmed;
+    }
+
+    public function normalizeCargoKey(?string $value): string {
+        $text = $this->normalizeCargoText($value);
+        if ($text === '') return '';
+        return function_exists('mb_strtolower')
+            ? mb_strtolower($text, 'UTF-8')
+            : strtolower($text);
+    }
+
+    public function findExistingCombination(
+        int $officeId,
+        string $username,
+        string $loadingPlace,
+        string $destinationPlace,
+        ?string $itemType = null
+    ): ?array {
+        $loadKey = $this->normalizeCargoKey($loadingPlace);
+        $destKey = $this->normalizeCargoKey($destinationPlace);
+        $typeKey = $this->normalizeCargoKey($itemType);
+        if ($loadKey === '' || $destKey === '') return null;
+
+        $sql = 'SELECT * FROM hamola_details WHERE office_id = :oid AND username = :u AND deleted_at IS NULL ORDER BY created_at ASC';
+        if ($this->db->inTransaction()) {
+            $sql .= ' FOR UPDATE';
+        }
+        $stmt = $this->db->prepare($sql);
+        $stmt->execute([':oid' => $officeId, ':u' => $username]);
+        $rows = $stmt->fetchAll();
+
+        foreach ($rows as $row) {
+            $rLoad = $this->normalizeCargoKey($row['loading_place'] ?? '');
+            $rDest = $this->normalizeCargoKey($row['destination_place'] ?? '');
+            $rType = $this->normalizeCargoKey($row['item_type'] ?? '');
+            if ($rLoad === $loadKey && $rDest === $destKey && $rType === $typeKey) {
+                return $row;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Automatically register missing (loading_place, destination_place, item_type)
+     * combinations from saved receipt rows into the selected office's hamola_details.
+     *
+     * Must be called inside the active receipt save/update DB transaction so a failed
+     * receipt save never leaves cargo records behind.
+     */
+    public function syncFromReceiptRows(string $username, array $rows, OfficeRepository $officeRepo): array {
+        if (empty($rows)) return [];
+
+        $allOffices = $officeRepo->getAllByUsername($username);
+        if (empty($allOffices)) return [];
+
+        $officeIdByName = [];
+        foreach ($allOffices as $o) {
+            $normName = $this->normalizeCargoKey($o['name'] ?? '');
+            if ($normName !== '') {
+                $officeIdByName[$normName] = (int) $o['id'];
+            }
+        }
+        if (empty($officeIdByName)) return [];
+
+        $sql = 'SELECT * FROM hamola_details WHERE username = :u AND deleted_at IS NULL ORDER BY office_id, created_at ASC';
+        if ($this->db->inTransaction()) {
+            $sql .= ' FOR UPDATE';
+        }
+        $stmt = $this->db->prepare($sql);
+        $stmt->execute([':u' => $username]);
+        $allHamola = $stmt->fetchAll();
+
+        $exactByOffice = [];
+        $routeByOffice = [];
+        foreach ($allHamola as $h) {
+            $oid = (int) ($h['office_id'] ?? 0);
+            if ($oid <= 0) continue;
+            $lKey = $this->normalizeCargoKey($h['loading_place'] ?? '');
+            $dKey = $this->normalizeCargoKey($h['destination_place'] ?? '');
+            $tKey = $this->normalizeCargoKey($h['item_type'] ?? '');
+            if ($lKey === '' || $dKey === '') continue;
+
+            $routeKey = $lKey . '::' . $dKey;
+            $exactKey = $routeKey . '::' . $tKey;
+            $routeByOffice[$oid][$routeKey] = true;
+            $exactByOffice[$oid][$exactKey] = true;
+        }
+
+        $created = [];
+        foreach ($rows as $r) {
+            if (!is_array($r)) continue;
+            $rowType = $r['_type'] ?? $r['row_type'] ?? 'data';
+            if ($rowType === 'separator') continue;
+
+            $officeName  = $this->normalizeCargoText($r['office'] ?? '');
+            $loading     = $this->normalizeCargoText($r['loading'] ?? $r['loading_place'] ?? '');
+            $destination = $this->normalizeCargoText($r['taktik'] ?? $r['destination_place'] ?? $r['direction'] ?? '');
+            $itemType    = $this->normalizeCargoText($r['type'] ?? $r['item_type'] ?? '');
+
+            if ($officeName === '' || $loading === '' || $destination === '') {
+                continue;
+            }
+
+            $officeKey = $this->normalizeCargoKey($officeName);
+            $officeId = $officeIdByName[$officeKey] ?? null;
+            if (!$officeId) {
+                continue;
+            }
+
+            $loadKey  = $this->normalizeCargoKey($loading);
+            $destKey  = $this->normalizeCargoKey($destination);
+            $typeKey  = $this->normalizeCargoKey($itemType);
+            $routeKey = $loadKey . '::' . $destKey;
+            $exactKey = $routeKey . '::' . $typeKey;
+
+            if (!empty($exactByOffice[$officeId][$exactKey])) {
+                continue;
+            }
+            if ($typeKey === '' && !empty($routeByOffice[$officeId][$routeKey])) {
+                continue;
+            }
+
+            $record = $this->create([
+                'uuid'              => null,
+                'office_id'         => $officeId,
+                'username'          => $username,
+                'loading_place'     => $loading,
+                'destination_place' => $destination,
+                'nolon'             => 0,
+                'office_amount'     => 0,
+                'item_type'         => $itemType !== '' ? $itemType : null,
+                'price'             => 0,
+            ]);
+
+            $exactByOffice[$officeId][$exactKey] = true;
+            $routeByOffice[$officeId][$routeKey] = true;
+            $created[] = $record;
+        }
+
+        return $created;
+    }
+
     public function create(array $data): array {
         $stmt = $this->db->prepare(
             'INSERT INTO hamola_details (uuid, office_id, username, loading_place, destination_place, nolon, office_amount, item_type, price, created_by, created_at, updated_at)
