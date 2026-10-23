@@ -29,16 +29,31 @@ if ($receiptId <= 0) jsonError('معرف الإيصال مطلوب', 400);
 if ($rawRowId !== null) {
     $rowId = (is_string($rawRowId) || is_numeric($rawRowId)) ? trim((string)$rawRowId) : '';
     if ($rowId === '') jsonError('معرف الصف مطلوب', 400);
-    $validatedRowStatus = ReceiptRepository::validateRowDisbursementStatus($rawStatus);
-    if ($validatedRowStatus === null) {
-        jsonError('حالة الصرف غير صالحة. القيم المسموحة: تم صرفه أو لم يتم صرفه', 400);
+
+    $isPaymentUpdate = array_key_exists('payment_status', $body)
+        || array_key_exists('paymentStatus', $body)
+        || (($body['field'] ?? $body['status_type'] ?? '') === 'payment_status');
+
+    if ($isPaymentUpdate) {
+        $rawPaymentStatus = $body['payment_status'] ?? $body['paymentStatus'] ?? $body['status'] ?? null;
+        $validatedRowStatus = ReceiptRepository::validateRowPaymentStatus($rawPaymentStatus);
+        if ($validatedRowStatus === null) {
+            jsonError('حالة الدفع غير صالحة. القيم المسموحة: تم دفعه أو لم يتم دفعه', 400);
+        }
+    } else {
+        $validatedRowStatus = ReceiptRepository::validateRowDisbursementStatus($rawStatus);
+        if ($validatedRowStatus === null) {
+            jsonError('حالة الصرف غير صالحة. القيم المسموحة: تم صرفه أو لم يتم صرفه', 400);
+        }
     }
     try {
         $db = getDB();
         $receiptRepo = new ReceiptRepository($db);
         $db->beginTransaction();
         try {
-            $res = $receiptRepo->updateRowDisbursementStatus($receiptId, $rowId, $validatedRowStatus, $username);
+            $res = $isPaymentUpdate
+                ? $receiptRepo->updateRowPaymentStatus($receiptId, $rowId, $validatedRowStatus, $username)
+                : $receiptRepo->updateRowDisbursementStatus($receiptId, $rowId, $validatedRowStatus, $username);
             if ($res['code'] === ReceiptRepository::RESULT_NOT_FOUND) {
                 $db->rollBack(); jsonError('الإيصال غير موجود', 404);
             }
@@ -56,12 +71,20 @@ if ($rawRowId !== null) {
             }
             bumpVersions($db, ['receipts']);
             $db->commit();
-            jsonSuccess([
+            $resData = [
                 'receipt' => $res['data'],
                 'row'     => $res['row'],
                 'row_id'  => $rowId,
-                'status'  => $validatedRowStatus,
-            ], 'تم تحديث حالة الصف بنجاح');
+            ];
+            if ($isPaymentUpdate) {
+                $resData['payment_status'] = $validatedRowStatus;
+            } else {
+                $resData['status'] = $validatedRowStatus;
+            }
+            jsonSuccess(
+                $resData,
+                $isPaymentUpdate ? 'تم تحديث حالة الدفع للصف بنجاح' : 'تم تحديث حالة الصف بنجاح'
+            );
         } catch (Exception $e) {
             if ($db->inTransaction()) $db->rollBack();
             throw $e;

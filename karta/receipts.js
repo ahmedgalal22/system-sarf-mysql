@@ -18,9 +18,13 @@ import { calculateRowNet, calculateReceiptTotals } from './services/financialCal
 import {
   RECEIPT_PAYOUT_STATUS,
   ROW_DISBURSEMENT_STATUS,
+  ROW_PAYMENT_STATUS,
   getRowDisbursementStatus,
   validateRowDisbursementStatus,
   getRowDisbursementStatusLabel,
+  getRowPaymentStatus,
+  validateRowPaymentStatus,
+  getRowPaymentStatusLabel,
   getStableRowId,
 } from './constants/payoutStatus.js';
 import { DateUtils } from './dateUtils.js';
@@ -138,6 +142,7 @@ function _normalizeRow(row) {
   } = row;
 
   const rowStatus = getRowDisbursementStatus(row);
+  const rowPaymentStatus = getRowPaymentStatus(row);
   const candidateRowId = row.row_id || row._rowId || _uuid();
 
   return {
@@ -152,6 +157,7 @@ function _normalizeRow(row) {
     disbursement_status: rowStatus,
     payout_status      : rowStatus,
     rowPayment         : rowStatus,
+    payment_status     : rowPaymentStatus,
     weight: Number(row.weight) || 0,
     deficit: Number(row.deficit) || 0,
     noloon: Number(row.noloon) || 0,
@@ -480,6 +486,18 @@ async function updateRowStatus(username, receiptId, rowId, status) {
   return ReceiptRepository.updateRowStatus(receiptId, rowId, status, { username });
 }
 
+/**
+ * Update the payment status ('paid' / 'تم دفعه' or 'unpaid' / 'لم يتم دفعه')
+ * of a single row within a receipt without altering disbursement status,
+ * financial calculations, or ledgers.
+ */
+async function updateRowPaymentStatus(username, receiptId, rowId, paymentStatus) {
+  if (!username) throw new Error('[ReceiptsModule:updateRowPaymentStatus] username is required.');
+  if (!receiptId) throw new Error('[ReceiptsModule:updateRowPaymentStatus] receiptId is required.');
+  if (!rowId) throw new Error('[ReceiptsModule:updateRowPaymentStatus] rowId is required.');
+  return ReceiptRepository.updateRowPaymentStatus(receiptId, rowId, paymentStatus, { username });
+}
+
 // ─── NAMED EXPORT ─────────────────────────────────────────────────────────
 
 const ReceiptsModule = Object.freeze({
@@ -487,6 +505,7 @@ const ReceiptsModule = Object.freeze({
   update,
   delete : remove,
   updateRowStatus,
+  updateRowPaymentStatus,
   getAll,
   getByDateRange,
   searchReceipts,
@@ -730,7 +749,7 @@ function formatSnapshotCellValue(row, col) {
   return _snapshotEsc(raw);
 }
 
-function renderReceiptSnapshotSeparatorRow(row, colSpan = DATA_COL_COUNT + 1) {
+function renderReceiptSnapshotSeparatorRow(row, colSpan = DATA_COL_COUNT + 2) {
   const vehicleName = _snapshotEsc(row.vehicleName || '');
   const subtotal = tFmt(Number(row.subtotal) || 0);
   const notes = _snapshotEsc(row.notes || '');
@@ -748,11 +767,13 @@ function renderReceiptSnapshotSeparatorRow(row, colSpan = DATA_COL_COUNT + 1) {
 
 function renderReceiptSnapshotDataRow(row, options = {}) {
   const showRowStatus = options.showRowStatus !== false;
+  const showRowPaymentStatus = options.showRowPaymentStatus !== false && showRowStatus;
   const readOnly = options.readOnly === true;
   const receiptId = options.receiptId ?? row?.receipt_id ?? '';
   const rowIndex = options.rowIndex ?? 0;
   const rowId = getStableRowId(row, receiptId, rowIndex);
   const rowStatus = getRowDisbursementStatus(row);
+  const rowPaymentStatus = getRowPaymentStatus(row);
 
   const cells = COL_DEFS.filter((col) => col.key !== '_actions').map((col) => {
     const printClass = col.printHide ? ' no-print' : '';
@@ -788,11 +809,27 @@ function renderReceiptSnapshotDataRow(row, options = {}) {
     }
   }
 
-  return `<tr data-row-id="${_snapshotEsc(rowId)}" data-receipt-id="${_snapshotEsc(receiptId)}" data-row-status="${_snapshotEsc(rowStatus)}">${cells}${statusCell}</tr>`;
+  let paymentStatusCell = '';
+  if (showRowPaymentStatus) {
+    const isPaymentPaid = rowPaymentStatus === ROW_PAYMENT_STATUS.PAID;
+    if (readOnly) {
+      const payLabel = getRowPaymentStatusLabel(rowPaymentStatus);
+      const payBg = isPaymentPaid ? '#059669' : '#dc2626';
+      paymentStatusCell = `<td class="px-1 py-1 text-center no-print snapshot-cell-payment-status"><span class="row-payment-status-badge" data-row-payment-status="${_snapshotEsc(rowPaymentStatus)}" style="background:${payBg};color:#fff;padding:2px 8px;border-radius:999px;font-size:0.75rem;font-weight:700;">${_snapshotEsc(payLabel)}</span></td>`;
+    } else {
+      const payBorder = isPaymentPaid ? '#059669' : '#dc2626';
+      const payBg = isPaymentPaid ? '#ecfdf5' : '#fef2f2';
+      const payFg = isPaymentPaid ? '#065f46' : '#991b1b';
+      paymentStatusCell = `<td class="px-1 py-1 text-center no-print snapshot-cell-payment-status"><div class="row-payment-status-control" style="display:inline-flex;align-items:center;gap:4px;"><select class="row-payment-status-select" data-action="toggle-row-payment-status" data-receipt-id="${_snapshotEsc(receiptId)}" data-row-id="${_snapshotEsc(rowId)}" data-prev-payment-status="${_snapshotEsc(rowPaymentStatus)}" aria-label="حالة الدفع" style="padding:2px 6px;border-radius:6px;font-size:0.75rem;font-weight:700;border:1px solid ${payBorder};background:${payBg};color:${payFg};cursor:pointer;"><option value="${ROW_PAYMENT_STATUS.PAID}" ${isPaymentPaid ? 'selected' : ''}>تم دفعه</option><option value="${ROW_PAYMENT_STATUS.UNPAID}" ${!isPaymentPaid ? 'selected' : ''}>لم يتم دفعه</option></select><span class="row-payment-status-feedback" data-row-payment-feedback="${_snapshotEsc(rowId)}" style="font-size:0.75rem;min-width:14px;display:inline-block;"></span></div></td>`;
+    }
+  }
+
+  return `<tr data-row-id="${_snapshotEsc(rowId)}" data-receipt-id="${_snapshotEsc(receiptId)}" data-row-status="${_snapshotEsc(rowStatus)}" data-row-payment-status="${_snapshotEsc(rowPaymentStatus)}">${cells}${statusCell}${paymentStatusCell}</tr>`;
 }
 
 function renderReceiptSnapshotTableHead(options = {}) {
   const showRowStatus = options.showRowStatus !== false;
+  const showRowPaymentStatus = options.showRowPaymentStatus !== false && showRowStatus;
   const baseHeaders = COL_DEFS.filter((col) => col.key !== '_actions').map((col) => {
     const printClass = col.printHide ? ' no-print' : '';
     return `<th class="px-1 py-2 text-center${printClass}" style="min-width:${col.minW};">${col.label}</th>`;
@@ -800,17 +837,22 @@ function renderReceiptSnapshotTableHead(options = {}) {
   const statusHeader = showRowStatus
     ? `<th class="px-1 py-2 text-center no-print" style="min-width:115px;">الحالة</th>`
     : '';
-  return `${baseHeaders}${statusHeader}`;
+  const paymentStatusHeader = showRowPaymentStatus
+    ? `<th class="px-1 py-2 text-center no-print" style="min-width:115px;">حالة الدفع</th>`
+    : '';
+  return `${baseHeaders}${statusHeader}${paymentStatusHeader}`;
 }
 
 /**
  * Renders persisted receipt rows as an immutable HTML snapshot (no recalculation).
  * @param {object[]} rows
- * @param {{ colSpan?: number, showRowStatus?: boolean, receiptId?: string|number, readOnly?: boolean }} [options]
+ * @param {{ colSpan?: number, showRowStatus?: boolean, showRowPaymentStatus?: boolean, receiptId?: string|number, readOnly?: boolean }} [options]
  */
 function renderReceiptSnapshotRowsHtml(rows, options = {}) {
   const showRowStatus = options.showRowStatus !== false;
-  const colSpan = options.colSpan ?? (showRowStatus ? DATA_COL_COUNT + 1 : DATA_COL_COUNT);
+  const showRowPaymentStatus = options.showRowPaymentStatus !== false && showRowStatus;
+  const extraCols = (showRowStatus ? 1 : 0) + (showRowPaymentStatus ? 1 : 0);
+  const colSpan = options.colSpan ?? (DATA_COL_COUNT + extraCols);
   if (!Array.isArray(rows) || rows.length === 0) return '';
   return rows.map((row, idx) => {
     if (row && row._type === 'separator') {
@@ -2505,6 +2547,9 @@ async function collectReceiptRows() {
     const preservedStatus = row.dataset?.disbursementStatus
       ? getRowDisbursementStatus({ disbursement_status: row.dataset.disbursementStatus })
       : ROW_DISBURSEMENT_STATUS.UNPAID;
+    const preservedPaymentStatus = row.dataset?.paymentStatus
+      ? getRowPaymentStatus({ payment_status: row.dataset.paymentStatus })
+      : ROW_PAYMENT_STATUS.UNPAID;
 
     receiptRows.push({
       _type              : 'data',
@@ -2512,6 +2557,7 @@ async function collectReceiptRows() {
       disbursement_status: preservedStatus,
       payout_status      : preservedStatus,
       rowPayment         : preservedStatus,
+      payment_status     : preservedPaymentStatus,
       owner_id           : String(finalOwner.id),
       owner_name         : finalOwner.name,
       kartano      : normalizeOptionalString(_field(row, 'receipt-kartano')),
@@ -3065,6 +3111,7 @@ async function loadReceiptForEdit(receiptData) {
     const tr = document.createElement('tr');
     tr.dataset.rowId = getStableRowId(rowData, receiptData.id, rowIdx);
     tr.dataset.disbursementStatus = getRowDisbursementStatus(rowData);
+    tr.dataset.paymentStatus = getRowPaymentStatus(rowData);
     tr.innerHTML = _buildRowHTML();
     tbody.appendChild(tr);
 

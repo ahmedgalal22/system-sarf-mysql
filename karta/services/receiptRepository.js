@@ -3,6 +3,7 @@ import { ApiClient } from './apiClient.js';
 import { isServerMode } from './apiConfig.js';
 import {
   validateRowDisbursementStatus,
+  validateRowPaymentStatus,
   getStableRowId,
   normalizeReceiptRowWithStatus,
 } from '../constants/payoutStatus.js';
@@ -135,6 +136,93 @@ export const ReceiptRepository = {
         row: updatedRow,
         row_id: cleanRowId,
         status: canonicalStatus,
+      };
+    });
+  },
+
+  /**
+   * Persist the payment status ('paid' / 'تم دفعه' or 'unpaid' / 'لم يتم دفعه')
+   * of a single row within a receipt.
+   * Serialized per receiptId so concurrent row updates on the same receipt
+   * never overwrite each other.
+   *
+   * @param {string|number} receiptId
+   * @param {string} rowId
+   * @param {string} paymentStatus — 'paid' | 'unpaid' | 'تم دفعه' | 'لم يتم دفعه'
+   * @param {{ username?: string }} [meta]
+   */
+  async updateRowPaymentStatus(receiptId, rowId, paymentStatus, meta = {}) {
+    if (receiptId === undefined || receiptId === null || String(receiptId).trim() === '') {
+      throw new Error('معرف الإيصال مطلوب');
+    }
+    if (typeof rowId !== 'string' && typeof rowId !== 'number') {
+      throw new Error('معرف الصف مطلوب');
+    }
+    const cleanRowId = String(rowId).trim();
+    if (!cleanRowId) {
+      throw new Error('معرف الصف مطلوب');
+    }
+    const canonicalPaymentStatus = validateRowPaymentStatus(paymentStatus);
+
+    return _withReceiptLock(receiptId, async () => {
+      if (isServerMode()) {
+        const res = await ApiClient.post('/entities/receipts/row-status.php', {
+          receipt_id: receiptId,
+          row_id: cleanRowId,
+          payment_status: canonicalPaymentStatus,
+        });
+        if (!res.success) {
+          throw new Error(res.message || 'فشل تحديث حالة الدفع للصف');
+        }
+        return res.data;
+      }
+
+      const existing = await DBProvider.get('receipts', receiptId);
+      if (!existing || existing.deleted_at) {
+        throw new Error('الإيصال غير موجود');
+      }
+      if (meta?.username && existing.username && existing.username !== meta.username) {
+        throw new Error('غير مسموح بتعديل هذا الإيصال');
+      }
+      if (existing.is_archived) {
+        throw new Error('لا يمكن تعديل سجل مؤرشف');
+      }
+
+      const rawRows = Array.isArray(existing.rows)
+        ? existing.rows
+        : typeof existing.rows === 'string'
+          ? JSON.parse(existing.rows || '[]')
+          : [];
+
+      let found = false;
+      let updatedRow = null;
+      const nowIso = new Date().toISOString();
+
+      const updatedRows = rawRows.map((row, idx) => {
+        if (!row || row._type === 'separator') return row;
+        const normalized = normalizeReceiptRowWithStatus(row, existing.id ?? receiptId, idx);
+        if (normalized.row_id === cleanRowId) {
+          found = true;
+          updatedRow = {
+            ...normalized,
+            payment_status: canonicalPaymentStatus,
+            payment_status_updated_at: nowIso,
+          };
+          return updatedRow;
+        }
+        return normalized;
+      });
+
+      if (!found) {
+        throw new Error('الصف المطلوب غير موجود في هذا الإيصال');
+      }
+
+      const saved = await DBProvider.update('receipts', receiptId, { rows: updatedRows }, meta);
+      return {
+        receipt: saved || { ...existing, rows: updatedRows },
+        row: updatedRow,
+        row_id: cleanRowId,
+        payment_status: canonicalPaymentStatus,
       };
     });
   },

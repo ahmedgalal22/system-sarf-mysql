@@ -66,7 +66,8 @@ try {
     $types          = _sanitizeArray($_GET['type'] ?? []);
 
     // Single-value parameters
-    $payoutStatus   = sanitizeString($_GET['payout_status'] ?? null);
+    $payoutStatus   = sanitizeString($_GET['payout_status'] ?? ($_GET['row_status'] ?? null));
+    $paymentStatus  = sanitizeString($_GET['payment_status'] ?? ($_GET['row_payment_status'] ?? null));
     $sort           = sanitizeString($_GET['sort'] ?? null);
     $sortDir        = sanitizeString($_GET['sort_dir'] ?? null);
     $limit          = (int)($_GET['limit'] ?? 50);
@@ -84,6 +85,7 @@ try {
         'karta'           => $kartas,
         'type'            => $types,
         'payout_status'   => $payoutStatus,
+        'payment_status'  => $paymentStatus,
         'sort'            => $sort ?: 'created_at',
         'sort_dir'        => $sortDir ?: 'desc',
         'limit'           => $limit,

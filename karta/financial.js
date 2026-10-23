@@ -485,6 +485,20 @@ async function updateReceiptRowStatus(username, receiptId, rowId, status) {
   return ReceiptRepository.updateRowStatus(receiptId, rowId, status, { username });
 }
 
+/**
+ * Update the payment status ('paid' / 'تم دفعه' or 'unpaid' / 'لم يتم دفعه')
+ * of a single receipt row.
+ * Completely isolated from disbursement status, receipt financial calculations,
+ * office balances, and ledger/treasury transactions.
+ */
+async function updateReceiptRowPaymentStatus(username, receiptId, rowId, paymentStatus) {
+  if (!username) throw new Error('[FinancialService:updateReceiptRowPaymentStatus] username is required.');
+  if (!receiptId) throw new Error('[FinancialService:updateReceiptRowPaymentStatus] receiptId is required.');
+  if (!rowId) throw new Error('[FinancialService:updateReceiptRowPaymentStatus] rowId is required.');
+
+  return ReceiptRepository.updateRowPaymentStatus(receiptId, rowId, paymentStatus, { username });
+}
+
 // ─── PUBLIC: rebuildVehicleBalance ────────────────────────────────────────────
 
 async function rebuildVehicleBalance(vehicle_id) {
@@ -754,4 +768,5 @@ export const FinancialService = Object.freeze({
   resolveHamolaPrice,
   updateReceiptStatus,
   updateReceiptRowStatus,
+  updateReceiptRowPaymentStatus,
 });

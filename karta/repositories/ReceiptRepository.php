@@ -96,6 +96,45 @@ class ReceiptRepository {
     }
 
     /**
+     * Validate a requested row payment status against the two supported values:
+     *   - 'paid' / 'تم دفعه'       -> 'paid'
+     *   - 'unpaid' / 'لم يتم دفعه' -> 'unpaid'
+     * Returns null for any unsupported value.
+     */
+    public static function validateRowPaymentStatus($status): ?string {
+        if (!is_string($status)) {
+            return null;
+        }
+        $clean = trim($status);
+        $lower = mb_strtolower($clean, 'UTF-8');
+        if ($lower === 'paid' || $clean === 'تم دفعه') {
+            return 'paid';
+        }
+        if ($lower === 'unpaid' || $clean === 'لم يتم دفعه') {
+            return 'unpaid';
+        }
+        return null;
+    }
+
+    /**
+     * Normalize a row payment status value, defaulting to 'unpaid' ('لم يتم دفعه').
+     */
+    public static function normalizeRowPaymentStatus($status): string {
+        return self::validateRowPaymentStatus($status) ?? 'unpaid';
+    }
+
+    /**
+     * Read a receipt row's saved payment status.
+     * Defaults to 'unpaid' ('لم يتم دفعه') when a row does not yet have a row-level payment_status.
+     * Kept strictly separate from disbursement_status, row_status, payout_status, rowPayment,
+     * and receipt-level payout_status.
+     */
+    public static function getRowPaymentStatus(array $row): string {
+        $raw = $row['payment_status'] ?? null;
+        return self::normalizeRowPaymentStatus($raw);
+    }
+
+    /**
      * Resolve a stable identifier for a receipt row.
      */
     public static function getStableRowId(array $row, $receiptId = '', int $rowIndex = 0): string {
@@ -112,7 +151,8 @@ class ReceiptRepository {
 
     /**
      * Normalize all rows of a receipt so each data row carries a stable row_id,
-     * _rowId, and row-level disbursement_status ('paid' | 'unpaid').
+     * _rowId, row-level disbursement_status ('paid' | 'unpaid'), and row-level
+     * payment_status ('paid' | 'unpaid').
      */
     public static function normalizeReceiptRows($rows, $receiptId = ''): array {
         if (is_string($rows)) {
@@ -130,11 +170,13 @@ class ReceiptRepository {
             }
             $stableId = self::getStableRowId($row, $receiptId, $idx);
             $status = self::getRowDisbursementStatus($row);
+            $paymentStatus = self::getRowPaymentStatus($row);
             $row['row_id']              = $stableId;
             $row['_rowId']              = $stableId;
             $row['disbursement_status'] = $status;
             $row['payout_status']       = $status;
             $row['rowPayment']          = $status;
+            $row['payment_status']      = $paymentStatus;
             $normalized[] = $row;
         }
         return $normalized;
@@ -296,6 +338,11 @@ class ReceiptRepository {
         $rawRowStatus = $params['row_status'] ?? ($params['payout_status'] ?? '');
         $rowStatusFilter = self::validateRowDisbursementStatus($rawRowStatus);
 
+        // Single-value row payment status filter ('paid' or 'unpaid') operates on individual rows
+        // using AND semantics alongside $rowStatusFilter.
+        $rawRowPaymentStatus = $params['row_payment_status'] ?? ($params['payment_status'] ?? '');
+        $rowPaymentStatusFilter = self::validateRowPaymentStatus($rawRowPaymentStatus);
+
         // ── Sort ──────────────────────────────────────────────────────────
 
         $sortField = $params['sort'] ?? 'created_at';
@@ -323,11 +370,13 @@ class ReceiptRepository {
         $vehicleFilter = $params['vehicle'] ?? [];
         $kartaFilter   = $params['karta'] ?? [];
         $typeFilter    = $params['type'] ?? [];
-        $hasJsonFilter = !empty($vehicleFilter) || !empty($kartaFilter) || !empty($typeFilter) || ($rowStatusFilter !== null);
+        $hasJsonFilter = !empty($vehicleFilter) || !empty($kartaFilter) || !empty($typeFilter)
+                         || ($rowStatusFilter !== null) || ($rowPaymentStatusFilter !== null);
 
         if ($hasJsonFilter) {
             $result = $this->_searchPathB($whereBase, $bindParams, $orderBy, $limit, $offset,
-                                          $vehicleFilter, $kartaFilter, $typeFilter, $rowStatusFilter);
+                                          $vehicleFilter, $kartaFilter, $typeFilter,
+                                          $rowStatusFilter, $rowPaymentStatusFilter);
         } else {
             $result = $this->_searchPathA($whereBase, $bindParams, $orderBy, $limit, $offset);
         }
@@ -424,7 +473,8 @@ class ReceiptRepository {
     private function _searchPathB(string $whereBase, array $bindParams,
                                    string $orderBy, int $limit, int $offset,
                                    array $vehicleFilter, array $kartaFilter,
-                                   array $typeFilter, ?string $rowStatusFilter = null): array {
+                                   array $typeFilter, ?string $rowStatusFilter = null,
+                                   ?string $rowPaymentStatusFilter = null): array {
 
         // Fetch full candidate set — needed for PHP post-filter
         $sql = "SELECT * FROM receipts WHERE $whereBase ORDER BY $orderBy";
@@ -438,12 +488,12 @@ class ReceiptRepository {
         }
         unset($r);
 
-        // PHP post-filter: vehicle, karta, type, and row-level status
+        // PHP post-filter: vehicle, karta, type, and row-level disbursement & payment statuses
         $vehicleLower = array_map('mb_strtolower', $vehicleFilter);
         $kartaLower   = array_map('mb_strtolower', $kartaFilter);
         $typeLower    = array_map('mb_strtolower', $typeFilter);
 
-        $allRecords = array_values(array_filter($allRecords, function ($record) use ($vehicleLower, $kartaLower, $typeLower, $rowStatusFilter) {
+        $allRecords = array_values(array_filter($allRecords, function ($record) use ($vehicleLower, $kartaLower, $typeLower, $rowStatusFilter, $rowPaymentStatusFilter) {
             $rows = is_array($record['rows']) ? $record['rows'] : [];
 
             if (!empty($vehicleLower)) {
@@ -473,14 +523,18 @@ class ReceiptRepository {
                 if (!$found) return false;
             }
 
-            if ($rowStatusFilter !== null) {
+            if ($rowStatusFilter !== null || $rowPaymentStatusFilter !== null) {
                 $found = false;
                 foreach ($rows as $row) {
                     if (($row['_type'] ?? '') === 'separator') continue;
-                    if (self::getRowDisbursementStatus($row) === $rowStatusFilter) {
-                        $found = true;
-                        break;
+                    if ($rowStatusFilter !== null && self::getRowDisbursementStatus($row) !== $rowStatusFilter) {
+                        continue;
                     }
+                    if ($rowPaymentStatusFilter !== null && self::getRowPaymentStatus($row) !== $rowPaymentStatusFilter) {
+                        continue;
+                    }
+                    $found = true;
+                    break;
                 }
                 if (!$found) return false;
             }
@@ -497,7 +551,7 @@ class ReceiptRepository {
             $sumPaid     += (int)($rec['paid'] ?? 0);
         }
 
-        $jsonSums = $this->_computeJsonSummary($allRecords, $rowStatusFilter);
+        $jsonSums = $this->_computeJsonSummary($allRecords, $rowStatusFilter, $rowPaymentStatusFilter);
 
         $summary = [
             'net_due'   => $sumNetDue,
@@ -531,10 +585,15 @@ class ReceiptRepository {
      * fields — called by both _searchPathA and _searchPathB.
      *
      * @param iterable $records — each element must have a 'rows' key (array or JSON string)
-     * @param ?string  $rowStatusFilter — optional row-level status filter ('paid'|'unpaid')
+     * @param ?string  $rowStatusFilter — optional row-level disbursement status filter ('paid'|'unpaid')
+     * @param ?string  $rowPaymentStatusFilter — optional row-level payment status filter ('paid'|'unpaid')
      * @return array { row_count: int, weight: float, noloon: float, ohda: float }
      */
-    private function _computeJsonSummary(iterable $records, ?string $rowStatusFilter = null): array {
+    private function _computeJsonSummary(
+        iterable $records,
+        ?string $rowStatusFilter = null,
+        ?string $rowPaymentStatusFilter = null
+    ): array {
         $rowCount = 0;
         $totalWeight = 0.0;
         $totalNoloon = 0.0;
@@ -549,6 +608,7 @@ class ReceiptRepository {
             foreach ($rows as $row) {
                 if (isset($row['_type']) && $row['_type'] === 'separator') continue;
                 if ($rowStatusFilter !== null && self::getRowDisbursementStatus($row) !== $rowStatusFilter) continue;
+                if ($rowPaymentStatusFilter !== null && self::getRowPaymentStatus($row) !== $rowPaymentStatusFilter) continue;
                 $rowCount++;
                 $totalWeight += (float)($row['weight'] ?? 0) - (float)($row['deficit'] ?? 0);
                 $totalNoloon += (float)($row['noloon'] ?? 0);
@@ -910,6 +970,105 @@ class ReceiptRepository {
                 $row['payout_status']       = $canonicalStatus;
                 $row['rowPayment']          = $canonicalStatus;
                 $row['status_updated_at']   = $now;
+                $found = true;
+                $updatedRow = $row;
+                break;
+            }
+        }
+        unset($row);
+
+        if (!$found) {
+            return ['code' => self::RESULT_ROW_NOT_FOUND, 'data' => null, 'row' => null];
+        }
+
+        $updStmt = $this->db->prepare(
+            'UPDATE receipts SET `rows` = :rows, updated_by = :updated_by, updated_at = NOW(3) WHERE id = :id'
+        );
+        $updStmt->execute([
+            ':rows'       => json_encode($rows, JSON_UNESCAPED_UNICODE),
+            ':updated_by' => $username,
+            ':id'         => $receiptId,
+        ]);
+
+        $updatedReceipt = $this->findById($receiptId);
+        if ($updatedReceipt) {
+            $updatedReceipt['rows'] = self::normalizeReceiptRows($updatedReceipt['rows'] ?? [], $receiptId);
+        }
+
+        return [
+            'code' => self::RESULT_OK,
+            'data' => $updatedReceipt,
+            'row'  => $updatedRow,
+        ];
+    }
+
+    /**
+     * Atomically update the payment status ('paid' / 'تم دفعه' or 'unpaid' / 'لم يتم دفعه')
+     * of a single row inside a receipt.
+     *
+     * Concurrency & Data Integrity:
+     *   - Acquires an exclusive row lock (`SELECT ... FOR UPDATE`) on the receipt row
+     *     so concurrent updates to different rows or status fields of the same receipt
+     *     are serialized and never overwrite each other.
+     *   - Verifies receipt ownership (`username`) and non-archived status.
+     *   - Validates `$paymentStatus` strictly against the two supported values ('paid' / 'unpaid').
+     *   - Verifies that `$rowId` exists as a non-separator row within `$receiptId`
+     *     (preventing another receipt's row identifier from modifying this receipt).
+     *   - Modifies ONLY the target row's `payment_status` inside `rows` JSON; does not
+     *     alter `disbursement_status`, weights, net amounts, receipt financial totals,
+     *     office balances, or any ledger/treasury entries.
+     *
+     * @return array ['code' => string, 'data' => ?array, 'row' => ?array]
+     */
+    public function updateRowPaymentStatus(
+        int $receiptId,
+        string $rowId,
+        string $paymentStatus,
+        string $username
+    ): array {
+        $canonicalPaymentStatus = self::validateRowPaymentStatus($paymentStatus);
+        if ($canonicalPaymentStatus === null) {
+            return ['code' => self::RESULT_INVALID, 'data' => null, 'row' => null];
+        }
+
+        $cleanRowId = trim($rowId);
+        if ($cleanRowId === '') {
+            return ['code' => self::RESULT_INVALID, 'data' => null, 'row' => null];
+        }
+
+        $lockStmt = $this->db->prepare(
+            'SELECT id, username, is_archived, `rows` FROM receipts WHERE id = :id AND deleted_at IS NULL FOR UPDATE'
+        );
+        $lockStmt->execute([':id' => $receiptId]);
+        $current = $lockStmt->fetch();
+
+        if (!$current) {
+            return ['code' => self::RESULT_NOT_FOUND, 'data' => null, 'row' => null];
+        }
+
+        if (($current['username'] ?? '') !== $username) {
+            return ['code' => self::RESULT_FORBIDDEN, 'data' => null, 'row' => null];
+        }
+
+        if (!empty($current['is_archived'])) {
+            return ['code' => self::RESULT_ARCHIVED, 'data' => null, 'row' => null];
+        }
+
+        $rows = self::normalizeReceiptRows($current['rows'] ?? [], $receiptId);
+        $found = false;
+        $updatedRow = null;
+        $now = (new DateTime('now', new DateTimeZone('Africa/Cairo')))->format('Y-m-d H:i:s.v');
+
+        foreach ($rows as $idx => &$row) {
+            if (!is_array($row) || ($row['_type'] ?? '') === 'separator') {
+                continue;
+            }
+            $stableId = self::getStableRowId($row, $receiptId, $idx);
+            if ($stableId === $cleanRowId) {
+                $row['row_id']                    = $stableId;
+                $row['_rowId']                    = $stableId;
+                $row['payment_status']            = $canonicalPaymentStatus;
+                $row['payment_status_updated_at'] = $now;
                 $found = true;
                 $updatedRow = $row;
                 break;

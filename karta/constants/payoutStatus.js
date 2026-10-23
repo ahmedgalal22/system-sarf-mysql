@@ -248,6 +248,97 @@ export function getRowDisbursementStatusLabel(rowOrStatus) {
   return ROW_DISBURSEMENT_LABELS[status] || ROW_DISBURSEMENT_LABELS[ROW_DISBURSEMENT_STATUS.UNPAID];
 }
 
+// ─── PER-ROW PAYMENT STATUS ──────────────────────────────────────────────────
+
+export const ROW_PAYMENT_STATUS = Object.freeze({
+  PAID: 'paid',
+  UNPAID: 'unpaid',
+});
+
+export const ROW_PAYMENT_LABELS = Object.freeze({
+  [ROW_PAYMENT_STATUS.PAID]: 'تم دفعه',
+  [ROW_PAYMENT_STATUS.UNPAID]: 'لم يتم دفعه',
+});
+
+/**
+ * Validate a requested row payment status against the two supported values:
+ *   - 'paid' / 'تم دفعه'       -> 'paid'
+ *   - 'unpaid' / 'لم يتم دفعه' -> 'unpaid'
+ * Throws an Error for any other value.
+ *
+ * @param {string} status
+ * @returns {'paid'|'unpaid'}
+ */
+export function validateRowPaymentStatus(status) {
+  if (typeof status !== 'string') {
+    throw new Error(`[RowPaymentState] Invalid row payment status type: expected string, got ${typeof status}`);
+  }
+  const clean = status.trim();
+  const lower = clean.toLowerCase();
+  if (lower === ROW_PAYMENT_STATUS.PAID || clean === 'تم دفعه') {
+    return ROW_PAYMENT_STATUS.PAID;
+  }
+  if (lower === ROW_PAYMENT_STATUS.UNPAID || clean === 'لم يتم دفعه') {
+    return ROW_PAYMENT_STATUS.UNPAID;
+  }
+  throw new Error(`[RowPaymentState] Unsupported row payment status: "${status}"`);
+}
+
+export function isValidRowPaymentStatus(status) {
+  try {
+    validateRowPaymentStatus(status);
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+
+/**
+ * Determine a receipt row's saved payment status.
+ * Default for rows that do not yet have a row-level payment_status is 'unpaid' ('لم يتم دفعه').
+ * Kept strictly separate from disbursement_status, row_status, payout_status, rowPayment,
+ * and receipt-level payout fields.
+ *
+ * @param {object} row
+ * @returns {'paid'|'unpaid'}
+ */
+export function getRowPaymentStatus(row) {
+  if (!row || typeof row !== 'object') return ROW_PAYMENT_STATUS.UNPAID;
+  const raw = row.payment_status ?? null;
+
+  if (typeof raw === 'string') {
+    const clean = raw.trim();
+    const lower = clean.toLowerCase();
+    if (lower === ROW_PAYMENT_STATUS.PAID || clean === 'تم دفعه') {
+      return ROW_PAYMENT_STATUS.PAID;
+    }
+    if (lower === ROW_PAYMENT_STATUS.UNPAID || clean === 'لم يتم دفعه') {
+      return ROW_PAYMENT_STATUS.UNPAID;
+    }
+  }
+  return ROW_PAYMENT_STATUS.UNPAID;
+}
+
+/**
+ * Get the Arabic label ('تم دفعه' or 'لم يتم دفعه') for a row or payment status value.
+ *
+ * @param {object|string} rowOrStatus
+ * @returns {string}
+ */
+export function getRowPaymentStatusLabel(rowOrStatus) {
+  const status =
+    rowOrStatus && typeof rowOrStatus === 'object'
+      ? getRowPaymentStatus(rowOrStatus)
+      : (() => {
+          try {
+            return validateRowPaymentStatus(String(rowOrStatus ?? ''));
+          } catch (_) {
+            return ROW_PAYMENT_STATUS.UNPAID;
+          }
+        })();
+  return ROW_PAYMENT_LABELS[status] || ROW_PAYMENT_LABELS[ROW_PAYMENT_STATUS.UNPAID];
+}
+
 /**
  * Resolve a stable row identifier for a receipt row.
  * Uses row.row_id / row._rowId / row.id when present, or a deterministic
@@ -274,7 +365,8 @@ export function getStableRowId(row, receiptId = '', rowIndex = 0) {
 
 /**
  * Normalize a persisted receipt row so it always carries a stable row_id, _rowId,
- * and row-level disbursement_status ('paid' | 'unpaid') without mutating financial fields.
+ * row-level disbursement_status ('paid' | 'unpaid'), and row-level payment_status
+ * ('paid' | 'unpaid') without mutating financial fields.
  *
  * @param {object} row
  * @param {string|number} [receiptId]
@@ -286,6 +378,7 @@ export function normalizeReceiptRowWithStatus(row, receiptId = '', rowIndex = 0)
   if (row._type === 'separator') return row;
   const stableId = getStableRowId(row, receiptId, rowIndex);
   const status = getRowDisbursementStatus(row);
+  const paymentStatus = getRowPaymentStatus(row);
   return {
     ...row,
     row_id: stableId,
@@ -293,5 +386,6 @@ export function normalizeReceiptRowWithStatus(row, receiptId = '', rowIndex = 0)
     disbursement_status: status,
     payout_status: status,
     rowPayment: status,
+    payment_status: paymentStatus,
   };
 }

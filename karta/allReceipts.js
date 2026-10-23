@@ -13,10 +13,14 @@ import { ReceiptRepository } from './services/receiptRepository.js';
 import {
   RECEIPT_PAYOUT_STATUS,
   ROW_DISBURSEMENT_STATUS,
+  ROW_PAYMENT_STATUS,
   getPayoutStatusMeta,
   getRowDisbursementStatus,
   getRowDisbursementStatusLabel,
   validateRowDisbursementStatus,
+  getRowPaymentStatus,
+  getRowPaymentStatusLabel,
+  validateRowPaymentStatus,
   getStableRowId,
   normalizeReceiptRowWithStatus,
 } from './constants/payoutStatus.js';
@@ -75,6 +79,7 @@ function createReceiptFilterState() {
     karta: [],       // string[] — multi-select values (Phase 4)
     type: [],        // string[] — multi-select values (Phase 4)
     status: 'all',
+    paymentStatus: 'all',
     from: range.from,
     to: range.to,
     sortByPayoutDate: false,
@@ -124,12 +129,24 @@ function getSessionUsername() {
 function _updateStatusButtonStyles() {
   const page = getPage();
   if (!page) return;
-  const status = STATE.filters.receipts.status;
+  const status = normalizeStatusFilterValue(STATE.filters.receipts.status);
   page.querySelectorAll('[data-action="status-filter"]').forEach(btn => {
     const s = btn.dataset.status;
     if (s === 'all')    btn.style.cssText = status === 'all'    ? 'background:#2563eb;color:#fff;border-color:#2563eb;' : '';
     if (s === 'paid')   btn.style.cssText = status === 'paid'   ? 'background:#059669;color:#fff;border-color:#059669;' : '';
     if (s === 'unpaid') btn.style.cssText = status === 'unpaid' ? 'background:#dc2626;color:#fff;border-color:#dc2626;' : '';
+  });
+}
+
+function _updatePaymentStatusButtonStyles() {
+  const page = getPage();
+  if (!page) return;
+  const paymentStatus = normalizePaymentStatusFilterValue(STATE.filters.receipts.paymentStatus);
+  page.querySelectorAll('[data-action="payment-status-filter"]').forEach(btn => {
+    const s = btn.dataset.paymentStatus;
+    if (s === 'all')    btn.style.cssText = paymentStatus === 'all'    ? 'background:#2563eb;color:#fff;border-color:#2563eb;' : '';
+    if (s === 'paid')   btn.style.cssText = paymentStatus === 'paid'   ? 'background:#059669;color:#fff;border-color:#059669;' : '';
+    if (s === 'unpaid') btn.style.cssText = paymentStatus === 'unpaid' ? 'background:#dc2626;color:#fff;border-color:#dc2626;' : '';
   });
 }
 
@@ -375,6 +392,15 @@ function normalizeStatusFilterValue(status) {
   return s;
 }
 
+function normalizePaymentStatusFilterValue(paymentStatus) {
+  const s = String(paymentStatus ?? 'all').trim();
+  const lower = s.toLowerCase();
+  if (lower === 'all' || s === 'كل حالات الدفع' || s === 'الكل' || s === '') return 'all';
+  if (lower === 'paid' || s === 'تم دفعه') return ROW_PAYMENT_STATUS.PAID;
+  if (lower === 'unpaid' || s === 'لم يتم دفعه') return ROW_PAYMENT_STATUS.UNPAID;
+  return s;
+}
+
 function getReceiptRows(record) {
   const rawRows = Array.isArray(record?.rows)
     ? record.rows
@@ -414,14 +440,16 @@ function getDisplayRowsForReceipt(record) {
   const f = STATE.filters.receipts;
 
   // Check if any row-level filter is active
-  const statusFilter = normalizeStatusFilterValue(f.status);
-  const companyVals  = f.company || [];
-  const vehicleVals  = f.vehicle || [];
-  const kartaVals    = f.karta || [];
-  const typeVals     = f.type || [];
+  const statusFilter        = normalizeStatusFilterValue(f.status);
+  const paymentStatusFilter = normalizePaymentStatusFilterValue(f.paymentStatus);
+  const companyVals         = f.company || [];
+  const vehicleVals         = f.vehicle || [];
+  const kartaVals           = f.karta || [];
+  const typeVals            = f.type || [];
 
   const hasRowFilter = (
     statusFilter !== 'all' ||
+    paymentStatusFilter !== 'all' ||
     companyVals.length > 0 ||
     vehicleVals.length > 0 ||
     kartaVals.length > 0 ||
@@ -443,6 +471,12 @@ function getDisplayRowsForReceipt(record) {
     // Per-row disbursement status filter ('paid' = تم صرفه, 'unpaid' = لم يتم صرفه)
     if (statusFilter !== 'all') {
       if (getRowDisbursementStatus(row) !== statusFilter) return false;
+    }
+
+    // Per-row payment status filter ('paid' = تم دفعه, 'unpaid' = لم يتم دفعه)
+    // Combined with disbursement status using AND semantics.
+    if (paymentStatusFilter !== 'all') {
+      if (getRowPaymentStatus(row) !== paymentStatusFilter) return false;
     }
 
     // Each active filter must match (AND logic)
@@ -498,6 +532,7 @@ function sumVisibleRowField(rows, field) {
 function getReceiptCardsFiltered() {
   const f = STATE.filters.receipts;
   const statusFilter = normalizeStatusFilterValue(f.status);
+  const paymentStatusFilter = normalizePaymentStatusFilterValue(f.paymentStatus);
 
   const ownerSet = f.owner?.length > 0 ? new Set(f.owner.map(v => String(v).trim().toLowerCase())) : null;
   const numberSet = f.number?.length > 0 ? new Set(f.number.map(v => String(v).trim())) : null;
@@ -506,6 +541,7 @@ function getReceiptCardsFiltered() {
 
   const hasRowFilter = (
     statusFilter !== 'all' ||
+    paymentStatusFilter !== 'all' ||
     f.company.length > 0 ||
     f.vehicle.length > 0 ||
     f.karta.length > 0 ||
@@ -651,13 +687,21 @@ function renderReceiptsControls() {
       <button type="button" data-action="print-filtered" data-tab="receipts" class="pdf-btn">📄 تصدير PDF</button>
       <button type="button" data-action="export-excel-filtered" data-tab="receipts" class="excel-btn">📊 تصدير Excel</button>
        <button type="button" data-action="sort-by-payout-date" class="range-btn" style="${f.sortByPayoutDate ? 'background:#7c3aed;color:#fff;border-color:#7c3aed;' : ''}">📅 تنظيم الصرف</button>
-      <div style="display:flex;gap:6px;align-items:flex-end;">
+      <div class="status-filter-group" data-filter-group="disbursement" style="display:flex;gap:6px;align-items:flex-end;">
         <button type="button" data-action="status-filter" data-status="all"
-          class="range-btn" style="${f.status === 'all' ? 'background:#2563eb;color:#fff;border-color:#2563eb;' : ''}">📋 الكل</button>
+          class="range-btn" style="${normalizeStatusFilterValue(f.status) === 'all' ? 'background:#2563eb;color:#fff;border-color:#2563eb;' : ''}">📋 الكل</button>
         <button type="button" data-action="status-filter" data-status="paid"
-          class="range-btn" style="${f.status === 'paid' ? 'background:#059669;color:#fff;border-color:#059669;' : ''}">✅ تم صرفه</button>
+          class="range-btn" style="${normalizeStatusFilterValue(f.status) === 'paid' ? 'background:#059669;color:#fff;border-color:#059669;' : ''}">✅ تم صرفه</button>
         <button type="button" data-action="status-filter" data-status="unpaid"
-          class="range-btn" style="${f.status === 'unpaid' ? 'background:#dc2626;color:#fff;border-color:#dc2626;' : ''}">⏳ لم يتم صرفه</button>
+          class="range-btn" style="${normalizeStatusFilterValue(f.status) === 'unpaid' ? 'background:#dc2626;color:#fff;border-color:#dc2626;' : ''}">⏳ لم يتم صرفه</button>
+      </div>
+      <div class="payment-status-filter-group" data-filter-group="payment" style="display:flex;gap:6px;align-items:flex-end;">
+        <button type="button" data-action="payment-status-filter" data-payment-status="all"
+          class="range-btn" style="${normalizePaymentStatusFilterValue(f.paymentStatus) === 'all' ? 'background:#2563eb;color:#fff;border-color:#2563eb;' : ''}">💳 كل حالات الدفع</button>
+        <button type="button" data-action="payment-status-filter" data-payment-status="paid"
+          class="range-btn" style="${normalizePaymentStatusFilterValue(f.paymentStatus) === 'paid' ? 'background:#059669;color:#fff;border-color:#059669;' : ''}">✅ تم دفعه</button>
+        <button type="button" data-action="payment-status-filter" data-payment-status="unpaid"
+          class="range-btn" style="${normalizePaymentStatusFilterValue(f.paymentStatus) === 'unpaid' ? 'background:#dc2626;color:#fff;border-color:#dc2626;' : ''}">⏳ لم يتم دفعه</button>
       </div>
     </div>
   `;
@@ -666,12 +710,13 @@ function renderReceiptsControls() {
 
 function renderSummaryCards(_preFiltered) {
   // Summary source: use server meta.summary only when NO client-side filters are active.
-  // When status filter or row-level filters are active, use client-side summarizeReceipts().
+  // When status filter, payment status filter, or row-level filters are active, use client-side summarizeReceipts().
   const f = STATE.filters.receipts;
-  const statusFilter = f.status || 'all';
+  const statusFilter = normalizeStatusFilterValue(f.status || 'all');
+  const paymentStatusFilter = normalizePaymentStatusFilterValue(f.paymentStatus || 'all');
   const hasRowFilter = (f.company.length > 0 || f.vehicle.length > 0 ||
                         f.karta.length > 0 || f.type.length > 0);
-  const useServerSummary = (statusFilter === 'all' && !hasRowFilter && STATE.meta?.summary);
+  const useServerSummary = (statusFilter === 'all' && paymentStatusFilter === 'all' && !hasRowFilter && STATE.meta?.summary);
   const filtered = _preFiltered || getReceiptCardsFiltered();
   const sums = useServerSummary
     ? {
@@ -778,12 +823,13 @@ function buildReceiptCardHtml(record, opts = {}) {
       <div class="record-card__table-wrap">
         <table class="record-table receipt-snapshot-table">
           <thead class="bg-gradient-to-r from-blue-600 to-blue-700 text-white">
-            <tr>${renderReceiptSnapshotTableHead({ showRowStatus: true })}</tr>
+            <tr>${renderReceiptSnapshotTableHead({ showRowStatus: true, showRowPaymentStatus: true })}</tr>
           </thead>
           <tbody>
             ${renderReceiptSnapshotRowsHtml(displayRows, {
-              colSpan: DATA_COL_COUNT + 1,
+              colSpan: DATA_COL_COUNT + 2,
               showRowStatus: true,
+              showRowPaymentStatus: true,
               receiptId: record.id,
               readOnly,
             })}
@@ -1681,9 +1727,10 @@ async function updateReceiptRowDisbursementStatus(receiptId, rowId, nextStatus, 
   try {
     const apiRes = await ReceiptsModule.updateRowStatus(username, receiptId, String(rowId), canonicalStatus);
 
-    // Update ONLY the target row in STATE.receipts; preserve all other rows and financial fields
+    // Update ONLY the target row in STATE.receipts; preserve payment_status, all other rows, and financial fields
     record.rows = normalizedRows.map((row) => {
       if (row && row._type !== 'separator' && String(row.row_id) === String(rowId)) {
+        const preservedPayment = getRowPaymentStatus(row);
         return {
           ...row,
           ...(apiRes?.row && typeof apiRes.row === 'object' ? apiRes.row : {}),
@@ -1692,6 +1739,7 @@ async function updateReceiptRowDisbursementStatus(receiptId, rowId, nextStatus, 
           disbursement_status: canonicalStatus,
           payout_status: canonicalStatus,
           rowPayment: canonicalStatus,
+          payment_status: preservedPayment,
         };
       }
       return row;
@@ -1724,6 +1772,128 @@ async function updateReceiptRowDisbursementStatus(receiptId, rowId, nextStatus, 
       selectEl.disabled = false;
       selectEl.value = previousStatus;
       selectEl.dataset.prevStatus = previousStatus;
+    }
+    if (feedbackEl) {
+      feedbackEl.textContent = '❌ فشل الحفظ';
+      if (feedbackEl.dataset) feedbackEl.dataset.state = 'error';
+    }
+    throw err;
+  }
+}
+
+/**
+ * Persist and apply a payment status change ('paid' / 'تم دفعه' or 'unpaid' / 'لم يتم دفعه')
+ * for a single row within a receipt on the All Receipts page.
+ *
+ * Guarantees:
+ *   - Identifies the target row by its stable row_id within receiptId (never by visible table index).
+ *   - Independent of the row's disbursement status ('تم صرفه' / 'لم يتم صرفه').
+ *   - Does not affect any other row in the same receipt or in other receipts.
+ *   - Does not modify receipt financial calculations, weights, net amounts, or office balances.
+ *   - Shows loading, success, and error feedback; restores the previously saved payment status if saving fails.
+ *   - Immediately updates the displayed rows, counts, and summaries according to any active filters.
+ */
+async function updateReceiptRowPaymentStatus(receiptId, rowId, nextPaymentStatus, selectEl = null) {
+  const username = getSessionUsername() || 'admin';
+  if (!receiptId) throw new Error('معرف الإيصال مطلوب');
+  if (!rowId) throw new Error('معرف الصف مطلوب');
+
+  const record = STATE.receipts.find((item) => String(item.id) === String(receiptId));
+  if (!record) {
+    throw new Error('الإيصال غير موجود');
+  }
+
+  const normalizedRows = getReceiptRows(record);
+  const targetRow = normalizedRows.find(
+    (r) => r && r._type !== 'separator' && String(r.row_id) === String(rowId)
+  );
+  if (!targetRow) {
+    throw new Error('الصف المطلوب غير موجود في هذا الإيصال');
+  }
+
+  const previousPaymentStatus = getRowPaymentStatus(targetRow);
+  const feedbackEl =
+    selectEl?.parentElement?.querySelector?.('[data-row-payment-feedback]') ||
+    (typeof document !== 'undefined' && document.querySelector
+      ? document.querySelector(`[data-row-payment-feedback="${String(rowId)}"]`)
+      : null);
+
+  let canonicalPaymentStatus;
+  try {
+    canonicalPaymentStatus = validateRowPaymentStatus(nextPaymentStatus);
+  } catch (validationErr) {
+    if (selectEl) {
+      selectEl.value = previousPaymentStatus;
+      selectEl.dataset.prevPaymentStatus = previousPaymentStatus;
+      selectEl.disabled = false;
+    }
+    if (feedbackEl) {
+      feedbackEl.textContent = '❌';
+      if (feedbackEl.dataset) feedbackEl.dataset.state = 'error';
+    }
+    throw validationErr;
+  }
+
+  if (selectEl) {
+    selectEl.disabled = true;
+  }
+  if (feedbackEl) {
+    feedbackEl.textContent = '⏳';
+    if (feedbackEl.dataset) feedbackEl.dataset.state = 'loading';
+  }
+
+  try {
+    const apiRes = await ReceiptsModule.updateRowPaymentStatus(
+      username,
+      receiptId,
+      String(rowId),
+      canonicalPaymentStatus
+    );
+
+    // Update ONLY the target row's payment_status in STATE.receipts; preserve disbursement_status and financial fields
+    record.rows = normalizedRows.map((row) => {
+      if (row && row._type !== 'separator' && String(row.row_id) === String(rowId)) {
+        const preservedDisbursement = getRowDisbursementStatus(row);
+        return {
+          ...row,
+          ...(apiRes?.row && typeof apiRes.row === 'object' ? apiRes.row : {}),
+          row_id: String(rowId),
+          _rowId: String(rowId),
+          disbursement_status: preservedDisbursement,
+          payout_status: preservedDisbursement,
+          rowPayment: preservedDisbursement,
+          payment_status: canonicalPaymentStatus,
+        };
+      }
+      return row;
+    });
+
+    renderAll();
+
+    const page = getPage();
+    const updatedFeedbackEl =
+      page?.querySelector?.(`[data-row-payment-feedback="${String(rowId)}"]`) || null;
+    if (updatedFeedbackEl) {
+      updatedFeedbackEl.textContent = '✅';
+      if (updatedFeedbackEl.dataset) updatedFeedbackEl.dataset.state = 'saved';
+      setTimeout(() => {
+        if (updatedFeedbackEl.textContent === '✅') {
+          updatedFeedbackEl.textContent = '';
+        }
+      }, 1500);
+    }
+
+    return {
+      receipt: record,
+      row_id: String(rowId),
+      payment_status: canonicalPaymentStatus,
+    };
+  } catch (err) {
+    // Restore previous saved payment status in UI; do NOT mutate STATE.receipts
+    if (selectEl) {
+      selectEl.disabled = false;
+      selectEl.value = previousPaymentStatus;
+      selectEl.dataset.prevPaymentStatus = previousPaymentStatus;
     }
     if (feedbackEl) {
       feedbackEl.textContent = '❌ فشل الحفظ';
@@ -1833,6 +2003,14 @@ function bindPageEvents() {
       return;
     }
 
+    const paymentStatusBtn = event.target.closest('[data-action="payment-status-filter"]');
+    if (paymentStatusBtn) {
+      STATE.filters.receipts.paymentStatus = paymentStatusBtn.dataset.paymentStatus || 'all';
+      _updatePaymentStatusButtonStyles();
+      renderAll();
+      return;
+    }
+
     // Manual note save
     const noteSaveBtn = event.target.closest('[data-action="save-receipt-note"]');
     if (noteSaveBtn) {
@@ -1862,7 +2040,7 @@ function bindPageEvents() {
     if (actionBtn) {
       const tab = actionBtn.dataset.tab || STATE.tab;
       const action = actionBtn.dataset.action;
-      if (action === 'toggle-row-status') {
+      if (action === 'toggle-row-status' || action === 'toggle-row-payment-status') {
         return;
       }
       if (action === 'apply-filter') {
@@ -1930,6 +2108,18 @@ function bindPageEvents() {
         await updateReceiptRowDisbursementStatus(receiptId, rowId, rowStatusField.value, rowStatusField);
       } catch (err) {
         console.error('[allReceipts] row status update failed:', err);
+      }
+      return;
+    }
+
+    const rowPaymentStatusField = event.target.closest('select[data-action="toggle-row-payment-status"]');
+    if (rowPaymentStatusField) {
+      const receiptId = rowPaymentStatusField.dataset.receiptId;
+      const rowId = rowPaymentStatusField.dataset.rowId;
+      try {
+        await updateReceiptRowPaymentStatus(receiptId, rowId, rowPaymentStatusField.value, rowPaymentStatusField);
+      } catch (err) {
+        console.error('[allReceipts] row payment status update failed:', err);
       }
       return;
     }
@@ -2019,6 +2209,7 @@ export {
   initAllReceiptsPage,
   refreshAllReceiptsPage,
   renderAll,
+  renderReceiptsControls,
   buildReceiptCardHtml,
   summarizeReceipts,
   printSingleReceipt,
@@ -2026,9 +2217,16 @@ export {
   getDisplayRowsForReceipt,
   getReceiptCardsFiltered,
   updateReceiptRowDisbursementStatus,
+  updateReceiptRowPaymentStatus,
   ROW_DISBURSEMENT_STATUS,
+  ROW_PAYMENT_STATUS,
   getRowDisbursementStatus,
   getRowDisbursementStatusLabel,
   validateRowDisbursementStatus,
+  getRowPaymentStatus,
+  getRowPaymentStatusLabel,
+  validateRowPaymentStatus,
+  normalizeStatusFilterValue,
+  normalizePaymentStatusFilterValue,
   getStableRowId,
 };
