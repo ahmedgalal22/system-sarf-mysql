@@ -10,7 +10,16 @@ import {
 import { printHTML, buildPrintDocument } from './printEngine.js';
 import { ExcelService } from './excelService.js';
 import { ReceiptRepository } from './services/receiptRepository.js';
-import { RECEIPT_PAYOUT_STATUS, getPayoutStatusMeta } from './constants/payoutStatus.js';
+import {
+  RECEIPT_PAYOUT_STATUS,
+  ROW_DISBURSEMENT_STATUS,
+  getPayoutStatusMeta,
+  getRowDisbursementStatus,
+  getRowDisbursementStatusLabel,
+  validateRowDisbursementStatus,
+  getStableRowId,
+  normalizeReceiptRowWithStatus,
+} from './constants/payoutStatus.js';
 import { DateUtils } from './dateUtils.js';
 import { MultiSelectFilter } from './components/multiSelectFilter.js';
 import { notifyReceiptStatusChanged } from './entities.js';
@@ -357,9 +366,33 @@ function normalizePersistedRow(row) {
   return row;
 }
 
+function normalizeStatusFilterValue(status) {
+  const s = String(status ?? 'all').trim();
+  const lower = s.toLowerCase();
+  if (lower === 'all' || s === 'الكل' || s === '') return 'all';
+  if (lower === 'paid' || s === 'تم صرفه') return ROW_DISBURSEMENT_STATUS.PAID;
+  if (lower === 'unpaid' || s === 'لم يتم صرفه') return ROW_DISBURSEMENT_STATUS.UNPAID;
+  return s;
+}
+
 function getReceiptRows(record) {
-  const rows = Array.isArray(record?.rows) ? record.rows : [];
-  return rows.map(normalizePersistedRow);
+  const rawRows = Array.isArray(record?.rows)
+    ? record.rows
+    : typeof record?.rows === 'string'
+      ? (() => {
+          try {
+            return JSON.parse(record.rows) || [];
+          } catch (_) {
+            return [];
+          }
+        })()
+      : [];
+  const receiptId = record?.id ?? '';
+  return rawRows.map((row, idx) => {
+    const norm = normalizePersistedRow(row);
+    if (!norm || norm._type === 'separator') return norm;
+    return normalizeReceiptRowWithStatus(norm, receiptId, idx);
+  });
 }
 
 /**
@@ -368,26 +401,32 @@ function getReceiptRows(record) {
  * Returns the rows of a receipt that should be displayed.
  *
  * Server-side filtering determines which receipt CARDS are loaded.
- * Client-side row-level filters (company, vehicle, karta, type) determine
+ * Client-side row-level filters (status, company, vehicle, karta, type) determine
  * which ROWS within each card are visible.
  *
  * When no row-level filters are active, returns all rows (fast path).
  *
- * Used by: buildReceiptCardHtml, _exportReceiptsToExcel (frozen),
- *          serializeCurrentView (frozen), summarizeReceipts.
+ * Used by: buildReceiptCardHtml, _exportReceiptsToExcel,
+ *          serializeCurrentView, summarizeReceipts.
  */
 function getDisplayRowsForReceipt(record) {
   const rows = getReceiptRows(record);
   const f = STATE.filters.receipts;
 
   // Check if any row-level filter is active
-  const companyVals  = f.company;
-  const vehicleVals  = f.vehicle;
-  const kartaVals    = f.karta;
-  const typeVals     = f.type;
+  const statusFilter = normalizeStatusFilterValue(f.status);
+  const companyVals  = f.company || [];
+  const vehicleVals  = f.vehicle || [];
+  const kartaVals    = f.karta || [];
+  const typeVals     = f.type || [];
 
-  const hasRowFilter = (companyVals.length > 0 || vehicleVals.length > 0 ||
-                        kartaVals.length > 0 || typeVals.length > 0);
+  const hasRowFilter = (
+    statusFilter !== 'all' ||
+    companyVals.length > 0 ||
+    vehicleVals.length > 0 ||
+    kartaVals.length > 0 ||
+    typeVals.length > 0
+  );
 
   if (!hasRowFilter) return rows;
 
@@ -395,11 +434,16 @@ function getDisplayRowsForReceipt(record) {
   const companySet = companyVals.length > 0 ? new Set(companyVals.map(v => v.toLowerCase())) : null;
   const vehicleSet = vehicleVals.length > 0 ? new Set(vehicleVals.map(v => v.toLowerCase())) : null;
   const kartaSet   = kartaVals.length > 0   ? new Set(kartaVals.map(v => v.toLowerCase()))   : null;
-  const typeSet    = typeVals.length > 0     ? new Set(typeVals.map(v => v.toLowerCase()))    : null;
+  const typeSet    = typeVals.length > 0    ? new Set(typeVals.map(v => v.toLowerCase()))    : null;
 
   return rows.filter(row => {
     // Separator rows: show if adjacent data rows match, or no data-specific filter
     if (row._type === 'separator') return true;
+
+    // Per-row disbursement status filter ('paid' = تم صرفه, 'unpaid' = لم يتم صرفه)
+    if (statusFilter !== 'all') {
+      if (getRowDisbursementStatus(row) !== statusFilter) return false;
+    }
 
     // Each active filter must match (AND logic)
     if (companySet) {
@@ -443,26 +487,48 @@ function sumVisibleRowField(rows, field) {
  * STATE.receipts contains the server-filtered dataset.
  *
  * Client handles:
- *   - Status filter (paid/unpaid/all) — presentation filter
+ *   - Row-level status filter (paid/unpaid/all) — filters individual rows
+ *     within each card based on each row's disbursement status, and hides
+ *     cards that have zero matching data rows.
  *   - Row-level filters (company, vehicle, karta, type) — filters rows
- *     within each card, hides cards with zero matching rows
- *
- * Kept as a named function because frozen systems (print/export) call it.
+ *     within each card, hides cards with zero matching rows.
+ *   - Receipt-level filters (owner, number, from, to) — also enforced
+ *     client-side for in-memory filtering consistency.
  */
 function getReceiptCardsFiltered() {
   const f = STATE.filters.receipts;
-  const status = f.status || 'all';
+  const statusFilter = normalizeStatusFilterValue(f.status);
 
-  // Check if any row-level filter is active
-  const hasRowFilter = (f.company.length > 0 || f.vehicle.length > 0 ||
-                        f.karta.length > 0 || f.type.length > 0);
+  const ownerSet = f.owner?.length > 0 ? new Set(f.owner.map(v => String(v).trim().toLowerCase())) : null;
+  const numberSet = f.number?.length > 0 ? new Set(f.number.map(v => String(v).trim())) : null;
+  const fromDate = f.from ? String(f.from).slice(0, 10) : '';
+  const toDate = f.to ? String(f.to).slice(0, 10) : '';
+
+  const hasRowFilter = (
+    statusFilter !== 'all' ||
+    f.company.length > 0 ||
+    f.vehicle.length > 0 ||
+    f.karta.length > 0 ||
+    f.type.length > 0
+  );
 
   return STATE.receipts.filter(record => {
-    // Status filter
-    if (status !== 'all' && String(record.payout_status || RECEIPT_PAYOUT_STATUS.UNPAID) !== status) {
+    if (fromDate && record.receipt_date && String(record.receipt_date).slice(0, 10) < fromDate) {
       return false;
     }
-    // Row-level filter: hide receipts with zero matching data rows
+    if (toDate && record.receipt_date && String(record.receipt_date).slice(0, 10) > toDate) {
+      return false;
+    }
+    if (ownerSet) {
+      const cname = String(record.client_name || '').trim().toLowerCase();
+      if (!cname || !ownerSet.has(cname)) return false;
+    }
+    if (numberSet) {
+      const rnum = String(record.receipt_number ?? '').trim();
+      if (!rnum || !numberSet.has(rnum)) return false;
+    }
+
+    // Row-level filter (including per-row status): hide receipts with zero matching data rows
     if (hasRowFilter) {
       const visibleRows = getDisplayRowsForReceipt(record);
       const hasDataRows = visibleRows.some(row => row._type !== 'separator');
@@ -667,29 +733,18 @@ function buildReceiptCardHtml(record, opts = {}) {
   const readOnly = opts.readOnly === true;
   const title = `${receiptDisplayDate(record.receipt_date)} — ${receiptDayName(record.receipt_date)} — ${receiptTime(record.created_at || record.updated_at || record.receipt_date)}`;
   const displayRows = getDisplayRowsForReceipt(record);
-  const kartaCount = record.row_count != null
-    ? record.row_count
-    : displayRows.filter((row) => row._type !== 'separator').length;
-  const meta = getPayoutStatusMeta(record.payout_status);
-  const payoutStatus = meta.id;
+  const visibleDataRows = displayRows.filter((row) => row._type !== 'separator');
+  const kartaCount = visibleDataRows.length;
 
   const actionsHtml = readOnly
     ? `<div class="record-card__actions no-print">
          <button type="button" data-action="edit-receipt" data-id="${esc(record.id)}">✏️ تعديل</button>
          <button type="button" data-action="print-single-receipt" data-id="${esc(record.id)}">🖨️ طباعة</button>
-         <span style="background:${meta.color};color:#fff;padding:3px 10px;border-radius:999px;font-size:0.75rem;font-weight:700;">${esc(meta.label)}</span>
        </div>`
     : `<div class="record-card__actions no-print">
          <button type="button" data-action="edit-receipt" data-id="${esc(record.id)}">✏️ تعديل</button>
          <button type="button" data-action="print-single-receipt" data-id="${esc(record.id)}">🖨️ طباعة</button>
          <button type="button" data-action="delete-receipt" data-id="${esc(record.id)}">🗑️ حذف</button>
-         <label class="status-select-wrap" title="حالة الصرف">
-           <span class="sr-only">حالة الصرف</span>
-           <select data-action="toggle-receipt-status" data-id="${esc(record.id)}">
-             <option value="${RECEIPT_PAYOUT_STATUS.PAID}" ${payoutStatus === RECEIPT_PAYOUT_STATUS.PAID ? 'selected' : ''}>✅ تم صرفه</option>
-             <option value="${RECEIPT_PAYOUT_STATUS.UNPAID}" ${payoutStatus === RECEIPT_PAYOUT_STATUS.UNPAID ? 'selected' : ''}>⏳ لم يتم صرفه</option>
-           </select>
-         </label>
        </div>`;
 
   const noteHtml = readOnly
@@ -723,10 +778,15 @@ function buildReceiptCardHtml(record, opts = {}) {
       <div class="record-card__table-wrap">
         <table class="record-table receipt-snapshot-table">
           <thead class="bg-gradient-to-r from-blue-600 to-blue-700 text-white">
-            <tr>${renderReceiptSnapshotTableHead()}</tr>
+            <tr>${renderReceiptSnapshotTableHead({ showRowStatus: true })}</tr>
           </thead>
           <tbody>
-            ${renderReceiptSnapshotRowsHtml(displayRows, { colSpan: DATA_COL_COUNT })}
+            ${renderReceiptSnapshotRowsHtml(displayRows, {
+              colSpan: DATA_COL_COUNT + 1,
+              showRowStatus: true,
+              receiptId: record.id,
+              readOnly,
+            })}
           </tbody>
         </table>
       </div>
@@ -768,14 +828,14 @@ function renderReceiptList(_preFiltered) {
   // ── Sort pipeline (data-driven, never mutates source) ──
   const sorted = [...filtered];
   if (STATE.filters.receipts.sortByPayoutDate) {
-    // Paid receipts first (sorted by paid_at DESC), then unpaid in default order
+    // Receipts with disbursed rows first, then by most recent status_updated_at / paid_at DESC
     sorted.sort((a, b) => {
-      const aPaid = String(a.payout_status || 'unpaid') === 'paid';
-      const bPaid = String(b.payout_status || 'unpaid') === 'paid';
-      // Paid before unpaid
+      const aRows = getDisplayRowsForReceipt(a).filter(r => r._type !== 'separator');
+      const bRows = getDisplayRowsForReceipt(b).filter(r => r._type !== 'separator');
+      const aPaid = aRows.some(r => getRowDisbursementStatus(r) === ROW_DISBURSEMENT_STATUS.PAID);
+      const bPaid = bRows.some(r => getRowDisbursementStatus(r) === ROW_DISBURSEMENT_STATUS.PAID);
       if (aPaid && !bPaid) return -1;
       if (!aPaid && bPaid) return 1;
-      // Both paid: sort by paid_at DESC (newest first)
       if (aPaid && bPaid) {
         const aTime = a.paid_at ? new Date(a.paid_at).getTime() : 0;
         const bTime = b.paid_at ? new Date(b.paid_at).getTime() : 0;
@@ -784,14 +844,16 @@ function renderReceiptList(_preFiltered) {
         if (isNaN(bTime)) return -1;
         return bTime - aTime;
       }
-      // Both unpaid: default order (created_at DESC)
       return (b.created_at || 0) - (a.created_at || 0);
     });
   } else {
     sorted.sort((a, b) => (b.created_at || 0) - (a.created_at || 0));
   }
 
-  container.innerHTML = sorted
+  const pageSize = Number(STATE.filters.receipts.pageSize) || 0;
+  const paged = pageSize > 0 ? sorted.slice(0, pageSize) : sorted;
+
+  container.innerHTML = paged
     .map((record) => buildReceiptCardHtml(record))
     .join('');
 
@@ -1008,12 +1070,10 @@ function _bulkReceiptBuildTableBody(rows, activeCols) {
 }
 
 function buildReceiptPrintBlock(record) {
-  const allRows  = getReceiptRows(record);
+  const allRows  = getDisplayRowsForReceipt(record);
   const dataRows = allRows.filter((r) => r._type !== 'separator');
 
-  const kartaCount = record.row_count != null
-    ? record.row_count
-    : dataRows.length;
+  const kartaCount = dataRows.length;
 
   // Resolve columns using the same logic as printSingleReceipt —
   // strips printHide columns and empty conditional columns.
@@ -1558,6 +1618,121 @@ async function printCurrentView() {
   printHTML(html, { id: 'all-receipts-print-iframe' });
 }
 
+/**
+ * Persist and apply a disbursement status change ('paid' / 'تم صرفه' or 'unpaid' / 'لم يتم صرفه')
+ * for a single row within a receipt on the All Receipts page.
+ *
+ * Guarantees:
+ *   - Identifies the target row by its stable row_id within receiptId (never by visible table index).
+ *   - Does not affect any other row in the same receipt or in other receipts.
+ *   - Does not modify receipt financial calculations, weights, net amounts, or office balances.
+ *   - Shows loading, success, and error feedback; restores the previously saved status if saving fails.
+ *   - Immediately updates the displayed rows, counts, and summaries according to any active filter.
+ */
+async function updateReceiptRowDisbursementStatus(receiptId, rowId, nextStatus, selectEl = null) {
+  const username = getSessionUsername() || 'admin';
+  if (!receiptId) throw new Error('معرف الإيصال مطلوب');
+  if (!rowId) throw new Error('معرف الصف مطلوب');
+
+  const record = STATE.receipts.find((item) => String(item.id) === String(receiptId));
+  if (!record) {
+    throw new Error('الإيصال غير موجود');
+  }
+
+  const normalizedRows = getReceiptRows(record);
+  const targetRow = normalizedRows.find(
+    (r) => r && r._type !== 'separator' && String(r.row_id) === String(rowId)
+  );
+  if (!targetRow) {
+    throw new Error('الصف المطلوب غير موجود في هذا الإيصال');
+  }
+
+  const previousStatus = getRowDisbursementStatus(targetRow);
+  const feedbackEl =
+    selectEl?.parentElement?.querySelector?.('[data-row-feedback]') ||
+    (typeof document !== 'undefined' && document.querySelector
+      ? document.querySelector(`[data-row-feedback="${String(rowId)}"]`)
+      : null);
+
+  let canonicalStatus;
+  try {
+    canonicalStatus = validateRowDisbursementStatus(nextStatus);
+  } catch (validationErr) {
+    if (selectEl) {
+      selectEl.value = previousStatus;
+      selectEl.dataset.prevStatus = previousStatus;
+      selectEl.disabled = false;
+    }
+    if (feedbackEl) {
+      feedbackEl.textContent = '❌';
+      if (feedbackEl.dataset) feedbackEl.dataset.state = 'error';
+    }
+    throw validationErr;
+  }
+
+  if (selectEl) {
+    selectEl.disabled = true;
+  }
+  if (feedbackEl) {
+    feedbackEl.textContent = '⏳';
+    if (feedbackEl.dataset) feedbackEl.dataset.state = 'loading';
+  }
+
+  try {
+    const apiRes = await ReceiptsModule.updateRowStatus(username, receiptId, String(rowId), canonicalStatus);
+
+    // Update ONLY the target row in STATE.receipts; preserve all other rows and financial fields
+    record.rows = normalizedRows.map((row) => {
+      if (row && row._type !== 'separator' && String(row.row_id) === String(rowId)) {
+        return {
+          ...row,
+          ...(apiRes?.row && typeof apiRes.row === 'object' ? apiRes.row : {}),
+          row_id: String(rowId),
+          _rowId: String(rowId),
+          disbursement_status: canonicalStatus,
+          payout_status: canonicalStatus,
+          rowPayment: canonicalStatus,
+        };
+      }
+      return row;
+    });
+
+    renderAll();
+
+    // Show brief saved indicator if row is still visible under the current filter
+    const page = getPage();
+    const updatedFeedbackEl =
+      page?.querySelector?.(`[data-row-feedback="${String(rowId)}"]`) || null;
+    if (updatedFeedbackEl) {
+      updatedFeedbackEl.textContent = '✅';
+      if (updatedFeedbackEl.dataset) updatedFeedbackEl.dataset.state = 'saved';
+      setTimeout(() => {
+        if (updatedFeedbackEl.textContent === '✅') {
+          updatedFeedbackEl.textContent = '';
+        }
+      }, 1500);
+    }
+
+    return {
+      receipt: record,
+      row_id: String(rowId),
+      status: canonicalStatus,
+    };
+  } catch (err) {
+    // Restore previous saved status in UI; do NOT mutate STATE.receipts
+    if (selectEl) {
+      selectEl.disabled = false;
+      selectEl.value = previousStatus;
+      selectEl.dataset.prevStatus = previousStatus;
+    }
+    if (feedbackEl) {
+      feedbackEl.textContent = '❌ فشل الحفظ';
+      if (feedbackEl.dataset) feedbackEl.dataset.state = 'error';
+    }
+    throw err;
+  }
+}
+
 async function handleCardAction(action, id, tab) {
   const username = getSessionUsername();
   if (!username) return;
@@ -1580,26 +1755,6 @@ async function handleCardAction(action, id, tab) {
       if (!window.confirm('هل تريد حذف هذا النموذج؟')) return;
       await FinancialService.deleteReceipt(username, id);
       window.dispatchEvent(new CustomEvent('receipts:changed'));
-      return;
-    }
-    if (action === 'toggle-receipt-status') {
-      const control = document.querySelector(`[data-action="toggle-receipt-status"][data-id="${CSS.escape(String(id))}"]`);
-      const nextStatus = String(control?.value || RECEIPT_PAYOUT_STATUS.UNPAID);
-      const updatedReceipt = await FinancialService.updateReceiptStatus(username, id, nextStatus);
-
-      // Local STATE update — no full reload needed.
-      // The POST already committed all financial operations server-side.
-      // The returned receipt is the final committed state.
-      const idx = STATE.receipts.findIndex(r => String(r.id) === String(id));
-      if (idx !== -1) {
-        // Decode rows if needed (server returns decoded, but ensure consistency)
-        if (updatedReceipt.rows && typeof updatedReceipt.rows === 'string') {
-          updatedReceipt.rows = JSON.parse(updatedReceipt.rows) || [];
-        }
-        STATE.receipts[idx] = updatedReceipt;
-      }
-      renderAll();
-      notifyReceiptStatusChanged();
       return;
     }
   }
@@ -1707,7 +1862,7 @@ function bindPageEvents() {
     if (actionBtn) {
       const tab = actionBtn.dataset.tab || STATE.tab;
       const action = actionBtn.dataset.action;
-      if (action === 'toggle-receipt-status') {
+      if (action === 'toggle-row-status') {
         return;
       }
       if (action === 'apply-filter') {
@@ -1759,16 +1914,25 @@ function bindPageEvents() {
   });
 
   page.addEventListener('change', async (event) => {
-    // Page size selector — update STATE only, no reload (Apply button triggers reload)
+    // Page size selector — update STATE and re-render immediately
     const pageSizeField = event.target.closest('select[data-action="page-size"]');
     if (pageSizeField) {
       STATE.filters.receipts.pageSize = parseInt(pageSizeField.value, 10);
+      renderAll();
       return;
     }
 
-    const statusField = event.target.closest('select[data-action="toggle-receipt-status"]');
-    if (!statusField) return;
-    await handleCardAction('toggle-receipt-status', statusField.dataset.id, 'receipts');
+    const rowStatusField = event.target.closest('select[data-action="toggle-row-status"]');
+    if (rowStatusField) {
+      const receiptId = rowStatusField.dataset.receiptId;
+      const rowId = rowStatusField.dataset.rowId;
+      try {
+        await updateReceiptRowDisbursementStatus(receiptId, rowId, rowStatusField.value, rowStatusField);
+      } catch (err) {
+        console.error('[allReceipts] row status update failed:', err);
+      }
+      return;
+    }
   });
 }
 
@@ -1850,4 +2014,21 @@ async function initAllReceiptsPage() {
   await refreshAllReceiptsPage('list');
 }
 
-export { initAllReceiptsPage, refreshAllReceiptsPage, buildReceiptCardHtml, summarizeReceipts, printSingleReceipt };
+export {
+  STATE,
+  initAllReceiptsPage,
+  refreshAllReceiptsPage,
+  renderAll,
+  buildReceiptCardHtml,
+  summarizeReceipts,
+  printSingleReceipt,
+  getReceiptRows,
+  getDisplayRowsForReceipt,
+  getReceiptCardsFiltered,
+  updateReceiptRowDisbursementStatus,
+  ROW_DISBURSEMENT_STATUS,
+  getRowDisbursementStatus,
+  getRowDisbursementStatusLabel,
+  validateRowDisbursementStatus,
+  getStableRowId,
+};

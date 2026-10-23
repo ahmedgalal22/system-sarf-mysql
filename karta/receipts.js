@@ -15,7 +15,14 @@ import { DBProvider } from './services/dbProvider.js';
 import { ReceiptRepository } from './services/receiptRepository.js';
 import { ClientRepository } from './services/clientRepository.js';
 import { calculateRowNet, calculateReceiptTotals } from './services/financialCalculator.js';
-import { RECEIPT_PAYOUT_STATUS } from './constants/payoutStatus.js';
+import {
+  RECEIPT_PAYOUT_STATUS,
+  ROW_DISBURSEMENT_STATUS,
+  getRowDisbursementStatus,
+  validateRowDisbursementStatus,
+  getRowDisbursementStatusLabel,
+  getStableRowId,
+} from './constants/payoutStatus.js';
 import { DateUtils } from './dateUtils.js';
 import { generateId as _uuid } from './utils/idGenerator.js';
 
@@ -130,15 +137,21 @@ function _normalizeRow(row) {
     ...restRow
   } = row;
 
+  const rowStatus = getRowDisbursementStatus(row);
+  const candidateRowId = row.row_id || row._rowId || _uuid();
+
   return {
     ...restRow,
-    _rowId       : row._rowId || _uuid(),
-    _type        : row._type  || ROW_TYPES.DATA,
-    owner_id     : row.owner_id != null ? String(row.owner_id).trim() : null,
-    owner_name   : normalizeOptionalString(row.owner_name),
-    vehicle_id   : row.vehicle_id != null ? String(row.vehicle_id).trim() : null,
-    vehicle_plate: normalizeOptionalString(row.vehicle_plate ?? row.car),
-    rowPayment   : row.rowPayment || ROW_PAYMENT.PENDING,
+    _rowId             : String(candidateRowId).trim(),
+    row_id             : String(candidateRowId).trim(),
+    _type              : row._type  || ROW_TYPES.DATA,
+    owner_id           : row.owner_id != null ? String(row.owner_id).trim() : null,
+    owner_name         : normalizeOptionalString(row.owner_name),
+    vehicle_id         : row.vehicle_id != null ? String(row.vehicle_id).trim() : null,
+    vehicle_plate      : normalizeOptionalString(row.vehicle_plate ?? row.car),
+    disbursement_status: rowStatus,
+    payout_status      : rowStatus,
+    rowPayment         : rowStatus,
     weight: Number(row.weight) || 0,
     deficit: Number(row.deficit) || 0,
     noloon: Number(row.noloon) || 0,
@@ -155,12 +168,19 @@ function _normalizeRow(row) {
 function _normalize(rawData) {
   const receiptId = rawData.id ?? _uuid();
   const topClientName = normalizeOptionalString(rawData.client_name);
+  const usedRowIds = new Set();
   const rows     = rawData.rows.map((r, idx) => {
     const norm = _normalizeRow({ ...r });
+    let rowId = norm.row_id || norm._rowId || _uuid();
+    if (usedRowIds.has(rowId)) {
+      rowId = _uuid();
+    }
+    usedRowIds.add(rowId);
     return {
       ...norm,
+      _rowId: rowId,
+      row_id: rowId,
       owner_name: norm.owner_name || topClientName || null,
-      row_id: norm._rowId || norm.row_id || _uuid(),
       receipt_id: receiptId,
       row_order: idx,
       row_type: norm._type || 'data',
@@ -449,12 +469,24 @@ async function getOffices(username) {
   return getOfficesForUser(username);
 }
 
+/**
+ * Update the disbursement status ('paid' / 'تم صرفه' or 'unpaid' / 'لم يتم صرفه')
+ * of a single row within a receipt without altering financial calculations or ledgers.
+ */
+async function updateRowStatus(username, receiptId, rowId, status) {
+  if (!username) throw new Error('[ReceiptsModule:updateRowStatus] username is required.');
+  if (!receiptId) throw new Error('[ReceiptsModule:updateRowStatus] receiptId is required.');
+  if (!rowId) throw new Error('[ReceiptsModule:updateRowStatus] rowId is required.');
+  return ReceiptRepository.updateRowStatus(receiptId, rowId, status, { username });
+}
+
 // ─── NAMED EXPORT ─────────────────────────────────────────────────────────
 
 const ReceiptsModule = Object.freeze({
   create,
   update,
   delete : remove,
+  updateRowStatus,
   getAll,
   getByDateRange,
   searchReceipts,
@@ -698,7 +730,7 @@ function formatSnapshotCellValue(row, col) {
   return _snapshotEsc(raw);
 }
 
-function renderReceiptSnapshotSeparatorRow(row, colSpan = DATA_COL_COUNT) {
+function renderReceiptSnapshotSeparatorRow(row, colSpan = DATA_COL_COUNT + 1) {
   const vehicleName = _snapshotEsc(row.vehicleName || '');
   const subtotal = tFmt(Number(row.subtotal) || 0);
   const notes = _snapshotEsc(row.notes || '');
@@ -714,7 +746,14 @@ function renderReceiptSnapshotSeparatorRow(row, colSpan = DATA_COL_COUNT) {
     </tr>`;
 }
 
-function renderReceiptSnapshotDataRow(row) {
+function renderReceiptSnapshotDataRow(row, options = {}) {
+  const showRowStatus = options.showRowStatus !== false;
+  const readOnly = options.readOnly === true;
+  const receiptId = options.receiptId ?? row?.receipt_id ?? '';
+  const rowIndex = options.rowIndex ?? 0;
+  const rowId = getStableRowId(row, receiptId, rowIndex);
+  const rowStatus = getRowDisbursementStatus(row);
+
   const cells = COL_DEFS.filter((col) => col.key !== '_actions').map((col) => {
     const printClass = col.printHide ? ' no-print' : '';
     const align = col.type === 'number' ? 'center' : 'right';
@@ -733,29 +772,51 @@ function renderReceiptSnapshotDataRow(row) {
     
     return `<td class="px-1 py-1 text-${align}${printClass}${cellClass}">${formatSnapshotCellValue(row, col)}</td>`;
   }).join('');
-  return `<tr>${cells}</tr>`;
+
+  let statusCell = '';
+  if (showRowStatus) {
+    const isPaid = rowStatus === ROW_DISBURSEMENT_STATUS.PAID;
+    if (readOnly) {
+      const label = getRowDisbursementStatusLabel(rowStatus);
+      const bg = isPaid ? '#059669' : '#dc2626';
+      statusCell = `<td class="px-1 py-1 text-center no-print snapshot-cell-status"><span class="row-status-badge" data-row-status="${_snapshotEsc(rowStatus)}" style="background:${bg};color:#fff;padding:2px 8px;border-radius:999px;font-size:0.75rem;font-weight:700;">${_snapshotEsc(label)}</span></td>`;
+    } else {
+      const border = isPaid ? '#059669' : '#dc2626';
+      const bg = isPaid ? '#ecfdf5' : '#fef2f2';
+      const fg = isPaid ? '#065f46' : '#991b1b';
+      statusCell = `<td class="px-1 py-1 text-center no-print snapshot-cell-status"><div class="row-status-control" style="display:inline-flex;align-items:center;gap:4px;"><select class="row-status-select" data-action="toggle-row-status" data-receipt-id="${_snapshotEsc(receiptId)}" data-row-id="${_snapshotEsc(rowId)}" data-prev-status="${_snapshotEsc(rowStatus)}" aria-label="الحالة" style="padding:2px 6px;border-radius:6px;font-size:0.75rem;font-weight:700;border:1px solid ${border};background:${bg};color:${fg};cursor:pointer;"><option value="${ROW_DISBURSEMENT_STATUS.PAID}" ${isPaid ? 'selected' : ''}>تم صرفه</option><option value="${ROW_DISBURSEMENT_STATUS.UNPAID}" ${!isPaid ? 'selected' : ''}>لم يتم صرفه</option></select><span class="row-status-feedback" data-row-feedback="${_snapshotEsc(rowId)}" style="font-size:0.75rem;min-width:14px;display:inline-block;"></span></div></td>`;
+    }
+  }
+
+  return `<tr data-row-id="${_snapshotEsc(rowId)}" data-receipt-id="${_snapshotEsc(receiptId)}" data-row-status="${_snapshotEsc(rowStatus)}">${cells}${statusCell}</tr>`;
 }
 
-function renderReceiptSnapshotTableHead() {
-  return COL_DEFS.filter((col) => col.key !== '_actions').map((col) => {
+function renderReceiptSnapshotTableHead(options = {}) {
+  const showRowStatus = options.showRowStatus !== false;
+  const baseHeaders = COL_DEFS.filter((col) => col.key !== '_actions').map((col) => {
     const printClass = col.printHide ? ' no-print' : '';
     return `<th class="px-1 py-2 text-center${printClass}" style="min-width:${col.minW};">${col.label}</th>`;
   }).join('');
+  const statusHeader = showRowStatus
+    ? `<th class="px-1 py-2 text-center no-print" style="min-width:115px;">الحالة</th>`
+    : '';
+  return `${baseHeaders}${statusHeader}`;
 }
 
 /**
  * Renders persisted receipt rows as an immutable HTML snapshot (no recalculation).
  * @param {object[]} rows
- * @param {{ colSpan?: number }} [options]
+ * @param {{ colSpan?: number, showRowStatus?: boolean, receiptId?: string|number, readOnly?: boolean }} [options]
  */
 function renderReceiptSnapshotRowsHtml(rows, options = {}) {
-  const colSpan = options.colSpan ?? DATA_COL_COUNT;
+  const showRowStatus = options.showRowStatus !== false;
+  const colSpan = options.colSpan ?? (showRowStatus ? DATA_COL_COUNT + 1 : DATA_COL_COUNT);
   if (!Array.isArray(rows) || rows.length === 0) return '';
-  return rows.map((row) => {
+  return rows.map((row, idx) => {
     if (row && row._type === 'separator') {
       return renderReceiptSnapshotSeparatorRow(row, colSpan);
     }
-    return renderReceiptSnapshotDataRow(row);
+    return renderReceiptSnapshotDataRow(row, { ...options, rowIndex: idx });
   }).join('');
 }
 
@@ -2440,10 +2501,19 @@ async function collectReceiptRows() {
     }
     const finalOwner = vehicleOwner;
 
+    const preservedRowId = row.dataset?.rowId ? String(row.dataset.rowId).trim() : null;
+    const preservedStatus = row.dataset?.disbursementStatus
+      ? getRowDisbursementStatus({ disbursement_status: row.dataset.disbursementStatus })
+      : ROW_DISBURSEMENT_STATUS.UNPAID;
+
     receiptRows.push({
-      _type        : 'data',
-      owner_id     : String(finalOwner.id),
-      owner_name   : finalOwner.name,
+      _type              : 'data',
+      ...(preservedRowId ? { _rowId: preservedRowId, row_id: preservedRowId } : {}),
+      disbursement_status: preservedStatus,
+      payout_status      : preservedStatus,
+      rowPayment         : preservedStatus,
+      owner_id           : String(finalOwner.id),
+      owner_name         : finalOwner.name,
       kartano      : normalizeOptionalString(_field(row, 'receipt-kartano')),
       date         : normalizeOptionalString(_field(row, 'receipt-date')),
       data         : normalizeOptionalString(_field(row, 'receipt-data')),
@@ -2977,7 +3047,7 @@ async function loadReceiptForEdit(receiptData) {
   receiptRowCounter = 0;
 
   const rows = receiptData.rows || [];
-  rows.forEach(rowData => {
+  rows.forEach((rowData, rowIdx) => {
     if (rowData._type === 'separator') {
       const sepRow = document.createElement('tr');
       sepRow.className = `${SEPARATOR_CLASS} table-sep-row`;
@@ -2993,6 +3063,8 @@ async function loadReceiptForEdit(receiptData) {
 
     receiptRowCounter++;
     const tr = document.createElement('tr');
+    tr.dataset.rowId = getStableRowId(rowData, receiptData.id, rowIdx);
+    tr.dataset.disbursementStatus = getRowDisbursementStatus(rowData);
     tr.innerHTML = _buildRowHTML();
     tbody.appendChild(tr);
 

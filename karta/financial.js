@@ -28,6 +28,7 @@ import { RECEIPT_PAYOUT_STATUS, normalizePayoutStatus } from './constants/payout
 import { DateUtils } from './dateUtils.js';
 import { ArchiveService } from './services/archiveService.js';
 import { DBProvider } from './services/dbProvider.js';
+import { ReceiptRepository } from './services/receiptRepository.js';
 import { ApiClient } from './services/apiClient.js';
 import { dbBool } from './dbTypes.js';
 import { generateId as _uuid } from './utils/idGenerator.js';
@@ -471,6 +472,19 @@ async function updateReceiptStatus(username, receiptId, status) {
   return Money.decimalizeRecord(result.receipt);
 }
 
+/**
+ * Update the disbursement status of a single receipt row.
+ * Completely isolated from receipt financial calculations, office balances,
+ * and ledger/treasury transactions.
+ */
+async function updateReceiptRowStatus(username, receiptId, rowId, status) {
+  if (!username) throw new Error('[FinancialService:updateReceiptRowStatus] username is required.');
+  if (!receiptId) throw new Error('[FinancialService:updateReceiptRowStatus] receiptId is required.');
+  if (!rowId) throw new Error('[FinancialService:updateReceiptRowStatus] rowId is required.');
+
+  return ReceiptRepository.updateRowStatus(receiptId, rowId, status, { username });
+}
+
 // ─── PUBLIC: rebuildVehicleBalance ────────────────────────────────────────────
 
 async function rebuildVehicleBalance(vehicle_id) {
@@ -739,4 +753,5 @@ export const FinancialService = Object.freeze({
   createOfficeDeposit,
   resolveHamolaPrice,
   updateReceiptStatus,
+  updateReceiptRowStatus,
 });
