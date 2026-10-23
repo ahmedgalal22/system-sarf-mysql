@@ -6,8 +6,8 @@
  * Replaces the pattern: load ALL receipts → loop per office.
  *
  * FORMULA (mirrors financialCalculator.js exactly):
- *   weight = (weight + weight2) - deficit
- *   net    = ((weight + weight2) - deficit) * noloon
+ *   weight = weight - deficit
+ *   net    = (weight - deficit) * noloon
  *            - (ohda + officeAmount + sarf)
  *            + add
  */
@@ -46,9 +46,8 @@ try {
 
             // Exact mirror of financialCalculator.js calculateWeightTotal
             $w1      = floatval($row['weight'] ?? 0);
-            $w2      = floatval($row['weight2'] ?? 0);
             $deficit = floatval($row['deficit'] ?? 0);
-            $weightTotal = ($w1 + $w2) - $deficit;
+            $weightTotal = $w1 - $deficit;
 
             // Exact mirror of financialCalculator.js calculateRowNet
             $noloon       = floatval($row['noloon'] ?? 0);

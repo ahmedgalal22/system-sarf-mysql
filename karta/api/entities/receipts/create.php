@@ -34,6 +34,7 @@ require_once __DIR__ . '/../../../api/middleware/auth.php';
 require_once __DIR__ . '/../../../repositories/ReceiptRepository.php';
 require_once __DIR__ . '/../../../repositories/OfficeRepository.php';
 require_once __DIR__ . '/../../../repositories/HamolaRepository.php';
+require_once __DIR__ . '/../../../repositories/VehicleLedgerRepository.php';
 require_once __DIR__ . '/../../../core/versionTracker.php';
 
 if (!isMethod('POST')) jsonMethodNotAllowed('POST');
@@ -91,14 +92,26 @@ try {
 
         $officeRepo = new OfficeRepository($db);
         $hamolaRepo = new HamolaRepository($db);
-        $syncedHamola = $hamolaRepo->syncFromReceiptRows(
+        $ledgerRepo = new VehicleLedgerRepository($db);
+        $rowsArr = is_array($body['rows'] ?? null) ? $body['rows'] : [];
+        $ledgerRepo->syncOfficeDeductionsForReceipt(
             $authUser['username'],
-            is_array($body['rows'] ?? null) ? $body['rows'] : [],
+            strval($receipt['id']),
+            strval($receipt['receipt_number'] ?? $receiptNumber),
+            $receipt['receipt_date'] ?? ($body['receipt_date'] ?? null),
+            $rowsArr,
             $officeRepo
         );
+        $syncedHamola = $hamolaRepo->syncFromReceiptRows(
+            $authUser['username'],
+            $rowsArr,
+            $officeRepo
+        );
+        $bumps = ['receipts', 'vehicle_ledger', 'offices'];
         if (!empty($syncedHamola)) {
-            bumpVersions($db, ['hamola_details', 'offices']);
+            $bumps[] = 'hamola_details';
         }
+        bumpVersions($db, $bumps);
 
         $db->commit();
 

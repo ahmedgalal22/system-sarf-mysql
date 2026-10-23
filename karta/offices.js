@@ -1214,7 +1214,11 @@ function _renderOfficeBalance(entries) {
   const sorted = entries.slice().sort((a, b) => {
     const da = new Date(entryDate(a) || 0).getTime();
     const db = new Date(entryDate(b) || 0).getTime();
-    return da - db;
+    if (da !== db) return da - db;
+    const ta = new Date(a.applied_at || a.created_at || 0).getTime();
+    const tb = new Date(b.applied_at || b.created_at || 0).getTime();
+    if (ta !== tb) return ta - tb;
+    return (Number(a.id) || 0) - (Number(b.id) || 0);
   });
 
   let running = 0;
@@ -1290,7 +1294,7 @@ async function _computeWeightMap(office) {
 
       const loading = String(row.loading || '').trim().toLowerCase();
       const dest = String(row.taktik || row.direction || '').trim().toLowerCase();
-      const w = (Number(row.weight) || 0) + (Number(row.weight2) || 0);
+      const w = _calcWeight(row);
       if (!loading || !dest) continue;
 
       const key = loading + '__' + dest;
@@ -1504,7 +1508,7 @@ async function _getOfficeCards(office) {
         date: row.date || '',
         car: row.car || row.carNo || row.vehicle_plate || '',
         driver: row.data || row.driver || row.driver_name || '',
-        weight: (Number(row.weight) || 0) + (Number(row.weight2) || 0),
+        weight: _calcWeight(row),
         noloon: Number(row.noloon) || 0,
         loading: row.loading || '',
         taktik: row.taktik || row.direction || '',
@@ -2038,14 +2042,17 @@ function attachOfficesPageListeners() {
   });
 
 
-  window.addEventListener('offices:changed', async () => {
+  const refreshOfficesAndDetails = async () => {
     await loadOffices();
-    // Refresh details panel if open (hamola tab etc.)
+    // Refresh details panel if open (balance tab / hamola tab / cards tab)
     if (_detailsOfficeId) {
       const office = await OfficesModule.getOfficeDetails(_detailsOfficeId);
       if (office) await _renderDetailsContent(office);
     }
-  });
+  };
+
+  window.addEventListener('offices:changed', refreshOfficesAndDetails);
+  window.addEventListener('receipts:changed', refreshOfficesAndDetails);
 }
 
 

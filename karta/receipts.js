@@ -117,8 +117,18 @@ function _normalizeRow(row) {
     };
   }
 
-  const net = calculateRowNet(row);
-  const { discount: _unusedDiscount, army: _unusedArmy, ...restRow } = row;
+  const hasFormulaInputs = row.weight !== undefined || row.noloon !== undefined;
+  const net = (!hasFormulaInputs && row.net !== undefined && row.net !== null && row.net !== '')
+    ? Money.round(Number(row.net) || 0)
+    : calculateRowNet(row);
+  const {
+    discount: _unusedDiscount,
+    army: _unusedArmy,
+    weight2: _unusedWeight2,
+    weightTotal: _unusedWeightTotal,
+    weight_total: _unusedWeightTotalSnake,
+    ...restRow
+  } = row;
 
   return {
     ...restRow,
@@ -130,7 +140,6 @@ function _normalizeRow(row) {
     vehicle_plate: normalizeOptionalString(row.vehicle_plate ?? row.car),
     rowPayment   : row.rowPayment || ROW_PAYMENT.PENDING,
     weight: Number(row.weight) || 0,
-    weight2: Number(row.weight2) || 0,
     deficit: Number(row.deficit) || 0,
     noloon: Number(row.noloon) || 0,
     ohda: Number(row.ohda) || 0,
@@ -241,6 +250,7 @@ async function create(username, rawData) {
 
   const normalized     = _normalize(rawData);
   const servicePayload = _buildServicePayload(normalized);
+  servicePayload.request_id = rawData.request_id || _uuid();
 
   const dataRows = normalized.rows.filter(r => r._type !== ROW_TYPES.SEPARATOR);
   const kartaNos = new Set(
@@ -274,6 +284,7 @@ async function create(username, rawData) {
         result.synced_hamola = syncedHamola;
       }
 
+      window.dispatchEvent(new CustomEvent('offices:changed'));
       if (warning) console.warn('[ReceiptsModule]', warning);
       return { result, normalized, warning, syncedHamola };
     } catch (err) {
@@ -310,6 +321,7 @@ async function update(username, id, rawData) {
     result.synced_hamola = syncedHamola;
   }
 
+  window.dispatchEvent(new CustomEvent('offices:changed'));
   return { result, normalized, syncedHamola };
 }
 
@@ -321,6 +333,7 @@ async function remove(username, id) {
 
   const res = await FinancialService.deleteReceipt(username, id, []);
   window.dispatchEvent(new CustomEvent('receipts:changed'));
+  window.dispatchEvent(new CustomEvent('offices:changed'));
   return res;
 }
 
@@ -507,37 +520,33 @@ const COL_DEFS = [
   // index: 4
   { key: 'weight',       label: 'وزن وش',             cls: 'receipt-weight',       type: 'number', minW: '55px',  printHide: false, printConditional: true },
   // index: 5
-  { key: 'weight2',      label: 'وزن م',              cls: 'receipt-weight2',      type: 'number', minW: '55px',  printHide: false, printConditional: true },
-  // index: 6
   { key: 'deficit',      label: 'عجز',                cls: 'receipt-deficit',      type: 'number', minW: '45px',  printHide: false },
-  // index: 7
-  { key: 'weightTotal',  label: 'الوزن',              cls: 'receipt-weight-total', type: 'number', minW: '60px',  printHide: false, readonly: true },
-  // index: 8  ← اسم المكتب (office) — مخفي في الطباعة (Feature 4)
+  // index: 6  ← اسم المكتب (office) — مخفي في الطباعة (Feature 4)
   { key: 'office',       label: 'اسم المكتب',         cls: 'receipt-office',       type: 'text',   minW: '90px',  printHide: true  },
-  // index: 9
+  // index: 7
   { key: 'loading',      label: 'التحميل',             cls: 'receipt-loading',      type: 'text',   minW: '85px',  printHide: false },
-  // index: 10
+  // index: 8
   { key: 'taktik',       label: 'الجهة',              cls: 'receipt-taktik',       type: 'text',   minW: '85px',  printHide: false },
-  // index: 11 ← النوع بعد الجهة
+  // index: 9 ← النوع بعد الجهة
   { key: 'type',         label: 'النوع',              cls: 'receipt-type',         type: 'text',   minW: '50px',  printHide: false },
-  // index: 12
+  // index: 10
   { key: 'noloon',       label: 'نولون',              cls: 'receipt-noloon',       type: 'number', minW: '55px',  printHide: false },
-  // index: 13
+  // index: 11
   { key: 'ohda',         label: 'عهدة',               cls: 'receipt-ohda',         type: 'number', minW: '55px',  printHide: false },
-  // index: 14
+  // index: 12
   { key: 'officeAmount', label: 'مكتب',               cls: 'receipt-office-amount',type: 'number', minW: '45px',  printHide: false },
-  // index: 15
+  // index: 13
   { key: 'add',          label: 'إضافة',              cls: 'receipt-add',          type: 'number', minW: '45px',  printHide: false, printConditional: true },
-  // index: 16
+  // index: 14
   { key: 'sarf',         label: 'الصرف',              cls: 'receipt-sarf',         type: 'number', minW: '45px',  printHide: false },
-  // index: 17
+  // index: 15
   { key: 'net',          label: 'الصافي',             cls: 'receipt-net',          type: 'number', minW: '90px',  printHide: false, readonly: true },
-  // index: 18 — إجراءات (no print)
+  // index: 16 — إجراءات (no print)
   { key: '_actions',     label: 'إجراءات',            cls: '',                     type: 'actions',minW: '70px',  printHide: true  },
 ];
 
 // عدد أعمدة البيانات (بدون إجراءات)
-const DATA_COL_COUNT = COL_DEFS.filter(c => c.key !== '_actions').length; // 18
+const DATA_COL_COUNT = COL_DEFS.filter(c => c.key !== '_actions').length; // 16
 
 // ─── HELPERS ──────────────────────────────────────────────────────────────────
 
@@ -577,16 +586,18 @@ function _separatorRowInnerHTML(subtotal, vehicleValue = '', notesValue = '') {
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;');
 
-  // colspan يغطي أعمدة الجدول (19) مقسمة: 7 يسار + 11 يمين + 1 إجراءات
+  const leftSpan = Math.min(5, DATA_COL_COUNT - 1);
+  const rightSpan = DATA_COL_COUNT - leftSpan;
+
   return `
-    <td colspan="7" class="px-2 py-2 bg-orange-50">
+    <td colspan="${leftSpan}" class="px-2 py-2 bg-orange-50">
       <div class="flex items-center gap-2">
         <span class="text-orange-700 font-bold text-xs whitespace-nowrap">🔄 رقم المركبة:</span>
         <input type="text" class="separator-vehicle-name px-2 py-1 border-2 border-orange-400 rounded text-xs font-bold w-40 focus:ring-1 focus:ring-orange-500 outline-none bg-white"
           placeholder="أدخل رقم المركبة" value="${esc}">
       </div>
     </td>
-    <td colspan="11" class="px-2 py-2 bg-orange-50 text-left">
+    <td colspan="${rightSpan}" class="px-2 py-2 bg-orange-50 text-left">
       <div class="flex items-center gap-2 justify-end">
         <span class="text-orange-700 font-bold text-xs whitespace-nowrap">إجمالي ما سبق:</span>
         <span class="separator-subtotal text-orange-800 font-bold text-sm bg-orange-100 px-3 py-1 rounded border border-orange-300">${tFmt(Number(subtotal) || 0)}</span>
@@ -642,18 +653,8 @@ function getSnapshotCellRawValue(row, col) {
       return _carVal;
     }
     case 'weight':
-    case 'weight2':
     case 'deficit':
       return row[col.key] ?? '';
-    case 'weightTotal':
-      if (row.weightTotal != null && row.weightTotal !== '') return row.weightTotal;
-      if (row.weight_total != null && row.weight_total !== '') return row.weight_total;
-      // Fallback: calculate from weight/weight2/deficit for old saved data
-      const wt_w1 = Number(row.weight) || 0;
-      const wt_w2 = Number(row.weight2) || 0;
-      const wt_d = Number(row.deficit) || 0;
-      const wt_calc = wt_w1 + wt_w2 - wt_d;
-      return (wt_w1 > 0 || wt_w2 > 0) ? wt_calc : '';
     case 'office':
       return row.office ?? '';
     case 'loading':
@@ -717,7 +718,7 @@ function renderReceiptSnapshotDataRow(row) {
     
     // Add specific visual style classes only for snapshot render
     let cellClass = '';
-    if (col.key === 'weight' || col.key === 'weight2' || col.key === 'weightTotal') {
+    if (col.key === 'weight') {
       cellClass = ' snapshot-cell-weight';
     } else if (col.key === 'noloon') {
       cellClass = ' snapshot-cell-noloon';
@@ -1405,15 +1406,6 @@ function _buildRowHTML() {
         </td>`;
     }
 
-    if (col.key === 'weightTotal') {
-      return `
-        <td class="px-1 py-1 text-center${printClass}">
-          <input type="number"
-            class="${col.cls} w-full px-1 py-1 border border-gray-300 rounded bg-blue-50 text-xs font-semibold text-blue-900"
-            readonly value="0">
-        </td>`;
-    }
-
     // owner column removed — warning moved to car column
 
     if (col.key === 'data') {
@@ -1619,9 +1611,7 @@ function attachRowCalculation(row) {
   if (!row || row.classList.contains(SEPARATOR_CLASS)) return;
 
   const weight    = row.querySelector('.receipt-weight');
-  const weight2   = row.querySelector('.receipt-weight2');
   const deficit   = row.querySelector('.receipt-deficit');
-  const weightTot = row.querySelector('.receipt-weight-total');
   const noloon    = row.querySelector('.receipt-noloon');
   const ohda      = row.querySelector('.receipt-ohda');
   const officeAmt = row.querySelector('.receipt-office-amount');
@@ -1636,20 +1626,16 @@ function attachRowCalculation(row) {
 
   function calculateNet() {
     const w1   = parseFloat(weight?.value)    || 0;
-    const w2   = parseFloat(weight2?.value)   || 0;
     const d    = parseFloat(deficit?.value)   || 0;
     const n    = parseFloat(noloon?.value)    || 0;
     const o    = parseFloat(ohda?.value)      || 0;
     const of_  = parseFloat(officeAmt?.value) || 0;
     const a    = parseFloat(add?.value)       || 0;
     const s    = parseFloat(sarf?.value)      || 0;
-    const wt   = (w1 + w2) - d;
-    if (weightTot) weightTot.value = Money.fmt(wt);
-    
+
     // Delegate row net calculation directly to financialCalculator
     const rowObj = {
       weight: w1,
-      weight2: w2,
       deficit: d,
       noloon: n,
       ohda: o,
@@ -1662,7 +1648,6 @@ function attachRowCalculation(row) {
   }
 
   weight    && weight.addEventListener('input',    calculateNet);
-  weight2   && weight2.addEventListener('input',   calculateNet);
   deficit   && deficit.addEventListener('input',   calculateNet);
   noloon    && noloon.addEventListener('input',    calculateNet);
   ohda      && ohda.addEventListener('input',      calculateNet);
@@ -1887,7 +1872,6 @@ function calculateTotals() {
     .filter(row => row.id !== 'receiptFillArrowRow' && !row.classList.contains(SEPARATOR_CLASS))
     .map(row => ({
       weight: parseFloat(row.querySelector('.receipt-weight')?.value) || 0,
-      weight2: parseFloat(row.querySelector('.receipt-weight2')?.value) || 0,
       deficit: parseFloat(row.querySelector('.receipt-deficit')?.value) || 0,
       noloon: parseFloat(row.querySelector('.receipt-noloon')?.value) || 0,
       ohda: parseFloat(row.querySelector('.receipt-ohda')?.value) || 0,
@@ -2099,7 +2083,7 @@ function attachInputRestrictions(row) {
 
   // الحقول الرقمية — منع الأحرف النصية
   const numericClasses = [
-    'receipt-weight', 'receipt-weight2', 'receipt-deficit',
+    'receipt-weight', 'receipt-deficit',
     'receipt-noloon', 'receipt-ohda', 'receipt-office-amount',
     'receipt-add', 'receipt-sarf', 'receipt-net',
   ];
@@ -2470,9 +2454,7 @@ async function collectReceiptRows() {
       type         : normalizeOptionalString(_field(row, 'receipt-type')),
       office       : normalizeOptionalString(_field(row, 'receipt-office')),
       weight       : _num(row, 'receipt-weight'),
-      weight2      : _num(row, 'receipt-weight2'),
       deficit      : _num(row, 'receipt-deficit'),
-      weightTotal  : _num(row, 'receipt-weight') + _num(row, 'receipt-weight2') - _num(row, 'receipt-deficit'),
       noloon       : _num(row, 'receipt-noloon'),
       ohda         : _num(row, 'receipt-ohda'),
       officeAmount : _num(row, 'receipt-office-amount'),
@@ -3018,12 +3000,7 @@ async function loadReceiptForEdit(receiptData) {
     // receipt-owner removed from table
     setF('receipt-car',           rowData.vehicle_plate || rowData.car || '');
     setF('receipt-weight',        rowData.weight ? Money.fmt(rowData.weight) : '');
-    setF('receipt-weight2',       rowData.weight2 ? Money.fmt(rowData.weight2) : '');
     setF('receipt-deficit',       rowData.deficit ? Money.fmt(rowData.deficit) : '');
-    const wt = (parseFloat(rowData.weight) || 0)
-         + (parseFloat(rowData.weight2) || 0)
-         - (parseFloat(rowData.deficit) || 0);
-    setF('receipt-weight-total',  Money.fmt(wt));
     setF('receipt-type',          rowData.type         || '');
     setF('receipt-office',        rowData.office       || '');
     setF('receipt-loading',       rowData.loading      || '');
@@ -3233,7 +3210,6 @@ function _handleReceiptExcelExport() {
     data:          tr.querySelector('.receipt-data')?.value          ?? '',
     car:           tr.querySelector('.receipt-car')?.value           ?? '',
     weight:        parseFloat(tr.querySelector('.receipt-weight')?.value)       || 0,
-    weight2:       parseFloat(tr.querySelector('.receipt-weight2')?.value)      || 0,
     deficit:       parseFloat(tr.querySelector('.receipt-deficit')?.value)      || 0,
     office:        tr.querySelector('.receipt-office')?.value        ?? '',
     loading:       tr.querySelector('.receipt-loading')?.value       ?? '',
@@ -3289,7 +3265,6 @@ function _handleReceiptExcelImport() {
         setVal('receipt-data',          rowData.data         ?? '');
         setVal('receipt-car',           rowData.car          ?? '');
         setVal('receipt-weight',        rowData.weight  !== 0 ? rowData.weight  : '');
-        setVal('receipt-weight2',       rowData.weight2 !== 0 ? rowData.weight2 : '');
         setVal('receipt-deficit',       rowData.deficit !== 0 ? rowData.deficit : '');
         setVal('receipt-office',        rowData.office       ?? '');
         setVal('receipt-loading',       rowData.loading      ?? '');
@@ -3301,24 +3276,10 @@ function _handleReceiptExcelImport() {
         setVal('receipt-add',           rowData.add     !== 0 ? rowData.add     : '');
         setVal('receipt-sarf',          rowData.sarf    !== 0 ? rowData.sarf    : '');
 
-        // PERFORMANCE FIX (was O(N²)):
-        // Previously, dispatching 'input' on every input in the row triggered
-        // calculateNet() multiple times per row, each of which called
-        // calculateTotals() — resulting in O(N × inputs) total calls.
-        //
-        // Instead, we compute weightTotal and net inline using the same formula
-        // as calculateNet() in attachRowCalculation, then set the readonly
-        // display fields directly.  calculateTotals() is called exactly once
-        // after all rows are inserted.
-        const _w1  = parseFloat(rowData.weight)       || 0;
-        const _w2  = parseFloat(rowData.weight2)      || 0;
-        const _d   = parseFloat(rowData.deficit)      || 0;
-        const _wt  = (_w1 + _w2) - _d;
+        // Compute net inline using the same formula as calculateNet()
         const _net = calculateRowNet(rowData);
 
-        const wtEl  = tr.querySelector('.receipt-weight-total');
         const netEl = tr.querySelector('.receipt-net');
-        if (wtEl)  wtEl.value  = Money.fmt(_wt);
         if (netEl) netEl.value = Money.fmt(_net);
       }
 

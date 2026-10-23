@@ -288,7 +288,6 @@ const _RECEIPT_COLS = Object.freeze([
   { key: 'data',         header: 'اسم السائق',     type: 'text'   },
   { key: 'car',          header: 'رقم المركبة',    type: 'text'   },
   { key: 'weight',       header: 'وزن وش',         type: 'number' },
-  { key: 'weight2',      header: 'وزن م',          type: 'number' },
   { key: 'deficit',      header: 'عجز',            type: 'number' },
   { key: 'office',       header: 'اسم المكتب',     legacyHeader: 'اسم الشركة', type: 'text'   },
   { key: 'loading',      header: 'التحميل',        type: 'text'   },
@@ -399,11 +398,10 @@ async function importReceiptRows(file) {
           ? _num(cellVal)
           : _str(cellVal);
       }
-      // net and weightTotal will be computed by the import handler from
+      // net will be computed by the import handler from
       // the raw values above — no event dispatching needed.
-      row.net         = 0;
-      row.weightTotal = 0;
-      row._type       = 'data';
+      row.net   = 0;
+      row._type = 'data';
       return row;
     });
 
@@ -659,20 +657,7 @@ const _ALL_RECEIPTS_COLS = Object.freeze([
   { header: 'صاحب المركبة', getValue: (_row, rec)  => _str(rec.client_name ?? '') },
   { header: 'رقم المركبة',  getValue: (row, _rec) => _str(row.car ?? row.vehicle_plate ?? row.carNo ?? '') },
   { header: 'وزن وش',        getValue: (row, _rec) => _allReceiptsNum(row.weight) },
-  { header: 'وزن م',         getValue: (row, _rec) => _allReceiptsNum(row.weight2) },
   { header: 'عجز',           getValue: (row, _rec) => _allReceiptsNum(row.deficit) },
-  {
-    header: 'الوزن',
-    getValue: (row, _rec) => {
-      // weightTotal may be pre-calculated or absent (legacy records)
-      if (row.weightTotal != null && row.weightTotal !== '') return _allReceiptsNum(row.weightTotal);
-      if (row.weight_total != null && row.weight_total !== '') return _allReceiptsNum(row.weight_total);
-      const w1 = Number(row.weight)  || 0;
-      const w2 = Number(row.weight2) || 0;
-      const d  = Number(row.deficit) || 0;
-      return (w1 > 0 || w2 > 0) ? _allReceiptsNum(w1 + w2 - d) : '';
-    },
-  },
   { header: 'اسم المكتب',   getValue: (row, _rec) => _str(row.office ?? '') },
   { header: 'التحميل',      getValue: (row, _rec) => _str(row.loading ?? '') },
   { header: 'الجهة',        getValue: (row, _rec) => _str(row.taktik ?? row.direction ?? '') },

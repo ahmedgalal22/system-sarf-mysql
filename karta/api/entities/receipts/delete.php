@@ -20,6 +20,8 @@ require_once __DIR__ . '/../../../core/permissions.php';
 require_once __DIR__ . '/../../../core/errorMapper.php';
 require_once __DIR__ . '/../../../api/middleware/auth.php';
 require_once __DIR__ . '/../../../repositories/ReceiptRepository.php';
+require_once __DIR__ . '/../../../repositories/VehicleLedgerRepository.php';
+require_once __DIR__ . '/../../../core/versionTracker.php';
 
 if (!isMethod('DELETE')) jsonMethodNotAllowed('DELETE');
 requirePermission($authUser['role'], 'receipts', 'delete');
@@ -45,6 +47,9 @@ try {
     $db->beginTransaction();
 
     try {
+        $ledgerRepo = new VehicleLedgerRepository($db);
+        $ledgerRepo->reverseByReference(strval($id), 'receipt', $authUser['username']);
+
         // softDelete re-checks under FOR UPDATE lock
         $result = $repo->softDelete($id, $authUser['username']);
 
@@ -54,6 +59,7 @@ try {
             return;
         }
 
+        bumpVersions($db, ['receipts', 'vehicle_ledger', 'offices']);
         $db->commit();
         mapResult('OK', ['id' => $id], 'تم حذف النموذج بنجاح');
 

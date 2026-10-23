@@ -451,13 +451,7 @@ class ReceiptRepository {
             foreach ($rows as $row) {
                 if (isset($row['_type']) && $row['_type'] === 'separator') continue;
                 $rowCount++;
-                if (isset($row['weightTotal']) && $row['weightTotal'] !== '') {
-                    $totalWeight += (float)$row['weightTotal'];
-                } elseif (isset($row['weight_total']) && $row['weight_total'] !== '') {
-                    $totalWeight += (float)$row['weight_total'];
-                } else {
-                    $totalWeight += (float)($row['weight'] ?? 0) + (float)($row['weight2'] ?? 0) - (float)($row['deficit'] ?? 0);
-                }
+                $totalWeight += (float)($row['weight'] ?? 0) - (float)($row['deficit'] ?? 0);
                 $totalNoloon += (float)($row['noloon'] ?? 0);
                 $totalOhda   += (float)($row['ohda'] ?? 0);
             }

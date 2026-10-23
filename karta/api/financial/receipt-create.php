@@ -87,11 +87,22 @@ try {
         $ledgerResults = [];
         if (!empty($body['ledger_ops']) && is_array($body['ledger_ops'])) {
             foreach ($body['ledger_ops'] as $op) {
+                if (($op['type'] ?? '') === 'OFFICE_WITHDRAW_AUTO') continue;
                 $op['username'] = $username;
                 $op['reference_id'] = $receiptId;
                 $ledgerResults[] = $ledgerRepo->create($op);
             }
         }
+
+        // Synchronize office balance deductions (الصافي + قيمة خانة الصرف) atomically
+        $officeLedgerResults = $ledgerRepo->syncOfficeDeductionsForReceipt(
+            $username,
+            $receiptId,
+            strval($receipt['receipt_number'] ?? $receiptNumber),
+            $receipt['receipt_date'] ?? ($body['receipt_date'] ?? null),
+            is_array($body['rows'] ?? null) ? $body['rows'] : [],
+            $officeRepo
+        );
 
         // Create treasury entries (from treasury_ops array)
         $treasuryResults = [];
@@ -110,10 +121,9 @@ try {
             $officeRepo
         );
 
-        $bumps = ['receipts', 'vehicle_ledger', 'treasury'];
+        $bumps = ['receipts', 'vehicle_ledger', 'treasury', 'offices'];
         if (!empty($syncedHamola)) {
             $bumps[] = 'hamola_details';
-            $bumps[] = 'offices';
         }
         bumpVersions($db, $bumps);
         $db->commit();
@@ -121,6 +131,7 @@ try {
         jsonSuccess([
             'receipt'       => $receipt,
             'ledger'        => $ledgerResults,
+            'office_ledger' => $officeLedgerResults,
             'treasury'      => $treasuryResults,
             'synced_hamola' => $syncedHamola,
         ], 'تم إنشاء الإيصال بنجاح', 201);

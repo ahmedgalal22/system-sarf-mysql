@@ -24,6 +24,7 @@ require_once __DIR__ . '/../../../api/middleware/auth.php';
 require_once __DIR__ . '/../../../repositories/ReceiptRepository.php';
 require_once __DIR__ . '/../../../repositories/OfficeRepository.php';
 require_once __DIR__ . '/../../../repositories/HamolaRepository.php';
+require_once __DIR__ . '/../../../repositories/VehicleLedgerRepository.php';
 require_once __DIR__ . '/../../../core/versionTracker.php';
 
 if (!isMethod('PUT')) jsonMethodNotAllowed('PUT');
@@ -63,20 +64,31 @@ try {
 
         $officeRepo = new OfficeRepository($db);
         $hamolaRepo = new HamolaRepository($db);
+        $ledgerRepo = new VehicleLedgerRepository($db);
+        $updated = $result['data'];
+        $effectiveRows = is_array($body['rows'] ?? null)
+            ? $body['rows']
+            : (is_string($updated['rows'] ?? null) ? (json_decode($updated['rows'], true) ?: []) : ($updated['rows'] ?? []));
+        $ledgerRepo->syncOfficeDeductionsForReceipt(
+            $authUser['username'],
+            strval($id),
+            strval($updated['receipt_number'] ?? $id),
+            $updated['receipt_date'] ?? null,
+            $effectiveRows,
+            $officeRepo
+        );
         $syncedHamola = $hamolaRepo->syncFromReceiptRows(
             $authUser['username'],
-            is_array($body['rows'] ?? null) ? $body['rows'] : [],
+            $effectiveRows,
             $officeRepo
         );
 
-        $bumps = ['receipts'];
+        $bumps = ['receipts', 'vehicle_ledger', 'offices'];
         if (!empty($syncedHamola)) {
             $bumps[] = 'hamola_details';
-            $bumps[] = 'offices';
         }
         bumpVersions($db, $bumps);
         $db->commit();
-        $updated = $result['data'];
         decodeRowsField($updated);
         mapResult('OK', $updated, 'تم تحديث النموذج بنجاح');
 

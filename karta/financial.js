@@ -142,9 +142,6 @@ function _validate(data) {
 
   // Convert decimals → cents (RULE 9)
   const total = Money.toCents(data.total);
-  if (total < 0) {
-    throw new Error('[FinancialService] total must be a non-negative number.');
-  }
 
   const general_add = Money.toCents(data.general_add ?? data.generalAdd ?? 0);
   if (general_add < 0) {
@@ -161,8 +158,14 @@ function _validate(data) {
     throw new Error('[FinancialService] paid must be a non-negative number.');
   }
 
+  const hasNonZeroActivity = dataRows.some(r =>
+    (Number(r.net) || 0) !== 0 ||
+    (Number(r.sarf) || 0) !== 0 ||
+    (Number(r.weight) || 0) !== 0 ||
+    (Number(r.noloon) || 0) !== 0
+  );
   const groups = [...clientVehicleGroups.values()].filter(g => g.total !== 0);
-  if (groups.length === 0) {
+  if (groups.length === 0 && !hasNonZeroActivity) {
     throw new Error('[FinancialService] rows total must be greater than zero.');
   }
 
@@ -308,7 +311,7 @@ async function createReceipt(username, data, extraOps = []) {
 
   const apiRes = await ApiClient.post('/financial/receipt-create.php', {
     ...receiptOp.payload,
-    request_id: _uuid(),
+    request_id: data.request_id || _uuid(),
     ledger_ops: ledgerOps,
     treasury_ops: treasuryOps,
   });
@@ -319,6 +322,9 @@ async function createReceipt(username, data, extraOps = []) {
   const ledger_due = apiRes.data.ledger?.[0] ? Money.decimalizeRecord(apiRes.data.ledger[0]) : null;
   const ledger_deposit = null;
   const ledger_withdraw = null;
+  const office_ledger = Array.isArray(apiRes.data?.office_ledger)
+    ? apiRes.data.office_ledger.map(Money.decimalizeRecord)
+    : [];
 
   return {
     receipt,
@@ -326,6 +332,7 @@ async function createReceipt(username, data, extraOps = []) {
     ledger_deposit : Money.decimalizeRecord(ledger_deposit),
     ledger_withdraw: Money.decimalizeRecord(ledger_withdraw),
     ledger_due     : Money.decimalizeRecord(ledger_due),
+    office_ledger,
     synced_hamola  : Array.isArray(apiRes.data?.synced_hamola) ? apiRes.data.synced_hamola : null,
   };
 }
@@ -388,6 +395,9 @@ async function updateReceipt(username, id, data, extraOps = []) {
   const ledger_due = apiRes.data.ledger?.[0] ? Money.decimalizeRecord(apiRes.data.ledger[0]) : null;
   const ledger_deposit = null;
   const ledger_withdraw = null;
+  const office_ledger = Array.isArray(apiRes.data?.office_ledger)
+    ? apiRes.data.office_ledger.map(Money.decimalizeRecord)
+    : [];
 
   return {
     receipt,
@@ -395,6 +405,7 @@ async function updateReceipt(username, id, data, extraOps = []) {
     ledger_deposit : Money.decimalizeRecord(ledger_deposit),
     ledger_withdraw: Money.decimalizeRecord(ledger_withdraw),
     ledger_due     : Money.decimalizeRecord(ledger_due),
+    office_ledger,
     synced_hamola  : Array.isArray(apiRes.data?.synced_hamola) ? apiRes.data.synced_hamola : null,
   };
 }
@@ -583,6 +594,10 @@ async function getClientBalance(client_id, client_type) {
       || entry.type === OFFICE_LEDGER_TYPES.WITHDRAW_AUTO;
 
     if (isOfficeEntry) {
+      if (entry.type === OFFICE_LEDGER_TYPES.WITHDRAW_AUTO || entry.type === 'withdraw' || entry.type === 'receipt_payment') {
+        withdraw_total += Math.abs(cents);
+        continue;
+      }
       if (cents >= 0) deposit_total += cents;
       else withdraw_total += Math.abs(cents);
       continue;

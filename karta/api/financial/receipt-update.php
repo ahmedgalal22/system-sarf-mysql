@@ -76,6 +76,7 @@ try {
         if (!$isPaid) {
             if (!empty($body['ledger_ops'])) {
                 foreach ($body['ledger_ops'] as $op) {
+                    if (($op['type'] ?? '') === 'OFFICE_WITHDRAW_AUTO') continue;
                     $op['username'] = $username;
                     $op['reference_id'] = strval($receiptId);
                     $ledgerResults[] = $ledgerRepo->create($op);
@@ -90,29 +91,41 @@ try {
             }
         }
 
-        // 4. Automatically register any missing office cargo combinations inside the same transaction
-        $syncedHamola = $hamolaRepo->syncFromReceiptRows(
+        // 4. Synchronize office balance deductions (الصافي + قيمة خانة الصرف) atomically
+        $updated = $result['data'];
+        $effectiveRows = is_array($body['rows'] ?? null)
+            ? $body['rows']
+            : (is_string($updated['rows'] ?? null) ? (json_decode($updated['rows'], true) ?: []) : ($updated['rows'] ?? []));
+        $officeLedgerResults = $ledgerRepo->syncOfficeDeductionsForReceipt(
             $username,
-            is_array($body['rows'] ?? null) ? $body['rows'] : [],
+            strval($receiptId),
+            strval($updated['receipt_number'] ?? $existing['receipt_number'] ?? $receiptId),
+            $updated['receipt_date'] ?? $existing['receipt_date'] ?? null,
+            $effectiveRows,
             $officeRepo
         );
 
-        $bumps = ['receipts'];
+        // 5. Automatically register any missing office cargo combinations inside the same transaction
+        $syncedHamola = $hamolaRepo->syncFromReceiptRows(
+            $username,
+            $effectiveRows,
+            $officeRepo
+        );
+
+        $bumps = ['receipts', 'vehicle_ledger', 'offices'];
         if (!$isPaid) {
-            $bumps[] = 'vehicle_ledger';
             $bumps[] = 'treasury';
         }
         if (!empty($syncedHamola)) {
             $bumps[] = 'hamola_details';
-            $bumps[] = 'offices';
         }
         bumpVersions($db, $bumps);
         $db->commit();
-        $updated = $result['data'];
         decodeRowsField($updated);
         jsonSuccess([
             'receipt'       => $updated,
             'ledger'        => $ledgerResults,
+            'office_ledger' => $officeLedgerResults,
             'treasury'      => $treasuryResults,
             'synced_hamola' => $syncedHamola,
         ]);

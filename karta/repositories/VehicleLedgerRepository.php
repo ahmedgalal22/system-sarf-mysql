@@ -125,6 +125,138 @@ class VehicleLedgerRepository {
         return $stmt->rowCount();
     }
 
+    /**
+     * Synchronize office balance deductions (OFFICE_WITHDRAW_AUTO) for a receipt
+     * inside the active database transaction.
+     *
+     * Exact deduction rule per row:
+     *   Office balance deduction = الصافي (net) + قيمة خانة الصرف (sarf)
+     *   where net = (weight - deficit) * noloon - (ohda + officeAmount + sarf) + add
+     *
+     * Reverses any previous active OFFICE_WITHDRAW_AUTO entries for this receipt
+     * before inserting the new deduction entries so edits/retries never duplicate
+     * deductions and always reflect the exact current receipt state.
+     */
+    public function syncOfficeDeductionsForReceipt(
+        string $username,
+        string $receiptId,
+        ?string $receiptNumber,
+        ?string $receiptDate,
+        array $rows,
+        OfficeRepository $officeRepo
+    ): array {
+        $now = (new DateTime('now', new DateTimeZone('Africa/Cairo')))->format('Y-m-d H:i:s.v');
+
+        // 1. Reverse any existing active office deduction entries for this receipt
+        $revStmt = $this->db->prepare(
+            "UPDATE vehicle_ledger
+             SET is_reversed = 1, reversed_at = :now, reversed_by = :u, updated_at = NOW(3)
+             WHERE reference_id = :rid
+               AND reference_type = 'receipt'
+               AND client_type = 'office'
+               AND type = 'OFFICE_WITHDRAW_AUTO'
+               AND is_reversed = 0
+               AND deleted_at IS NULL"
+        );
+        $revStmt->execute([
+            ':rid' => $receiptId,
+            ':u'   => $username,
+            ':now' => $now,
+        ]);
+
+        if (empty($rows)) {
+            return [];
+        }
+
+        // 2. Map user's active offices by normalized name and ID
+        $allOffices = $officeRepo->getAllByUsername($username);
+        if (empty($allOffices)) {
+            return [];
+        }
+
+        $officeByNameKey = [];
+        $officeById = [];
+        foreach ($allOffices as $o) {
+            $oid = (int)($o['id'] ?? 0);
+            if ($oid <= 0) continue;
+            $officeById[$oid] = $o;
+            $nameKey = mb_strtolower(preg_replace('/\s+/u', ' ', trim((string)($o['name'] ?? ''))), 'UTF-8');
+            if ($nameKey !== '') {
+                $officeByNameKey[$nameKey] = $o;
+            }
+        }
+
+        // 3. Aggregate (net + sarf) in cents per office
+        $deductionsByOfficeId = [];
+        foreach ($rows as $row) {
+            if (!is_array($row)) continue;
+            $rowType = $row['_type'] ?? ($row['type'] ?? ($row['row_type'] ?? ''));
+            if ($rowType === 'separator') continue;
+
+            $office = null;
+            if (!empty($row['office_id']) && isset($officeById[(int)$row['office_id']])) {
+                $office = $officeById[(int)$row['office_id']];
+            } else {
+                $officeKey = mb_strtolower(preg_replace('/\s+/u', ' ', trim((string)($row['office'] ?? ''))), 'UTF-8');
+                if ($officeKey !== '' && isset($officeByNameKey[$officeKey])) {
+                    $office = $officeByNameKey[$officeKey];
+                }
+            }
+            if (!$office) continue;
+
+            $hasFormulaInputs = array_key_exists('weight', $row) || array_key_exists('noloon', $row);
+            if (!$hasFormulaInputs && isset($row['net']) && $row['net'] !== '') {
+                $rowNetDecimal = round(floatval($row['net']), 2);
+            } else {
+                $w   = floatval($row['weight'] ?? 0);
+                $def = floatval($row['deficit'] ?? 0);
+                $nol = floatval($row['noloon'] ?? 0);
+                $ohd = floatval($row['ohda'] ?? 0);
+                $ofc = floatval($row['officeAmount'] ?? ($row['office_amount'] ?? 0));
+                $srf = floatval($row['sarf'] ?? 0);
+                $add = floatval($row['add'] ?? 0);
+                $rowNetDecimal = round((($w - $def) * $nol) - ($ohd + $ofc + $srf) + $add, 2);
+            }
+
+            $rowSarfDecimal = round(floatval($row['sarf'] ?? 0), 2);
+            $rowDeductionCents = (int)round($rowNetDecimal * 100) + (int)round($rowSarfDecimal * 100);
+
+            $oid = (int)$office['id'];
+            if (!isset($deductionsByOfficeId[$oid])) {
+                $deductionsByOfficeId[$oid] = 0;
+            }
+            $deductionsByOfficeId[$oid] += $rowDeductionCents;
+        }
+
+        // 4. Create ledger entry per office (negative amount reduces office balance)
+        $created = [];
+        $docNum = trim((string)($receiptNumber ?? '')) !== '' ? trim((string)$receiptNumber) : $receiptId;
+        $effectiveDate = !empty($receiptDate) ? $receiptDate : (new DateTime('now', new DateTimeZone('Africa/Cairo')))->format('Y-m-d');
+
+        foreach ($deductionsByOfficeId as $oid => $totalDeductionCents) {
+            if ($totalDeductionCents === 0) continue;
+            $office = $officeById[$oid];
+            $created[] = $this->create([
+                'username'       => $username,
+                'client_id'      => strval($oid),
+                'client_type'    => 'office',
+                'client_name'    => $office['name'] ?? null,
+                'type'           => 'OFFICE_WITHDRAW_AUTO',
+                'effect'         => 'office_deduction',
+                'amount'         => -$totalDeductionCents,
+                'reference_type' => 'receipt',
+                'reference_id'   => strval($receiptId),
+                'receipt_number' => $receiptNumber !== null ? strval($receiptNumber) : null,
+                'date'           => $effectiveDate,
+                'applied_at'     => $now,
+                'is_reversed'    => 0,
+                'note'           => 'خصم من الرصيد — إذن صرف رقم ' . $docNum,
+            ]);
+        }
+
+        return $created;
+    }
+
     public function softDelete(int $id, string $username): bool {
         $stmt = $this->db->prepare('UPDATE vehicle_ledger SET deleted_at = NOW(3), deleted_by = :u WHERE id = :id AND deleted_at IS NULL');
         $stmt->execute([':id' => $id, ':u' => $username]);

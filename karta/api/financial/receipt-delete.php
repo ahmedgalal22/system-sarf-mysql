@@ -44,7 +44,7 @@ try {
             mapResult($result['code']);
         }
 
-        bumpVersions($db, ['receipts', 'vehicle_ledger', 'treasury']);
+        bumpVersions($db, ['receipts', 'vehicle_ledger', 'treasury', 'offices']);
         $db->commit();
         jsonSuccess(['id' => $receiptId], 'تم حذف الإيصال بنجاح');
 

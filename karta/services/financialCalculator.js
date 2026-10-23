@@ -16,14 +16,13 @@ const _EFFECT = Object.freeze({
 
 /**
  * Calculates the net value of a single data row.
- * Formula: ((weight + weight2) - deficit) * noloon - (ohda + officeAmount + sarf) + add
+ * Formula: (weight - deficit) * noloon - (ohda + officeAmount + sarf) + add
  */
 export function calculateRowNet(row) {
   if (!row) return 0;
   if (row._type === 'separator' || row.type === 'separator' || row.row_type === 'separator') return 0;
 
   const weight       = Number(row.weight)       || 0;
-  const weight2      = Number(row.weight2)      || 0;
   const deficit      = Number(row.deficit)      || 0;
   const noloon       = Number(row.noloon)       || 0;
   const ohda         = Number(row.ohda)         || 0;
@@ -31,7 +30,7 @@ export function calculateRowNet(row) {
   const sarf         = Number(row.sarf)         || 0;
   const add          = Number(row.add)          || 0;
 
-  const net = ((weight + weight2) - deficit) * noloon
+  const net = (weight - deficit) * noloon
             - (ohda + officeAmount + sarf)
             + add;
 
@@ -40,15 +39,31 @@ export function calculateRowNet(row) {
 
 /**
  * Calculates the weight total of a single data row.
- * Formula: (weight + weight2) - deficit
+ * Formula: weight - deficit
  */
 export function calculateWeightTotal(row) {
   if (!row) return 0;
   if (row._type === 'separator' || row.type === 'separator' || row.row_type === 'separator') return 0;
   const weight  = Number(row.weight)  || 0;
-  const weight2 = Number(row.weight2) || 0;
   const deficit = Number(row.deficit) || 0;
-  return (weight + weight2) - deficit;
+  return weight - deficit;
+}
+
+/**
+ * Calculates the office balance deduction for a single data row.
+ * Formula: الصافي (net) + قيمة خانة الصرف (sarf)
+ */
+export function calculateRowOfficeDeduction(row) {
+  if (!row) return 0;
+  if (row._type === 'separator' || row.type === 'separator' || row.row_type === 'separator') return 0;
+
+  const hasFormulaInputs = row.weight !== undefined || row.noloon !== undefined;
+  const net = (!hasFormulaInputs && row.net !== undefined && row.net !== null && row.net !== '')
+    ? Money.round(Number(row.net) || 0)
+    : calculateRowNet(row);
+  const sarf = Money.round(Number(row.sarf) || 0);
+
+  return Money.round(net + sarf);
 }
 
 /**
