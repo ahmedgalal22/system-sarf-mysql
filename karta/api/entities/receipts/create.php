@@ -75,6 +75,7 @@ try {
             'client_type'      => sanitizeString($body['client_type'] ?? null) ?: null,
             'client_name'      => sanitizeString($body['client_name'] ?? null) ?: null,
             'payout_status'    => sanitizeString($body['payout_status'] ?? null) ?: 'unpaid',
+            'payment_status'   => sanitizeString($body['payment_status'] ?? null) ?: null,
             'paid_at'          => sanitizeString($body['paid_at'] ?? null) ?: null,
             'account_type'     => sanitizeString($body['account_type'] ?? null) ?: null,
             'total'            => intval($body['total'] ?? 0),

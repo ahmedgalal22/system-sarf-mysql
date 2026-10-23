@@ -292,6 +292,7 @@ async function createReceipt(username, data, extraOps = []) {
       receipt_date : clean.receipt_date,
       receipt_number: data.receipt_number ?? null,
       payout_status : payout_status,
+      ...(data.payment_status ? { payment_status: data.payment_status } : {}),
       rows         : data.rows ?? [],
       total        : clean.total,
       paid         : clean.paid,
@@ -363,6 +364,7 @@ async function updateReceipt(username, id, data, extraOps = []) {
       receipt_date : clean.receipt_date,
       receipt_number: data.receipt_number ?? null,
       ...(payout_status !== null ? { payout_status } : {}),
+      ...(data.payment_status !== undefined ? { payment_status: data.payment_status } : {}),
       rows         : data.rows ?? [],
       total        : clean.total,
       paid         : clean.paid,
@@ -486,17 +488,16 @@ async function updateReceiptRowStatus(username, receiptId, rowId, status) {
 }
 
 /**
- * Update the payment status ('paid' / 'تم دفعه' or 'unpaid' / 'لم يتم دفعه')
- * of a single receipt row.
- * Completely isolated from disbursement status, receipt financial calculations,
+ * Update the receipt-level payment status ('paid' / 'تم دفعه' or 'unpaid' / 'لم يتم دفعه')
+ * for an entire receipt.
+ * Completely isolated from row disbursement statuses, receipt financial calculations,
  * office balances, and ledger/treasury transactions.
  */
-async function updateReceiptRowPaymentStatus(username, receiptId, rowId, paymentStatus) {
-  if (!username) throw new Error('[FinancialService:updateReceiptRowPaymentStatus] username is required.');
-  if (!receiptId) throw new Error('[FinancialService:updateReceiptRowPaymentStatus] receiptId is required.');
-  if (!rowId) throw new Error('[FinancialService:updateReceiptRowPaymentStatus] rowId is required.');
+async function updateReceiptPaymentStatus(username, receiptId, paymentStatus) {
+  if (!username) throw new Error('[FinancialService:updateReceiptPaymentStatus] username is required.');
+  if (!receiptId) throw new Error('[FinancialService:updateReceiptPaymentStatus] receiptId is required.');
 
-  return ReceiptRepository.updateRowPaymentStatus(receiptId, rowId, paymentStatus, { username });
+  return ReceiptRepository.updateReceiptPaymentStatus(receiptId, paymentStatus, { username });
 }
 
 // ─── PUBLIC: rebuildVehicleBalance ────────────────────────────────────────────
@@ -768,5 +769,5 @@ export const FinancialService = Object.freeze({
   resolveHamolaPrice,
   updateReceiptStatus,
   updateReceiptRowStatus,
-  updateReceiptRowPaymentStatus,
+  updateReceiptPaymentStatus,
 });

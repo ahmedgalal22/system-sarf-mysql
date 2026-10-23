@@ -67,7 +67,7 @@ try {
 
     // Single-value parameters
     $payoutStatus   = sanitizeString($_GET['payout_status'] ?? ($_GET['row_status'] ?? null));
-    $paymentStatus  = sanitizeString($_GET['payment_status'] ?? ($_GET['row_payment_status'] ?? null));
+    $paymentStatus  = sanitizeString($_GET['payment_status'] ?? null);
     $sort           = sanitizeString($_GET['sort'] ?? null);
     $sortDir        = sanitizeString($_GET['sort_dir'] ?? null);
     $limit          = (int)($_GET['limit'] ?? 50);

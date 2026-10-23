@@ -67,14 +67,16 @@ function mapResult(string $code, $data = null, string $message = ''): void {
 }
 
 /**
- * Decode JSON rows field if present and stringified, and normalize row IDs & statuses.
+ * Decode JSON rows field if present and stringified, and normalize receipt-level
+ * payment_status and row-level IDs & disbursement statuses.
  */
 function decodeRowsField(?array &$record): void {
     if (!$record) return;
+    if (class_exists('ReceiptRepository')) {
+        ReceiptRepository::normalizeReceiptRecord($record);
+        return;
+    }
     if (is_string($record['rows'] ?? null)) {
         $record['rows'] = json_decode($record['rows'], true) ?? [];
-    }
-    if (is_array($record['rows'] ?? null) && class_exists('ReceiptRepository')) {
-        $record['rows'] = ReceiptRepository::normalizeReceiptRows($record['rows'], $record['id'] ?? '');
     }
 }

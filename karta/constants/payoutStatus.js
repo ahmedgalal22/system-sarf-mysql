@@ -248,20 +248,20 @@ export function getRowDisbursementStatusLabel(rowOrStatus) {
   return ROW_DISBURSEMENT_LABELS[status] || ROW_DISBURSEMENT_LABELS[ROW_DISBURSEMENT_STATUS.UNPAID];
 }
 
-// ─── PER-ROW PAYMENT STATUS ──────────────────────────────────────────────────
+// ─── RECEIPT-LEVEL PAYMENT STATUS ────────────────────────────────────────────
 
-export const ROW_PAYMENT_STATUS = Object.freeze({
+export const RECEIPT_PAYMENT_STATUS = Object.freeze({
   PAID: 'paid',
   UNPAID: 'unpaid',
 });
 
-export const ROW_PAYMENT_LABELS = Object.freeze({
-  [ROW_PAYMENT_STATUS.PAID]: 'تم دفعه',
-  [ROW_PAYMENT_STATUS.UNPAID]: 'لم يتم دفعه',
+export const RECEIPT_PAYMENT_LABELS = Object.freeze({
+  [RECEIPT_PAYMENT_STATUS.PAID]: 'تم دفعه',
+  [RECEIPT_PAYMENT_STATUS.UNPAID]: 'لم يتم دفعه',
 });
 
 /**
- * Validate a requested row payment status against the two supported values:
+ * Validate a requested receipt payment status against the two supported values:
  *   - 'paid' / 'تم دفعه'       -> 'paid'
  *   - 'unpaid' / 'لم يتم دفعه' -> 'unpaid'
  * Throws an Error for any other value.
@@ -269,24 +269,24 @@ export const ROW_PAYMENT_LABELS = Object.freeze({
  * @param {string} status
  * @returns {'paid'|'unpaid'}
  */
-export function validateRowPaymentStatus(status) {
+export function validateReceiptPaymentStatus(status) {
   if (typeof status !== 'string') {
-    throw new Error(`[RowPaymentState] Invalid row payment status type: expected string, got ${typeof status}`);
+    throw new Error(`[ReceiptPaymentState] Invalid receipt payment status type: expected string, got ${typeof status}`);
   }
   const clean = status.trim();
   const lower = clean.toLowerCase();
-  if (lower === ROW_PAYMENT_STATUS.PAID || clean === 'تم دفعه') {
-    return ROW_PAYMENT_STATUS.PAID;
+  if (lower === RECEIPT_PAYMENT_STATUS.PAID || clean === 'تم دفعه') {
+    return RECEIPT_PAYMENT_STATUS.PAID;
   }
-  if (lower === ROW_PAYMENT_STATUS.UNPAID || clean === 'لم يتم دفعه') {
-    return ROW_PAYMENT_STATUS.UNPAID;
+  if (lower === RECEIPT_PAYMENT_STATUS.UNPAID || clean === 'لم يتم دفعه') {
+    return RECEIPT_PAYMENT_STATUS.UNPAID;
   }
-  throw new Error(`[RowPaymentState] Unsupported row payment status: "${status}"`);
+  throw new Error(`[ReceiptPaymentState] Unsupported receipt payment status: "${status}"`);
 }
 
-export function isValidRowPaymentStatus(status) {
+export function isValidReceiptPaymentStatus(status) {
   try {
-    validateRowPaymentStatus(status);
+    validateReceiptPaymentStatus(status);
     return true;
   } catch (_) {
     return false;
@@ -294,49 +294,99 @@ export function isValidRowPaymentStatus(status) {
 }
 
 /**
- * Determine a receipt row's saved payment status.
- * Default for rows that do not yet have a row-level payment_status is 'unpaid' ('لم يتم دفعه').
- * Kept strictly separate from disbursement_status, row_status, payout_status, rowPayment,
- * and receipt-level payout fields.
+ * Determine a receipt's saved payment status at the receipt level.
  *
- * @param {object} row
+ * Resolution rules (deterministic):
+ *   1. If `receipt.payment_status` is explicitly present and valid ('paid' / 'تم دفعه'
+ *      or 'unpaid' / 'لم يتم دفعه'), return its canonical value ('paid' | 'unpaid').
+ *   2. Compatibility fallback for legacy row-level `payment_status`:
+ *      If receipt-level `payment_status` is absent, inspect all non-separator data rows
+ *      in `receipt.rows`. If at least one data row exists, EVERY data row has a valid
+ *      legacy `row.payment_status`, and all data rows agree on the exact same value,
+ *      return that unanimous value.
+ *   3. If legacy row-level values conflict or are missing, return the safe fallback
+ *      'unpaid' ('لم يتم دفعه'). Never infer payment status from `receipt.payout_status`
+ *      or row-level disbursement fields (`disbursement_status`, `row_status`, `rowPayment`).
+ *
+ * @param {object} receipt
  * @returns {'paid'|'unpaid'}
  */
-export function getRowPaymentStatus(row) {
-  if (!row || typeof row !== 'object') return ROW_PAYMENT_STATUS.UNPAID;
-  const raw = row.payment_status ?? null;
+export function getReceiptPaymentStatus(receipt) {
+  if (!receipt || typeof receipt !== 'object') return RECEIPT_PAYMENT_STATUS.UNPAID;
 
-  if (typeof raw === 'string') {
-    const clean = raw.trim();
-    const lower = clean.toLowerCase();
-    if (lower === ROW_PAYMENT_STATUS.PAID || clean === 'تم دفعه') {
-      return ROW_PAYMENT_STATUS.PAID;
-    }
-    if (lower === ROW_PAYMENT_STATUS.UNPAID || clean === 'لم يتم دفعه') {
-      return ROW_PAYMENT_STATUS.UNPAID;
+  const rawReceiptStatus = receipt.payment_status;
+  if (typeof rawReceiptStatus === 'string' && rawReceiptStatus.trim() !== '') {
+    try {
+      return validateReceiptPaymentStatus(rawReceiptStatus);
+    } catch (_) {
+      // Fall through to safe fallback if corrupted
+      return RECEIPT_PAYMENT_STATUS.UNPAID;
     }
   }
-  return ROW_PAYMENT_STATUS.UNPAID;
+
+  const rawRows = Array.isArray(receipt.rows)
+    ? receipt.rows
+    : typeof receipt.rows === 'string'
+      ? (() => {
+          try {
+            return JSON.parse(receipt.rows) || [];
+          } catch (_) {
+            return [];
+          }
+        })()
+      : [];
+
+  const dataRows = rawRows.filter(
+    (r) => r && typeof r === 'object' && r._type !== 'separator'
+  );
+
+  if (dataRows.length > 0) {
+    let commonStatus = null;
+    let allAgree = true;
+    for (const row of dataRows) {
+      if (typeof row.payment_status !== 'string' || row.payment_status.trim() === '') {
+        allAgree = false;
+        break;
+      }
+      try {
+        const rowPayStatus = validateReceiptPaymentStatus(row.payment_status);
+        if (commonStatus === null) {
+          commonStatus = rowPayStatus;
+        } else if (commonStatus !== rowPayStatus) {
+          allAgree = false;
+          break;
+        }
+      } catch (_) {
+        allAgree = false;
+        break;
+      }
+    }
+    if (allAgree && commonStatus !== null) {
+      return commonStatus;
+    }
+  }
+
+  return RECEIPT_PAYMENT_STATUS.UNPAID;
 }
 
 /**
- * Get the Arabic label ('تم دفعه' or 'لم يتم دفعه') for a row or payment status value.
+ * Get the Arabic label ('تم دفعه' or 'لم يتم دفعه') for a receipt or payment status value.
  *
- * @param {object|string} rowOrStatus
+ * @param {object|string} receiptOrStatus
  * @returns {string}
  */
-export function getRowPaymentStatusLabel(rowOrStatus) {
+export function getReceiptPaymentStatusLabel(receiptOrStatus) {
   const status =
-    rowOrStatus && typeof rowOrStatus === 'object'
-      ? getRowPaymentStatus(rowOrStatus)
+    receiptOrStatus && typeof receiptOrStatus === 'object'
+      ? getReceiptPaymentStatus(receiptOrStatus)
       : (() => {
           try {
-            return validateRowPaymentStatus(String(rowOrStatus ?? ''));
+            return validateReceiptPaymentStatus(String(receiptOrStatus ?? ''));
           } catch (_) {
-            return ROW_PAYMENT_STATUS.UNPAID;
+            return RECEIPT_PAYMENT_STATUS.UNPAID;
           }
         })();
-  return ROW_PAYMENT_LABELS[status] || ROW_PAYMENT_LABELS[ROW_PAYMENT_STATUS.UNPAID];
+  return RECEIPT_PAYMENT_LABELS[status] || RECEIPT_PAYMENT_LABELS[RECEIPT_PAYMENT_STATUS.UNPAID];
 }
 
 /**
@@ -365,8 +415,9 @@ export function getStableRowId(row, receiptId = '', rowIndex = 0) {
 
 /**
  * Normalize a persisted receipt row so it always carries a stable row_id, _rowId,
- * row-level disbursement_status ('paid' | 'unpaid'), and row-level payment_status
- * ('paid' | 'unpaid') without mutating financial fields.
+ * and row-level disbursement_status ('paid' | 'unpaid') without mutating financial fields.
+ * Removes any legacy per-row `payment_status` fields so payment status is maintained
+ * exclusively at the receipt level.
  *
  * @param {object} row
  * @param {string|number} [receiptId]
@@ -378,14 +429,48 @@ export function normalizeReceiptRowWithStatus(row, receiptId = '', rowIndex = 0)
   if (row._type === 'separator') return row;
   const stableId = getStableRowId(row, receiptId, rowIndex);
   const status = getRowDisbursementStatus(row);
-  const paymentStatus = getRowPaymentStatus(row);
+  const {
+    payment_status: _legacyRowPaymentStatus,
+    payment_status_updated_at: _legacyRowPaymentUpdatedAt,
+    ...cleanRow
+  } = row;
   return {
-    ...row,
+    ...cleanRow,
     row_id: stableId,
     _rowId: stableId,
     disbursement_status: status,
     payout_status: status,
     rowPayment: status,
+  };
+}
+
+/**
+ * Normalize a receipt record so its receipt-level `payment_status` is resolved
+ * (including unanimous legacy row-level fallback if receipt-level status was absent)
+ * and its rows carry stable row IDs and row-level disbursement statuses only.
+ *
+ * @param {object} receipt
+ * @returns {object}
+ */
+export function normalizeReceiptWithStatus(receipt) {
+  if (!receipt || typeof receipt !== 'object') return receipt;
+  const paymentStatus = getReceiptPaymentStatus(receipt);
+  const rawRows = Array.isArray(receipt.rows)
+    ? receipt.rows
+    : typeof receipt.rows === 'string'
+      ? (() => {
+          try {
+            return JSON.parse(receipt.rows) || [];
+          } catch (_) {
+            return [];
+          }
+        })()
+      : [];
+  const receiptId = receipt.id ?? '';
+  const rows = rawRows.map((r, idx) => normalizeReceiptRowWithStatus(r, receiptId, idx));
+  return {
+    ...receipt,
     payment_status: paymentStatus,
+    rows,
   };
 }

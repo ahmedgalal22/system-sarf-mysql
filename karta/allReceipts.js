@@ -13,14 +13,14 @@ import { ReceiptRepository } from './services/receiptRepository.js';
 import {
   RECEIPT_PAYOUT_STATUS,
   ROW_DISBURSEMENT_STATUS,
-  ROW_PAYMENT_STATUS,
+  RECEIPT_PAYMENT_STATUS,
   getPayoutStatusMeta,
   getRowDisbursementStatus,
   getRowDisbursementStatusLabel,
   validateRowDisbursementStatus,
-  getRowPaymentStatus,
-  getRowPaymentStatusLabel,
-  validateRowPaymentStatus,
+  getReceiptPaymentStatus,
+  getReceiptPaymentStatusLabel,
+  validateReceiptPaymentStatus,
   getStableRowId,
   normalizeReceiptRowWithStatus,
 } from './constants/payoutStatus.js';
@@ -396,8 +396,8 @@ function normalizePaymentStatusFilterValue(paymentStatus) {
   const s = String(paymentStatus ?? 'all').trim();
   const lower = s.toLowerCase();
   if (lower === 'all' || s === 'كل حالات الدفع' || s === 'الكل' || s === '') return 'all';
-  if (lower === 'paid' || s === 'تم دفعه') return ROW_PAYMENT_STATUS.PAID;
-  if (lower === 'unpaid' || s === 'لم يتم دفعه') return ROW_PAYMENT_STATUS.UNPAID;
+  if (lower === 'paid' || s === 'تم دفعه') return RECEIPT_PAYMENT_STATUS.PAID;
+  if (lower === 'unpaid' || s === 'لم يتم دفعه') return RECEIPT_PAYMENT_STATUS.UNPAID;
   return s;
 }
 
@@ -440,16 +440,14 @@ function getDisplayRowsForReceipt(record) {
   const f = STATE.filters.receipts;
 
   // Check if any row-level filter is active
-  const statusFilter        = normalizeStatusFilterValue(f.status);
-  const paymentStatusFilter = normalizePaymentStatusFilterValue(f.paymentStatus);
-  const companyVals         = f.company || [];
-  const vehicleVals         = f.vehicle || [];
-  const kartaVals           = f.karta || [];
-  const typeVals            = f.type || [];
+  const statusFilter = normalizeStatusFilterValue(f.status);
+  const companyVals  = f.company || [];
+  const vehicleVals  = f.vehicle || [];
+  const kartaVals    = f.karta || [];
+  const typeVals     = f.type || [];
 
   const hasRowFilter = (
     statusFilter !== 'all' ||
-    paymentStatusFilter !== 'all' ||
     companyVals.length > 0 ||
     vehicleVals.length > 0 ||
     kartaVals.length > 0 ||
@@ -471,12 +469,6 @@ function getDisplayRowsForReceipt(record) {
     // Per-row disbursement status filter ('paid' = تم صرفه, 'unpaid' = لم يتم صرفه)
     if (statusFilter !== 'all') {
       if (getRowDisbursementStatus(row) !== statusFilter) return false;
-    }
-
-    // Per-row payment status filter ('paid' = تم دفعه, 'unpaid' = لم يتم دفعه)
-    // Combined with disbursement status using AND semantics.
-    if (paymentStatusFilter !== 'all') {
-      if (getRowPaymentStatus(row) !== paymentStatusFilter) return false;
     }
 
     // Each active filter must match (AND logic)
@@ -541,7 +533,6 @@ function getReceiptCardsFiltered() {
 
   const hasRowFilter = (
     statusFilter !== 'all' ||
-    paymentStatusFilter !== 'all' ||
     f.company.length > 0 ||
     f.vehicle.length > 0 ||
     f.karta.length > 0 ||
@@ -563,8 +554,14 @@ function getReceiptCardsFiltered() {
       const rnum = String(record.receipt_number ?? '').trim();
       if (!rnum || !numberSet.has(rnum)) return false;
     }
+    // Receipt-level payment status filter ('paid' = تم دفعه, 'unpaid' = لم يتم دفعه)
+    if (paymentStatusFilter !== 'all') {
+      if (getReceiptPaymentStatus(record) !== paymentStatusFilter) {
+        return false;
+      }
+    }
 
-    // Row-level filter (including per-row status): hide receipts with zero matching data rows
+    // Row-level filter (including per-row disbursement status): hide receipts with zero matching data rows
     if (hasRowFilter) {
       const visibleRows = getDisplayRowsForReceipt(record);
       const hasDataRows = visibleRows.some(row => row._type !== 'separator');
@@ -780,13 +777,41 @@ function buildReceiptCardHtml(record, opts = {}) {
   const displayRows = getDisplayRowsForReceipt(record);
   const visibleDataRows = displayRows.filter((row) => row._type !== 'separator');
   const kartaCount = visibleDataRows.length;
+  const receiptPaymentStatus = getReceiptPaymentStatus(record);
+  const isReceiptPaid = receiptPaymentStatus === RECEIPT_PAYMENT_STATUS.PAID;
+  const payBorder = isReceiptPaid ? '#059669' : '#dc2626';
+  const payBg = isReceiptPaid ? '#ecfdf5' : '#fef2f2';
+  const payFg = isReceiptPaid ? '#065f46' : '#991b1b';
+
+  const paymentStatusControlHtml = readOnly
+    ? `<div class="receipt-payment-status-bar no-print" data-receipt-payment-bar="${esc(record.id)}" style="display:inline-flex;align-items:center;gap:8px;padding:6px 12px;border-radius:10px;background:${payBg};border:1px solid ${payBorder};">
+         <span class="receipt-payment-status-label" style="font-size:0.8125rem;font-weight:700;color:#1e293b;">حالة الدفع:</span>
+         <span class="receipt-payment-status-badge" data-receipt-payment-status="${esc(receiptPaymentStatus)}" style="background:${payBorder};color:#fff;padding:2px 10px;border-radius:999px;font-size:0.75rem;font-weight:700;">${esc(getReceiptPaymentStatusLabel(receiptPaymentStatus))}</span>
+       </div>`
+    : `<div class="receipt-payment-status-bar no-print" data-receipt-payment-bar="${esc(record.id)}" style="display:inline-flex;align-items:center;gap:8px;padding:6px 12px;border-radius:10px;background:${payBg};border:1px solid ${payBorder};">
+         <label style="font-size:0.8125rem;font-weight:700;color:#1e293b;margin:0;">حالة الدفع:</label>
+         <select
+           class="receipt-payment-status-select"
+           data-action="toggle-receipt-payment-status"
+           data-receipt-id="${esc(record.id)}"
+           data-prev-payment-status="${esc(receiptPaymentStatus)}"
+           aria-label="حالة الدفع"
+           style="padding:3px 10px;border-radius:6px;font-size:0.8125rem;font-weight:700;border:1px solid ${payBorder};background:#fff;color:${payFg};cursor:pointer;"
+         >
+           <option value="${RECEIPT_PAYMENT_STATUS.PAID}" ${isReceiptPaid ? 'selected' : ''}>تم دفعه</option>
+           <option value="${RECEIPT_PAYMENT_STATUS.UNPAID}" ${!isReceiptPaid ? 'selected' : ''}>لم يتم دفعه</option>
+         </select>
+         <span class="receipt-payment-status-feedback" data-receipt-payment-feedback="${esc(record.id)}" style="font-size:0.75rem;min-width:14px;display:inline-block;"></span>
+       </div>`;
 
   const actionsHtml = readOnly
-    ? `<div class="record-card__actions no-print">
+    ? `<div class="record-card__actions no-print" style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+         ${paymentStatusControlHtml}
          <button type="button" data-action="edit-receipt" data-id="${esc(record.id)}">✏️ تعديل</button>
          <button type="button" data-action="print-single-receipt" data-id="${esc(record.id)}">🖨️ طباعة</button>
        </div>`
-    : `<div class="record-card__actions no-print">
+    : `<div class="record-card__actions no-print" style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+         ${paymentStatusControlHtml}
          <button type="button" data-action="edit-receipt" data-id="${esc(record.id)}">✏️ تعديل</button>
          <button type="button" data-action="print-single-receipt" data-id="${esc(record.id)}">🖨️ طباعة</button>
          <button type="button" data-action="delete-receipt" data-id="${esc(record.id)}">🗑️ حذف</button>
@@ -807,7 +832,7 @@ function buildReceiptCardHtml(record, opts = {}) {
        </div>`;
 
   return `
-    <article class="record-card receipt-record" data-kind="receipt" data-id="${esc(record.id)}">
+    <article class="record-card receipt-record" data-kind="receipt" data-id="${esc(record.id)}" data-receipt-payment-status="${esc(receiptPaymentStatus)}">
       <header class="record-card__header">
         <div class="record-card__heading">
           <h3>${esc(title)}</h3>
@@ -823,13 +848,12 @@ function buildReceiptCardHtml(record, opts = {}) {
       <div class="record-card__table-wrap">
         <table class="record-table receipt-snapshot-table">
           <thead class="bg-gradient-to-r from-blue-600 to-blue-700 text-white">
-            <tr>${renderReceiptSnapshotTableHead({ showRowStatus: true, showRowPaymentStatus: true })}</tr>
+            <tr>${renderReceiptSnapshotTableHead({ showRowStatus: true })}</tr>
           </thead>
           <tbody>
             ${renderReceiptSnapshotRowsHtml(displayRows, {
-              colSpan: DATA_COL_COUNT + 2,
+              colSpan: DATA_COL_COUNT + 1,
               showRowStatus: true,
-              showRowPaymentStatus: true,
               receiptId: record.id,
               readOnly,
             })}
@@ -1725,13 +1749,14 @@ async function updateReceiptRowDisbursementStatus(receiptId, rowId, nextStatus, 
   }
 
   try {
+    const preservedReceiptPaymentStatus = getReceiptPaymentStatus(record);
     const apiRes = await ReceiptsModule.updateRowStatus(username, receiptId, String(rowId), canonicalStatus);
 
-    // Update ONLY the target row in STATE.receipts; preserve payment_status, all other rows, and financial fields
+    // Update ONLY the target row in STATE.receipts; preserve receipt-level payment_status, all other rows, and financial fields
+    record.payment_status = preservedReceiptPaymentStatus;
     record.rows = normalizedRows.map((row) => {
       if (row && row._type !== 'separator' && String(row.row_id) === String(rowId)) {
-        const preservedPayment = getRowPaymentStatus(row);
-        return {
+        const merged = {
           ...row,
           ...(apiRes?.row && typeof apiRes.row === 'object' ? apiRes.row : {}),
           row_id: String(rowId),
@@ -1739,8 +1764,10 @@ async function updateReceiptRowDisbursementStatus(receiptId, rowId, nextStatus, 
           disbursement_status: canonicalStatus,
           payout_status: canonicalStatus,
           rowPayment: canonicalStatus,
-          payment_status: preservedPayment,
         };
+        delete merged.payment_status;
+        delete merged.payment_status_updated_at;
+        return merged;
       }
       return row;
     });
@@ -1782,45 +1809,36 @@ async function updateReceiptRowDisbursementStatus(receiptId, rowId, nextStatus, 
 }
 
 /**
- * Persist and apply a payment status change ('paid' / 'تم دفعه' or 'unpaid' / 'لم يتم دفعه')
- * for a single row within a receipt on the All Receipts page.
+ * Persist and apply a receipt-level payment status change ('paid' / 'تم دفعه' or 'unpaid' / 'لم يتم دفعه')
+ * for an entire receipt on the All Receipts page.
  *
  * Guarantees:
- *   - Identifies the target row by its stable row_id within receiptId (never by visible table index).
- *   - Independent of the row's disbursement status ('تم صرفه' / 'لم يتم صرفه').
- *   - Does not affect any other row in the same receipt or in other receipts.
+ *   - Applies to the entire receipt (never to an individual row).
+ *   - Preserves all individual rows' disbursement statuses ('تم صرفه' / 'لم يتم صرفه') and stable row_ids.
+ *   - Does not affect any other receipt.
  *   - Does not modify receipt financial calculations, weights, net amounts, or office balances.
  *   - Shows loading, success, and error feedback; restores the previously saved payment status if saving fails.
- *   - Immediately updates the displayed rows, counts, and summaries according to any active filters.
+ *   - Immediately updates the displayed receipt cards, counts, and summaries according to any active filters.
  */
-async function updateReceiptRowPaymentStatus(receiptId, rowId, nextPaymentStatus, selectEl = null) {
+async function updateReceiptPaymentStatus(receiptId, nextPaymentStatus, selectEl = null) {
   const username = getSessionUsername() || 'admin';
   if (!receiptId) throw new Error('معرف الإيصال مطلوب');
-  if (!rowId) throw new Error('معرف الصف مطلوب');
 
   const record = STATE.receipts.find((item) => String(item.id) === String(receiptId));
   if (!record) {
     throw new Error('الإيصال غير موجود');
   }
 
-  const normalizedRows = getReceiptRows(record);
-  const targetRow = normalizedRows.find(
-    (r) => r && r._type !== 'separator' && String(r.row_id) === String(rowId)
-  );
-  if (!targetRow) {
-    throw new Error('الصف المطلوب غير موجود في هذا الإيصال');
-  }
-
-  const previousPaymentStatus = getRowPaymentStatus(targetRow);
+  const previousPaymentStatus = getReceiptPaymentStatus(record);
   const feedbackEl =
-    selectEl?.parentElement?.querySelector?.('[data-row-payment-feedback]') ||
+    selectEl?.parentElement?.querySelector?.('[data-receipt-payment-feedback]') ||
     (typeof document !== 'undefined' && document.querySelector
-      ? document.querySelector(`[data-row-payment-feedback="${String(rowId)}"]`)
+      ? document.querySelector(`[data-receipt-payment-feedback="${String(receiptId)}"]`)
       : null);
 
   let canonicalPaymentStatus;
   try {
-    canonicalPaymentStatus = validateRowPaymentStatus(nextPaymentStatus);
+    canonicalPaymentStatus = validateReceiptPaymentStatus(nextPaymentStatus);
   } catch (validationErr) {
     if (selectEl) {
       selectEl.value = previousPaymentStatus;
@@ -1843,36 +1861,23 @@ async function updateReceiptRowPaymentStatus(receiptId, rowId, nextPaymentStatus
   }
 
   try {
-    const apiRes = await ReceiptsModule.updateRowPaymentStatus(
+    const apiRes = await ReceiptsModule.updateReceiptPaymentStatus(
       username,
       receiptId,
-      String(rowId),
       canonicalPaymentStatus
     );
 
-    // Update ONLY the target row's payment_status in STATE.receipts; preserve disbursement_status and financial fields
-    record.rows = normalizedRows.map((row) => {
-      if (row && row._type !== 'separator' && String(row.row_id) === String(rowId)) {
-        const preservedDisbursement = getRowDisbursementStatus(row);
-        return {
-          ...row,
-          ...(apiRes?.row && typeof apiRes.row === 'object' ? apiRes.row : {}),
-          row_id: String(rowId),
-          _rowId: String(rowId),
-          disbursement_status: preservedDisbursement,
-          payout_status: preservedDisbursement,
-          rowPayment: preservedDisbursement,
-          payment_status: canonicalPaymentStatus,
-        };
-      }
-      return row;
-    });
+    const normalizedRows = getReceiptRows(record);
+    record.payment_status = apiRes?.payment_status
+      ? validateReceiptPaymentStatus(apiRes.payment_status)
+      : canonicalPaymentStatus;
+    record.rows = normalizedRows;
 
     renderAll();
 
     const page = getPage();
     const updatedFeedbackEl =
-      page?.querySelector?.(`[data-row-payment-feedback="${String(rowId)}"]`) || null;
+      page?.querySelector?.(`[data-receipt-payment-feedback="${String(receiptId)}"]`) || null;
     if (updatedFeedbackEl) {
       updatedFeedbackEl.textContent = '✅';
       if (updatedFeedbackEl.dataset) updatedFeedbackEl.dataset.state = 'saved';
@@ -1885,8 +1890,8 @@ async function updateReceiptRowPaymentStatus(receiptId, rowId, nextPaymentStatus
 
     return {
       receipt: record,
-      row_id: String(rowId),
-      payment_status: canonicalPaymentStatus,
+      receipt_id: receiptId,
+      payment_status: record.payment_status,
     };
   } catch (err) {
     // Restore previous saved payment status in UI; do NOT mutate STATE.receipts
@@ -2040,7 +2045,7 @@ function bindPageEvents() {
     if (actionBtn) {
       const tab = actionBtn.dataset.tab || STATE.tab;
       const action = actionBtn.dataset.action;
-      if (action === 'toggle-row-status' || action === 'toggle-row-payment-status') {
+      if (action === 'toggle-row-status' || action === 'toggle-receipt-payment-status') {
         return;
       }
       if (action === 'apply-filter') {
@@ -2112,14 +2117,13 @@ function bindPageEvents() {
       return;
     }
 
-    const rowPaymentStatusField = event.target.closest('select[data-action="toggle-row-payment-status"]');
-    if (rowPaymentStatusField) {
-      const receiptId = rowPaymentStatusField.dataset.receiptId;
-      const rowId = rowPaymentStatusField.dataset.rowId;
+    const receiptPaymentStatusField = event.target.closest('select[data-action="toggle-receipt-payment-status"]');
+    if (receiptPaymentStatusField) {
+      const receiptId = receiptPaymentStatusField.dataset.receiptId;
       try {
-        await updateReceiptRowPaymentStatus(receiptId, rowId, rowPaymentStatusField.value, rowPaymentStatusField);
+        await updateReceiptPaymentStatus(receiptId, receiptPaymentStatusField.value, receiptPaymentStatusField);
       } catch (err) {
-        console.error('[allReceipts] row payment status update failed:', err);
+        console.error('[allReceipts] receipt payment status update failed:', err);
       }
       return;
     }
@@ -2217,15 +2221,15 @@ export {
   getDisplayRowsForReceipt,
   getReceiptCardsFiltered,
   updateReceiptRowDisbursementStatus,
-  updateReceiptRowPaymentStatus,
+  updateReceiptPaymentStatus,
   ROW_DISBURSEMENT_STATUS,
-  ROW_PAYMENT_STATUS,
+  RECEIPT_PAYMENT_STATUS,
   getRowDisbursementStatus,
   getRowDisbursementStatusLabel,
   validateRowDisbursementStatus,
-  getRowPaymentStatus,
-  getRowPaymentStatusLabel,
-  validateRowPaymentStatus,
+  getReceiptPaymentStatus,
+  getReceiptPaymentStatusLabel,
+  validateReceiptPaymentStatus,
   normalizeStatusFilterValue,
   normalizePaymentStatusFilterValue,
   getStableRowId,

@@ -45,6 +45,7 @@ CREATE TABLE IF NOT EXISTS receipts (
 
   -- Payout state (managed by client financial engine)
   payout_status     ENUM('paid','unpaid','partial','cancelled') NOT NULL DEFAULT 'unpaid',
+  payment_status    VARCHAR(20)   DEFAULT NULL,
   paid_at           DATETIME(3)   DEFAULT NULL,
   account_type      VARCHAR(20)   DEFAULT NULL,
 

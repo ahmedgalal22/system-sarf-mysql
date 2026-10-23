@@ -26,9 +26,9 @@ try {
 
     $receipts = $repo->findAll($authUser['username'], $filters);
 
-    // Decode and normalize JSON rows for each receipt
+    // Decode and normalize receipt-level payment_status and JSON rows for each receipt
     foreach ($receipts as &$r) {
-        $r['rows'] = ReceiptRepository::normalizeReceiptRows($r['rows'] ?? [], $r['id'] ?? '');
+        ReceiptRepository::normalizeReceiptRecord($r);
     }
     unset($r);
 

@@ -3,7 +3,8 @@ import { ApiClient } from './apiClient.js';
 import { isServerMode } from './apiConfig.js';
 import {
   validateRowDisbursementStatus,
-  validateRowPaymentStatus,
+  validateReceiptPaymentStatus,
+  getReceiptPaymentStatus,
   getStableRowId,
   normalizeReceiptRowWithStatus,
 } from '../constants/payoutStatus.js';
@@ -130,9 +131,15 @@ export const ReceiptRepository = {
         throw new Error('الصف المطلوب غير موجود في هذا الإيصال');
       }
 
-      const saved = await DBProvider.update('receipts', receiptId, { rows: updatedRows }, meta);
+      const preservedPaymentStatus = getReceiptPaymentStatus(existing);
+      const saved = await DBProvider.update(
+        'receipts',
+        receiptId,
+        { rows: updatedRows, payment_status: preservedPaymentStatus },
+        meta
+      );
       return {
-        receipt: saved || { ...existing, rows: updatedRows },
+        receipt: saved || { ...existing, rows: updatedRows, payment_status: preservedPaymentStatus },
         row: updatedRow,
         row_id: cleanRowId,
         status: canonicalStatus,
@@ -141,38 +148,31 @@ export const ReceiptRepository = {
   },
 
   /**
-   * Persist the payment status ('paid' / 'تم دفعه' or 'unpaid' / 'لم يتم دفعه')
-   * of a single row within a receipt.
-   * Serialized per receiptId so concurrent row updates on the same receipt
-   * never overwrite each other.
+   * Persist the receipt-level payment status ('paid' / 'تم دفعه' or 'unpaid' / 'لم يتم دفعه')
+   * for an entire receipt.
+   * Serialized per receiptId so concurrent updates on the same receipt never overwrite each other.
    *
    * @param {string|number} receiptId
-   * @param {string} rowId
    * @param {string} paymentStatus — 'paid' | 'unpaid' | 'تم دفعه' | 'لم يتم دفعه'
    * @param {{ username?: string }} [meta]
    */
-  async updateRowPaymentStatus(receiptId, rowId, paymentStatus, meta = {}) {
+  async updateReceiptPaymentStatus(receiptId, paymentStatus, meta = {}) {
     if (receiptId === undefined || receiptId === null || String(receiptId).trim() === '') {
       throw new Error('معرف الإيصال مطلوب');
     }
-    if (typeof rowId !== 'string' && typeof rowId !== 'number') {
-      throw new Error('معرف الصف مطلوب');
+    if (meta && (meta.rowId !== undefined || meta.row_id !== undefined)) {
+      throw new Error('حالة الدفع تطبق على الإيصال بالكامل ولا تقبل معرف صف');
     }
-    const cleanRowId = String(rowId).trim();
-    if (!cleanRowId) {
-      throw new Error('معرف الصف مطلوب');
-    }
-    const canonicalPaymentStatus = validateRowPaymentStatus(paymentStatus);
+    const canonicalPaymentStatus = validateReceiptPaymentStatus(paymentStatus);
 
     return _withReceiptLock(receiptId, async () => {
       if (isServerMode()) {
-        const res = await ApiClient.post('/entities/receipts/row-status.php', {
+        const res = await ApiClient.post('/financial/receipt-status.php', {
           receipt_id: receiptId,
-          row_id: cleanRowId,
           payment_status: canonicalPaymentStatus,
         });
         if (!res.success) {
-          throw new Error(res.message || 'فشل تحديث حالة الدفع للصف');
+          throw new Error(res.message || 'فشل تحديث حالة الدفع للإيصال');
         }
         return res.data;
       }
@@ -194,34 +194,26 @@ export const ReceiptRepository = {
           ? JSON.parse(existing.rows || '[]')
           : [];
 
-      let found = false;
-      let updatedRow = null;
-      const nowIso = new Date().toISOString();
+      const normalizedRows = rawRows.map((row, idx) =>
+        normalizeReceiptRowWithStatus(row, existing.id ?? receiptId, idx)
+      );
 
-      const updatedRows = rawRows.map((row, idx) => {
-        if (!row || row._type === 'separator') return row;
-        const normalized = normalizeReceiptRowWithStatus(row, existing.id ?? receiptId, idx);
-        if (normalized.row_id === cleanRowId) {
-          found = true;
-          updatedRow = {
-            ...normalized,
-            payment_status: canonicalPaymentStatus,
-            payment_status_updated_at: nowIso,
-          };
-          return updatedRow;
-        }
-        return normalized;
-      });
-
-      if (!found) {
-        throw new Error('الصف المطلوب غير موجود في هذا الإيصال');
-      }
-
-      const saved = await DBProvider.update('receipts', receiptId, { rows: updatedRows }, meta);
+      const saved = await DBProvider.update(
+        'receipts',
+        receiptId,
+        {
+          payment_status: canonicalPaymentStatus,
+          rows: normalizedRows,
+        },
+        meta
+      );
       return {
-        receipt: saved || { ...existing, rows: updatedRows },
-        row: updatedRow,
-        row_id: cleanRowId,
+        receipt: saved || {
+          ...existing,
+          payment_status: canonicalPaymentStatus,
+          rows: normalizedRows,
+        },
+        receipt_id: receiptId,
         payment_status: canonicalPaymentStatus,
       };
     });

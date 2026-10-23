@@ -63,6 +63,7 @@ try {
             'client_type'      => $body['client_type'] ?? null,
             'client_name'      => $body['client_name'] ?? null,
             'payout_status'    => $body['payout_status'] ?? 'unpaid',
+            'payment_status'   => $body['payment_status'] ?? null,
             'paid_at'          => $body['paid_at'] ?? null,
             'account_type'     => $body['account_type'] ?? null,
             'total'            => intval($body['total'] ?? 0),
