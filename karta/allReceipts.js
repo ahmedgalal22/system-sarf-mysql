@@ -729,13 +729,8 @@ function renderSummaryCards(_preFiltered) {
 
   const html = `
     <div class="summary-grid summary-grid--receipts">
-      ${summaryCard('💰 إجمالي الصافي المستحق', centsToMoney(sums.netDue), 'summary-card--violet')}
       ${summaryCard('💰 إجمالي الصافي الكلي', centsToMoney(sums.netTotal), 'summary-card--violet')}
-      ${summaryCard('📊 إجمالي المدفوع', centsToMoney(sums.paid), 'summary-card--red')}
       ${summaryCard('🗂️ عدد الكارتات', String(sums.count), 'summary-card--blue')}
-      ${summaryCard('⚖️ إجمالي الوزن', fmtMoney(sums.weight), 'summary-card--green')}
-      ${summaryCard('🚛 إجمالي النولون', fmtMoney(sums.noloon), 'summary-card--cyan')}
-      ${summaryCard('🏦 إجمالي العهدة', fmtMoney(sums.ohda), 'summary-card--emerald')}
     </div>
   `;
   const container = document.getElementById('receiptsSummaryContainer');
