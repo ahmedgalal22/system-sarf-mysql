@@ -784,33 +784,16 @@ function buildReceiptCardHtml(record, opts = {}) {
   const payFg = isReceiptPaid ? '#065f46' : '#991b1b';
 
   const paymentStatusControlHtml = readOnly
-    ? `<div class="receipt-payment-status-bar no-print" data-receipt-payment-bar="${esc(record.id)}" style="display:inline-flex;align-items:center;gap:8px;padding:6px 12px;border-radius:10px;background:${payBg};border:1px solid ${payBorder};">
-         <span class="receipt-payment-status-label" style="font-size:0.8125rem;font-weight:700;color:#1e293b;">حالة الدفع:</span>
-         <span class="receipt-payment-status-badge" data-receipt-payment-status="${esc(receiptPaymentStatus)}" style="background:${payBorder};color:#fff;padding:2px 10px;border-radius:999px;font-size:0.75rem;font-weight:700;">${esc(getReceiptPaymentStatusLabel(receiptPaymentStatus))}</span>
-       </div>`
-    : `<div class="receipt-payment-status-bar no-print" data-receipt-payment-bar="${esc(record.id)}" style="display:inline-flex;align-items:center;gap:8px;padding:6px 12px;border-radius:10px;background:${payBg};border:1px solid ${payBorder};">
-         <label style="font-size:0.8125rem;font-weight:700;color:#1e293b;margin:0;">حالة الدفع:</label>
-         <select
-           class="receipt-payment-status-select"
-           data-action="toggle-receipt-payment-status"
-           data-receipt-id="${esc(record.id)}"
-           data-prev-payment-status="${esc(receiptPaymentStatus)}"
-           aria-label="حالة الدفع"
-           style="padding:3px 10px;border-radius:6px;font-size:0.8125rem;font-weight:700;border:1px solid ${payBorder};background:#fff;color:${payFg};cursor:pointer;"
-         >
-           <option value="${RECEIPT_PAYMENT_STATUS.PAID}" ${isReceiptPaid ? 'selected' : ''}>تم دفعه</option>
-           <option value="${RECEIPT_PAYMENT_STATUS.UNPAID}" ${!isReceiptPaid ? 'selected' : ''}>لم يتم دفعه</option>
-         </select>
-         <span class="receipt-payment-status-feedback" data-receipt-payment-feedback="${esc(record.id)}" style="font-size:0.75rem;min-width:14px;display:inline-block;"></span>
-       </div>`;
+    ? `<div class="row-status-control no-print" data-receipt-payment-bar="${esc(record.id)}" style="display:inline-flex;align-items:center;gap:4px;"><span style="font-size:0.75rem;font-weight:600;color:#64748b;">حالة الدفع:</span><span class="row-status-badge" data-receipt-payment-status="${esc(receiptPaymentStatus)}" style="background:${payBorder};color:#fff;padding:2px 8px;border-radius:999px;font-size:0.75rem;font-weight:700;">${esc(getReceiptPaymentStatusLabel(receiptPaymentStatus))}</span></div>`
+    : `<div class="row-status-control no-print" data-receipt-payment-bar="${esc(record.id)}" style="display:inline-flex;align-items:center;gap:4px;"><span style="font-size:0.75rem;font-weight:600;color:#64748b;">حالة الدفع:</span><select class="row-status-select" data-action="toggle-receipt-payment-status" data-receipt-id="${esc(record.id)}" data-prev-payment-status="${esc(receiptPaymentStatus)}" aria-label="حالة الدفع" style="padding:2px 6px;border-radius:6px;font-size:0.75rem;font-weight:700;border:1px solid ${payBorder};background:${payBg};color:${payFg};cursor:pointer;"><option value="${RECEIPT_PAYMENT_STATUS.PAID}" ${isReceiptPaid ? 'selected' : ''}>تم دفعه</option><option value="${RECEIPT_PAYMENT_STATUS.UNPAID}" ${!isReceiptPaid ? 'selected' : ''}>لم يتم دفعه</option></select><span class="row-status-feedback" data-receipt-payment-feedback="${esc(record.id)}" style="font-size:0.75rem;min-width:14px;display:inline-block;"></span></div>`;
 
   const actionsHtml = readOnly
-    ? `<div class="record-card__actions no-print" style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+    ? `<div class="record-card__actions no-print">
          ${paymentStatusControlHtml}
          <button type="button" data-action="edit-receipt" data-id="${esc(record.id)}">✏️ تعديل</button>
          <button type="button" data-action="print-single-receipt" data-id="${esc(record.id)}">🖨️ طباعة</button>
        </div>`
-    : `<div class="record-card__actions no-print" style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+    : `<div class="record-card__actions no-print">
          ${paymentStatusControlHtml}
          <button type="button" data-action="edit-receipt" data-id="${esc(record.id)}">✏️ تعديل</button>
          <button type="button" data-action="print-single-receipt" data-id="${esc(record.id)}">🖨️ طباعة</button>
