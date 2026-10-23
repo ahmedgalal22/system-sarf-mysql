@@ -25,10 +25,10 @@ try {
     try {
         // Verify office exists
         $officeId = intval($body['office_id'] ?? 0);
-        if ($officeId <= 0) { $db->rollBack(); jsonError('معرف الشركة مطلوب', 400); }
+        if ($officeId <= 0) { $db->rollBack(); jsonError('معرف المكتب مطلوب', 400); }
 
         $office = $officeRepo->getById($officeId);
-        if (!$office) { $db->rollBack(); jsonError('الشركة غير موجودة', 404); }
+        if (!$office) { $db->rollBack(); jsonError('المكتب غير موجود', 404); }
         if ($office['username'] !== $username) { $db->rollBack(); jsonError('غير مسموح', 403); }
 
         // Create ledger entry

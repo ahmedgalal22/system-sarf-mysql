@@ -241,7 +241,7 @@ async function resolveHamolaPrice(username, officeName, loadingPlace, destinatio
 
   const office = map.get(_toKey(name));
   if (!office) {
-    throw new Error(`❌ الشركة غير موجودة: ${name}`);
+    throw new Error(`❌ المكتب غير موجود: ${name}`);
   }
 
   const hamola = Array.isArray(office.hamolaRows) ? office.hamolaRows : [];
@@ -252,12 +252,12 @@ async function resolveHamolaPrice(username, officeName, loadingPlace, destinatio
   });
 
   if (!match) {
-    throw new Error(`❌ لا يوجد سعر مطابق للشركة "${name}" لمسار (${loading} → ${destination})`);
+    throw new Error(`❌ لا يوجد سعر مطابق للمكتب "${name}" لمسار (${loading} → ${destination})`);
   }
 
   const price = Number(match.price);
   if (!Number.isFinite(price) || price <= 0) {
-    throw new Error(`❌ سعر التحميل غير صالح للشركة "${name}" لمسار (${loading} → ${destination})`);
+    throw new Error(`❌ سعر التحميل غير صالح للمكتب "${name}" لمسار (${loading} → ${destination})`);
   }
 
   return { office, price };
@@ -701,7 +701,7 @@ async function createOfficeDeposit(username, data) {
     is_reversed: false,
     note,
   });
-  if (!apiRes.success) throw new Error(apiRes.message || 'فشل إنشاء إيداع الشركة');
+  if (!apiRes.success) throw new Error(apiRes.message || 'فشل إنشاء إيداع المكتب');
   const entry = apiRes.data;
 
   return Money.decimalizeRecord(entry);

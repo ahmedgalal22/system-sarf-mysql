@@ -37,7 +37,7 @@ const _msFilters = {};
  */
 const MS_FILTER_DEFS = [
   { key: 'owner',   label: 'العميل',       stateKey: 'owner',   optionsKey: 'client_names',    level: 'receipt', apiParam: 'client_name' },
-  { key: 'company', label: 'اسم الشركة',   stateKey: 'company', optionsKey: 'company_names',   level: 'row' },
+  { key: 'company', label: 'اسم المكتب',   stateKey: 'company', optionsKey: 'company_names',   level: 'row' },
   { key: 'number',  label: 'إذن الصرف',    stateKey: 'number',  optionsKey: 'receipt_numbers',  level: 'receipt', apiParam: 'receipt_number' },
   { key: 'vehicle', label: 'رقم المركبة',  stateKey: 'vehicle', optionsKey: 'vehicles',         level: 'row' },
   { key: 'karta',   label: 'رقم الكارتة',  stateKey: 'karta',   optionsKey: 'kartas',           level: 'row' },

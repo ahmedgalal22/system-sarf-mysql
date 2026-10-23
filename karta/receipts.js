@@ -494,8 +494,8 @@ const COL_DEFS = [
   { key: 'deficit',      label: 'عجز',                cls: 'receipt-deficit',      type: 'number', minW: '45px',  printHide: false },
   // index: 7
   { key: 'weightTotal',  label: 'الوزن',              cls: 'receipt-weight-total', type: 'number', minW: '60px',  printHide: false, readonly: true },
-  // index: 8  ← اسم الشركة (office) — مخفي في الطباعة (Feature 4)
-  { key: 'office',       label: 'اسم الشركة',         cls: 'receipt-office',       type: 'text',   minW: '90px',  printHide: true  },
+  // index: 8  ← اسم المكتب (office) — مخفي في الطباعة (Feature 4)
+  { key: 'office',       label: 'اسم المكتب',         cls: 'receipt-office',       type: 'text',   minW: '90px',  printHide: true  },
   // index: 9
   { key: 'loading',      label: 'التحميل',             cls: 'receipt-loading',      type: 'text',   minW: '85px',  printHide: false },
   // index: 10
@@ -1411,7 +1411,7 @@ function _buildRowHTML() {
         <td class="px-1 py-1 text-center${printClass}">
           <input type="text" list="officesList"
             class="${col.cls} w-full px-1 py-1 border border-gray-300 rounded text-xs focus:ring-1 focus:ring-blue-500 outline-none"
-            placeholder="الشركة">
+            placeholder="المكتب">
         </td>`;
     }
 
@@ -2489,7 +2489,7 @@ async function validateBeforeSave(rawData) {
       .map(r => r.office)
   )];
   if (invalidOffices.length > 0) {
-    alert(`⚠️ الأسماء التالية غير موجودة في قائمة الشركات:\n${invalidOffices.join('\n')}\nبرجاء الاختيار من القائمة أو إضافتها من خلال صفحة الشركات.`);
+    alert(`⚠️ الأسماء التالية غير موجودة في قائمة المكاتب:\n${invalidOffices.join('\n')}\nبرجاء الاختيار من القائمة أو إضافتها من خلال صفحة المكاتب.`);
     return false;
   }
 
@@ -2497,7 +2497,7 @@ async function validateBeforeSave(rawData) {
     .filter(r => r._type !== 'separator')
     .filter(r => !r.office || !r.loading || !r.taktik);
   if (missingOfficeInfo.length > 0) {
-    alert('⚠️ يجب اختيار الشركة ومكان التحميل والجهة لكل صف قبل الحفظ.');
+    alert('⚠️ يجب اختيار المكتب ومكان التحميل والجهة لكل صف قبل الحفظ.');
     return false;
   }
 
@@ -2512,7 +2512,7 @@ async function validateBeforeSave(rawData) {
         && String(h.destination_place || h.direction || h.taktik || '').trim() === r.taktik.trim()
       );
       if (!routeExists) {
-        alert(`⚠️ المسار غير موجود في تفاصيل الحمولة:\nالشركة: ${r.office}\nالتحميل: ${r.loading}\nالجهة: ${r.taktik}`);
+        alert(`⚠️ المسار غير موجود في تفاصيل الحمولة:\nالمكتب: ${r.office}\nالتحميل: ${r.loading}\nالجهة: ${r.taktik}`);
         return false;
       }
     }
@@ -2620,7 +2620,7 @@ async function saveReceipt() {
 /**
  * printReceipt — iframe print فقط، بدون window.open
  * يطبع: جدول الصرف + الإجماليات
- * لا يطبع: اسم الشركة، الإجراءات، عناصر UI غير مطلوبة
+ * لا يطبع: اسم المكتب، الإجراءات، عناصر UI غير مطلوبة
  */
 function printReceipt() {
   // جمع بيانات الجدول للطباعة

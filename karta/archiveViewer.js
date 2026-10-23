@@ -19,6 +19,7 @@ import { ArchiveRepository } from './services/archiveRepository.js';
 import { printHTML, buildPrintDocument } from './printEngine.js';
 import { ARCHIVABLE_STORES } from './archiveConstants.js';
 import { buildReceiptCardHtml, summarizeReceipts, printSingleReceipt } from './allReceipts.js';
+import { formatMovementTypeLabel, formatMovementReference } from './offices.js';
 
 function _esc(v) {
   return String(v ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
@@ -220,9 +221,9 @@ function _renderLedgerTab(container, entries) {
       ${dec.map(e => `<tr>
         <td>${_dateStr(e.date)}</td>
         <td>${_esc(e.client_name || '—')}</td>
-        <td>${_esc(e.type || '—')}</td>
+        <td>${_esc(formatMovementTypeLabel(e))}</td>
         <td style="font-weight:700;">${_fmt(e.amount)}</td>
-        <td style="font-size:0.75rem;color:#6b7280;">${_esc(e.reference_type || '—')}</td>
+        <td style="font-size:0.75rem;color:#6b7280;">${_esc(formatMovementReference(e))}</td>
       </tr>`).join('')}
       </tbody></table>
     </div>`;

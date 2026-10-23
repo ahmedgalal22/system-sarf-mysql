@@ -414,7 +414,7 @@ After logging in, you should see:
 - [ ] Balance updates correctly
 - [ ] Print treasury report
 
-### Offices/Companies (الشركات)
+### Offices (المكاتب)
 
 - [ ] Page loads with office list
 - [ ] Add new office
@@ -552,9 +552,9 @@ After logging in, you should see:
 
 ### Offices (`officesPage`)
 
-**Purpose:** Manage company/office records.
+**Purpose:** Manage office records.
 
-**Sidebar link:** الشركات
+**Sidebar link:** المكاتب
 
 **Expected:** Office list, add/edit forms, detail pages with transaction history.
 

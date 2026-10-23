@@ -86,8 +86,8 @@ function _setQuickFilterRange(rangeType) {
 // ─── AGGREGATE CALCULATIONS (DETERMINISTIC & MEMORIZED) ──────────────────────
 
 /**
- * Calculates Card 4: "إجمالي المحصل من الشركات"
- * Sums weight * unit_price for each company's routes from active receipts in period.
+ * Calculates Card 4: "إجمالي المحصل من المكاتب"
+ * Sums weight * unit_price for each office's routes from active receipts in period.
  * Optimized to run in a single pass over receipt rows using an indexed weightMap (complexity: O(R * L)).
  */
 async function _calculateTotalCollectedFromCompanies(username, activeReceipts, offices) {
@@ -820,7 +820,7 @@ function _renderShell() {
         <div class="dashboard-header-inner">
           <div>
             <h1 class="text-2xl font-bold text-gray-800" style="margin:0 0 4px 0;">Dashboard العميل</h1>
-            <p class="text-muted text-xs" style="margin:0;">ملخص شامل للحركة المالية والربحية للمركبات والشركات</p>
+            <p class="text-muted text-xs" style="margin:0;">ملخص شامل للحركة المالية والربحية للمركبات والمكاتب</p>
           </div>
           
           <!-- Filters area -->
@@ -1009,10 +1009,10 @@ async function _refreshDashboard() {
   }
   const totalOfficeVal = Money.toDecimal(totalOfficeCents);
 
-  // Card 4: "إجمالي المحصل من الشركات" — Calculated with prices map & routes weight
+  // Card 4: "إجمالي المحصل من المكاتب" — Calculated with prices map & routes weight
   const totalCollectedFromCompanies = await _calculateTotalCollectedFromCompanies(username, activeReceipts, offices);
 
-  // Card 5: "صافي الربح" = Companies Collected + Office Amount - Receipts Spent - Salaries/Expenses
+  // Card 5: "صافي الربح" = Offices Collected + Office Amount - Receipts Spent - Salaries/Expenses
   const netProfitCents = Money.toCents(totalCollectedFromCompanies) 
                          + Money.toCents(totalOfficeVal) 
                          - Money.toCents(totalReceiptsVal) 
@@ -1047,7 +1047,7 @@ function _renderSummaryCards(card1, card2, card3, card4, card5) {
     ${cardHtml('إجمالي صرف الكارتات', card1, 'صافي الصرف في الفترة المحددة', 'dashboard-stat-indigo')}
     ${cardHtml('المصروفات والمرتبات', card2, 'المصاريف التشغيلية والمرتبات المباشرة', 'dashboard-stat-rose')}
     ${cardHtml('إجمالي المكتب', card3, 'نسبة عمولة المكتب المحصلة من الكارتات', 'dashboard-stat-teal')}
-    ${cardHtml('إجمالي المحصل من الشركات', card4, 'مجموع مستحقات الحمولة من الشركات ماليًا', 'dashboard-stat-sky')}
+    ${cardHtml('إجمالي المحصل من المكاتب', card4, 'مجموع مستحقات الحمولة من المكاتب ماليًا', 'dashboard-stat-sky')}
     ${cardHtml('صافي الربح', card5, 'المعادلة: المحصل + المكتب - الكارتات - المصاريف', card5 >= 0 ? 'dashboard-stat-emerald' : 'dashboard-stat-rose')}
   `;
 }

@@ -458,6 +458,175 @@ async function getOfficeFinancialSummary(username, filters = null) {
   };
 }
 
+function _isOpaqueReferenceString(value) {
+  const s = String(value || '').trim();
+  if (!s) return true;
+  if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(s)) return true;
+  if (/^[0-9a-f]{8}-[0-9a-f]{4}/i.test(s)) return true;
+  if (/^id_[a-z0-9_]+$/i.test(s)) return true;
+  if (/^Receipt\s+\S+/i.test(s)) return true;
+  return false;
+}
+
+function _cleanMovementNote(note) {
+  const s = String(note || '').trim();
+  if (!s || _isOpaqueReferenceString(s)) return '';
+  const boilerplate = new Set([
+    'إيداع رصيد',
+    'سحب رصيد',
+    'إضافة رصيد',
+    'خصم من الرصيد',
+    'إيداع مكتب',
+    'سحب مكتب',
+    'إيداع شركة',
+    'سحب شركة',
+  ]);
+  if (boilerplate.has(s)) return '';
+  return s;
+}
+
+function _extractReadableDocumentNumber(entry) {
+  if (!entry || typeof entry !== 'object') return null;
+  const candidates = [entry.reference_number, entry.receipt_number];
+  for (const c of candidates) {
+    const val = String(c ?? '').trim();
+    if (val && !_isOpaqueReferenceString(val)) {
+      return val;
+    }
+  }
+  const note = String(entry.note || '').trim();
+  const match = note.match(/^(?:صرف نموذج|نموذج رقم|إذن رقم|إذن صرف رقم)\s+([^\s—-]+)/);
+  if (match && match[1] && !_isOpaqueReferenceString(match[1])) {
+    return match[1];
+  }
+  return null;
+}
+
+export function formatMovementTypeLabel(entry) {
+  if (!entry || typeof entry !== 'object') return 'حركة مالية';
+  const type = String(entry.type || '').trim();
+  const refType = String(entry.reference_type || '').trim();
+  const effect = String(entry.effect || '').trim();
+
+  if (entry.is_reversed || ['reversal', 'cancel', 'refund', 'void'].includes(type) || ['reversal', 'cancel', 'refund', 'void'].includes(refType)) {
+    return 'مرتجع / إلغاء';
+  }
+  if (['opening_balance', 'initial_balance'].includes(type) || ['opening_balance', 'initial_balance'].includes(refType)) {
+    return 'رصيد افتتاحي';
+  }
+  if (['adjustment', 'settlement', 'balance_adjustment'].includes(type) || ['adjustment', 'settlement', 'balance_adjustment', 'receipt_adjustment'].includes(refType) || effect === 'adjustment') {
+    return 'تسوية رصيد';
+  }
+  if (type === 'receipt_due' || effect === 'receipt_due') return 'مستحق إذن صرف';
+  if (type === 'receipt_payment' || effect === 'receipt_payout') return 'صرف إذن';
+  if (type === 'OFFICE_DEPOSIT' && Number(entry.amount) < 0) return 'سحب';
+  if (type === 'OFFICE_DEPOSIT' || type === 'deposit') return 'إيداع';
+  if (type === 'OFFICE_WITHDRAW_AUTO' || type === 'withdraw') return 'سحب';
+  return 'حركة مالية';
+}
+
+export function formatMovementReference(entry) {
+  if (!entry || typeof entry !== 'object') return 'حركة مالية';
+  const type = String(entry.type || '').trim();
+  const refType = String(entry.reference_type || '').trim();
+  const effect = String(entry.effect || '').trim();
+  const rawNote = String(entry.note || '').trim();
+  const cleanNote = _cleanMovementNote(rawNote);
+  const docNum = _extractReadableDocumentNumber(entry);
+
+  // 1. Reversed / cancelled / refunded movements
+  if (
+    entry.is_reversed ||
+    ['reversal', 'cancel', 'refund', 'void'].includes(type) ||
+    ['reversal', 'cancel', 'refund', 'void'].includes(refType) ||
+    ['reversal', 'cancel', 'refund', 'void'].includes(effect)
+  ) {
+    if (docNum) return `مرتجع أو إلغاء عملية — إذن صرف رقم ${docNum}`;
+    if (cleanNote) return `مرتجع أو إلغاء عملية — ${cleanNote}`;
+    return 'مرتجع أو إلغاء عملية';
+  }
+
+  // 2. Opening / initial balance
+  if (
+    ['opening_balance', 'initial_balance'].includes(type) ||
+    ['opening_balance', 'initial_balance'].includes(refType) ||
+    ['opening_balance', 'initial_balance'].includes(effect) ||
+    rawNote === 'رصيد افتتاحي'
+  ) {
+    if (cleanNote && cleanNote !== 'رصيد افتتاحي') return `رصيد افتتاحي — ${cleanNote}`;
+    return 'رصيد افتتاحي';
+  }
+
+  // 3. Movements linked to a disbursement receipt
+  if (
+    refType === 'receipt' ||
+    type === 'receipt_due' ||
+    type === 'receipt_payment' ||
+    effect === 'receipt_due' ||
+    effect === 'receipt_payout'
+  ) {
+    const base = docNum ? `حركة مرتبطة بإذن صرف رقم ${docNum}` : 'حركة مرتبطة بإذن صرف';
+    if (type === 'receipt_due' || effect === 'receipt_due') {
+      return `${base} (صافي مستحق)`;
+    }
+    if (type === 'receipt_payment' || effect === 'receipt_payout') {
+      return `${base} (صرف مستحق)`;
+    }
+    if (type === 'OFFICE_WITHDRAW_AUTO' || type === 'withdraw') {
+      return `${base} (خصم من الرصيد)`;
+    }
+    return base;
+  }
+
+  // 4. Balance adjustments / settlements
+  if (
+    refType === 'receipt_adjustment' ||
+    ['adjustment', 'settlement', 'balance_adjustment'].includes(type) ||
+    ['adjustment', 'settlement', 'balance_adjustment'].includes(refType) ||
+    effect === 'adjustment'
+  ) {
+    if (docNum) return `تسوية رصيد — إذن صرف رقم ${docNum}`;
+    if (cleanNote) return `تسوية رصيد — ${cleanNote}`;
+    return 'تسوية رصيد';
+  }
+
+  // 5. Salfa / advance
+  if (refType === 'salfa' || type === 'salfa' || effect === 'salfa') {
+    if (cleanNote) return `سلفة مالية — ${cleanNote}`;
+    return 'سلفة مالية';
+  }
+
+  // 6. Office auto-withdrawal / balance deduction
+  if (
+    type === 'OFFICE_WITHDRAW_AUTO' ||
+    refType === 'office_withdraw' ||
+    type === 'withdraw' ||
+    (type === 'OFFICE_DEPOSIT' && Number(entry.amount) < 0)
+  ) {
+    if (docNum) return `خصم من الرصيد — إذن صرف رقم ${docNum}`;
+    if (cleanNote) return `خصم من الرصيد — ${cleanNote}`;
+    return 'خصم من الرصيد';
+  }
+
+  // 7. Office deposit / balance addition
+  if (
+    type === 'OFFICE_DEPOSIT' ||
+    refType === 'office_deposit' ||
+    type === 'deposit'
+  ) {
+    if (docNum) return `إضافة رصيد — إذن صرف رقم ${docNum}`;
+    if (cleanNote) return `إضافة رصيد — ${cleanNote}`;
+    return 'إضافة رصيد';
+  }
+
+  // 8. Safe Arabic fallback for historical or unknown types
+  if (cleanNote) return `حركة مالية — ${cleanNote}`;
+  const amt = Number(entry.amount) || 0;
+  if (amt > 0) return 'إضافة رصيد';
+  if (amt < 0) return 'خصم من الرصيد';
+  return 'حركة مالية';
+}
+
 async function getOfficeLedger(username, office_id) {
   _requireUsername(username, 'getOfficeLedger');
   if (!office_id) throw new Error('[OfficesService:getOfficeLedger] office_id is required.');
@@ -479,10 +648,17 @@ async function getOfficeLedger(username, office_id) {
     }
   }
 
-  return ledger.map((entry) => ({
-    ...entry,
-    reference_number: receiptMap.get(String(entry.reference_id)) || null,
-  }));
+  return ledger.map((entry) => {
+    const reference_number = entry.receipt_number || receiptMap.get(String(entry.reference_id)) || null;
+    const enriched = {
+      ...entry,
+      reference_number,
+    };
+    return {
+      ...enriched,
+      reference_label: formatMovementReference(enriched),
+    };
+  });
 }
 
 async function depositToOffice(username, office_id, payload) {
@@ -629,21 +805,17 @@ function _renderListShell() {
 
       <!-- العنوان والأزرار -->
       <div class="flex items-center justify-between flex-wrap gap-3 mb-6">
-        <h2 class="text-2xl font-bold text-gray-800 mb-0">إدارة الشركات</h2>
+        <h2 class="text-2xl font-bold text-gray-800 mb-0">إدارة المكاتب</h2>
         <div class="flex gap-2">
-          <button type="button" data-action="office-add" style="background:linear-gradient(135deg,#16a34a,#15803d);color:#fff;border:none;border-radius:10px;padding:8px 18px;font-weight:700;font-size:0.875rem;cursor:pointer;font-family:inherit;transition:box-shadow 0.2s;">➕ إضافة شركة</button>
+          <button type="button" data-action="office-add" style="background:linear-gradient(135deg,#16a34a,#15803d);color:#fff;border:none;border-radius:10px;padding:8px 18px;font-weight:700;font-size:0.875rem;cursor:pointer;font-family:inherit;transition:box-shadow 0.2s;">➕ إضافة مكتب</button>
         </div>
       </div>
 
       <!-- بطاقات الملخص -->
-      <div class="grid grid-cols-1 md:grid-cols-3 gap-3 mb-6">
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-3 mb-6">
         <div style="background:linear-gradient(135deg,#22c55e,#16a34a);border-radius:12px;padding:16px;color:#fff;">
-          <p style="font-size:0.75rem;opacity:0.9;margin:0 0 4px;">عدد الشركات</p>
+          <p style="font-size:0.75rem;opacity:0.9;margin:0 0 4px;">عدد المكاتب</p>
           <p style="font-size:1.5rem;font-weight:800;margin:0;" id="officeTotalCount">0</p>
-        </div>
-        <div style="background:linear-gradient(135deg,#10b981,#059669);border-radius:12px;padding:16px;color:#fff;">
-          <p style="font-size:0.75rem;opacity:0.9;margin:0 0 4px;">إجمالي الوزن</p>
-          <p style="font-size:1.5rem;font-weight:800;margin:0;" id="officeTotalWeight">0.00</p>
         </div>
         <div style="background:linear-gradient(135deg,#f97316,#ea580c);border-radius:12px;padding:16px;color:#fff;">
           <p style="font-size:0.75rem;opacity:0.9;margin:0 0 4px;">إجمالي الرصيد</p>
@@ -653,20 +825,19 @@ function _renderListShell() {
 
       <!-- شريط البحث -->
       <div class="mb-6">
-        <input id="officeSearch" type="text" class="input" placeholder="🔍 ابحث عن شركة..." style="border-radius:12px;padding:10px 16px 10px 40px;" />
+        <input id="officeSearch" type="text" class="input" placeholder="🔍 ابحث عن مكتب..." style="border-radius:12px;padding:10px 16px 10px 40px;" />
       </div>
 
-      <!-- قائمة الشركات -->
+      <!-- قائمة المكاتب -->
       <div style="margin-bottom:8px;">
-        <h3 class="text-lg font-bold text-gray-800 mb-3">قائمة الشركات</h3>
+        <h3 class="text-lg font-bold text-gray-800 mb-3">قائمة المكاتب</h3>
       </div>
       <div class="table-wrapper overflow-x-auto">
         <table class="table">
           <thead style="background:linear-gradient(135deg,#1e3a8a,#2563eb);">
             <tr>
-              <th style="color:#fff;">اسم الشركة</th>
+              <th style="color:#fff;">اسم المكتب</th>
               <th style="color:#fff;">رقم الهاتف</th>
-              <th style="color:#fff;">إجمالي الوزن</th>
               <th style="color:#fff;">الرصيد</th>
               <th style="color:#fff;">إجراءات</th>
             </tr>
@@ -691,7 +862,7 @@ function _renderOfficeModal() {
     <div id="officeModal" class="hidden fixed inset-0 bg-black bg-opacity-60 flex items-center justify-center z-50 p-4">
       <div class="bg-white rounded-2xl shadow-2xl p-6 w-full max-w-3xl">
         <div class="flex items-center justify-between mb-4">
-          <h3 class="text-lg font-bold">إضافة شركات</h3>
+          <h3 class="text-lg font-bold">إضافة مكاتب</h3>
           <button type="button" data-action="office-modal-close" class="btn btn-secondary btn-sm">إغلاق</button>
         </div>
 
@@ -721,7 +892,7 @@ function _renderOfficeModal() {
 function _renderOfficeModalRow() {
   return `
     <tr>
-      <td><input type="text" class="input input-sm office-modal-name" placeholder="اسم الشركة" /></td>
+      <td><input type="text" class="input input-sm office-modal-name" placeholder="اسم المكتب" /></td>
       <td><input type="text" class="input input-sm office-modal-phone" placeholder="الهاتف" /></td>
       <td><button type="button" data-action="office-modal-remove-row" class="btn btn-secondary btn-sm">حذف</button></td>
     </tr>
@@ -747,12 +918,12 @@ function _renderDetailsShell(office) {
         <button type="button" data-action="office-print" style="background:#7c3aed;color:#fff;border:none;border-radius:8px;padding:8px 16px;font-weight:700;font-size:0.8125rem;cursor:pointer;font-family:inherit;">🖨️ طباعة</button>
       </div>
 
-      <!-- بيانات الشركة -->
+      <!-- بيانات المكتب -->
       <div style="background:linear-gradient(135deg,#f0fdf4,#f0fdfa);border-radius:12px;padding:16px 20px;margin-bottom:20px;display:flex;flex-wrap:wrap;gap:20px;">
         <div style="display:flex;align-items:center;gap:10px;flex:1;min-width:200px;">
           <div style="width:40px;height:40px;border-radius:50%;background:#22c55e;display:flex;align-items:center;justify-content:center;color:#fff;font-size:1.125rem;flex-shrink:0;">🏢</div>
           <div>
-            <p style="font-size:0.6875rem;color:#6b7280;margin:0;">اسم الشركة</p>
+            <p style="font-size:0.6875rem;color:#6b7280;margin:0;">اسم المكتب</p>
             <p style="font-size:1.0625rem;font-weight:700;color:#1f2937;margin:0;">${office.name}</p>
           </div>
         </div>
@@ -767,7 +938,7 @@ function _renderDetailsShell(office) {
 
       <!-- التبويبات -->
       <div style="display:flex;border-bottom:2px solid #e5e7eb;margin-bottom:20px;" role="tablist">
-        <button type="button" data-tab="balance" style="padding:12px 20px;border:none;border-bottom:3px solid ${_activeDetailsTab === 'balance' ? '#1f2937' : 'transparent'};background:${_activeDetailsTab === 'balance' ? '#f3f4f6' : 'transparent'};color:${_activeDetailsTab === 'balance' ? '#1f2937' : '#9ca3af'};font-weight:${_activeDetailsTab === 'balance' ? '700' : '500'};font-size:0.9375rem;cursor:pointer;font-family:inherit;transition:all 0.2s;">💰 رصيد الشركة</button>
+        <button type="button" data-tab="balance" style="padding:12px 20px;border:none;border-bottom:3px solid ${_activeDetailsTab === 'balance' ? '#1f2937' : 'transparent'};background:${_activeDetailsTab === 'balance' ? '#f3f4f6' : 'transparent'};color:${_activeDetailsTab === 'balance' ? '#1f2937' : '#9ca3af'};font-weight:${_activeDetailsTab === 'balance' ? '700' : '500'};font-size:0.9375rem;cursor:pointer;font-family:inherit;transition:all 0.2s;">💰 رصيد المكتب</button>
         <button type="button" data-tab="hamola" style="padding:12px 20px;border:none;border-bottom:3px solid ${_activeDetailsTab === 'hamola' ? '#1f2937' : 'transparent'};background:${_activeDetailsTab === 'hamola' ? '#f3f4f6' : 'transparent'};color:${_activeDetailsTab === 'hamola' ? '#1f2937' : '#9ca3af'};font-weight:${_activeDetailsTab === 'hamola' ? '700' : '500'};font-size:0.9375rem;cursor:pointer;font-family:inherit;transition:all 0.2s;">🚚 تفاصيل الحمولة</button>
         <button type="button" data-tab="cards" style="padding:12px 20px;border:none;border-bottom:3px solid ${_activeDetailsTab === 'cards' ? '#1f2937' : 'transparent'};background:${_activeDetailsTab === 'cards' ? '#f3f4f6' : 'transparent'};color:${_activeDetailsTab === 'cards' ? '#1f2937' : '#9ca3af'};font-weight:${_activeDetailsTab === 'cards' ? '700' : '500'};font-size:0.9375rem;cursor:pointer;font-family:inherit;transition:all 0.2s;">📋 الكارتات</button>
       </div>
@@ -865,16 +1036,15 @@ function _renderOfficeBalance(entries) {
   }
 
   function entryTypeLabel(entry) {
-    if (entry.type === 'OFFICE_DEPOSIT' || entry.type === 'deposit') return 'إيداع';
-    if (entry.type === 'OFFICE_WITHDRAW_AUTO' || entry.type === 'withdraw') return 'سحب';
-    return _text(entry.type || '');
+    return formatMovementTypeLabel(entry);
   }
 
   function entryDelta(entry) {
     const amount = Number(entry.amount) || 0;
-    if (entry.type === 'OFFICE_DEPOSIT' || entry.type === 'OFFICE_WITHDRAW_AUTO') return amount;
-    if (entry.type === 'deposit') return Math.abs(amount);
-    if (entry.type === 'withdraw') return -Math.abs(amount);
+    if (entry.type === 'OFFICE_DEPOSIT') return amount;
+    if (entry.type === 'OFFICE_WITHDRAW_AUTO') return amount <= 0 ? amount : -amount;
+    if (entry.type === 'deposit' || entry.type === 'receipt_due') return Math.abs(amount);
+    if (entry.type === 'withdraw' || entry.type === 'receipt_payment') return -Math.abs(amount);
     return amount;
   }
 
@@ -904,7 +1074,7 @@ function _renderOfficeBalance(entries) {
         <td>${entryTypeLabel(entry)}</td>
         <td>${delta < 0 ? '-' : ''}${_fmt(Math.abs(delta))}</td>
         <td>${_fmt(balance)}</td>
-        <td>${_text(entry.reference_number || entry.reference_id || '-')}</td>
+        <td>${_text(formatMovementReference(entry))}</td>
       </tr>
     `).join('')
     : `<tr><td colspan="5" class="text-center text-muted p-4">لا توجد حركات</td></tr>`;
@@ -989,44 +1159,27 @@ function _attachPriceSaveListeners(office) {
   });
 }
 
-function _renderHamolaTable(rows, weightMap = {}) {
-  let grandTotalPrice = 0;
-
+function _renderHamolaTable(rows) {
   const body = rows.length
     ? rows.map((r) => {
-        const key = String(r.loading_place || '').trim().toLowerCase() + '__' + String(r.destination_place || '').trim().toLowerCase();
-        const weight = weightMap[key] || 0;
-        const price = Number(r.price) || 0;
-        const totalPrice = weight * price;
-        grandTotalPrice += totalPrice;
+        const itemType = String(r.item_type ?? r.type ?? '').trim() || '—';
         return `
-      <tr>
+      <tr data-id="${r.id}">
         <td>${_text(r.loading_place)}</td>
         <td>${_text(r.destination_place)}</td>
-        <td>${_fmt(weight)}</td>
-        <td>${_fmt(r.nolon)}</td>
+        <td>${_text(itemType)}</td>
         <td>
           <button type="button" data-action="hamola-edit" data-id="${r.id}" class="btn-icon" title="تعديل" style="background:#dbeafe;color:#2563eb;width:28px;height:28px;border:none;border-radius:6px;cursor:pointer;">✏️</button>
           <button type="button" data-action="hamola-delete" data-id="${r.id}" class="btn-icon" title="حذف" style="background:#fee2e2;color:#dc2626;width:28px;height:28px;border:none;border-radius:6px;cursor:pointer;">🗑️</button>
         </td>
-        <td>
-          <input type="number" step="0.01" min="0" class="input input-sm hamola-price-input"
-            data-hamola-id="${r.id}" value="${price || ''}"
-            style="width:80px;text-align:center;"
-            placeholder="السعر">
-        </td>
-        <td class="font-semibold">${_fmt(totalPrice)}</td>
       </tr>`;
       }).join('')
-    : `<tr><td colspan="7" class="text-center text-muted p-6" style="color:#94a3b8;">لا توجد بيانات — اضغط إضافة حمولة</td></tr>`;
+    : `<tr><td colspan="4" class="text-center text-muted p-6" style="color:#94a3b8;">لا توجد بيانات — اضغط إضافة حمولة</td></tr>`;
 
   return `
     <div class="flex justify-between items-center flex-wrap gap-3 mb-4">
       <h3 class="text-xl font-bold text-gray-800">قائمة أماكن التحميل والتعتيق</h3>
       <div class="flex items-center gap-3 flex-wrap">
-        <div style="background:linear-gradient(135deg,#1e40af,#3b82f6);color:#fff;padding:8px 16px;border-radius:10px;font-weight:700;font-size:0.875rem;">
-          إجمالي السعر الكلي: <span id="hamolaGrandTotal">${_fmt(grandTotalPrice)}</span>
-        </div>
         <button type="button" data-action="hamola-add" style="background:#16a34a;color:#fff;border:none;border-radius:8px;padding:8px 16px;font-weight:700;font-size:0.8125rem;cursor:pointer;font-family:inherit;">➕ إضافة حمولة</button>
       </div>
     </div>
@@ -1036,11 +1189,8 @@ function _renderHamolaTable(rows, weightMap = {}) {
           <tr>
             <th style="color:#fff;">التحميل</th>
             <th style="color:#fff;">الجهة</th>
-            <th style="color:#fff;">الوزن</th>
-            <th style="color:#fff;">النولون</th>
+            <th style="color:#fff;">النوع</th>
             <th style="color:#fff;">إجراءات</th>
-            <th style="color:#fff;">السعر</th>
-            <th style="color:#fff;">السعر الكلي</th>
           </tr>
         </thead>
         <tbody>${body}</tbody>
@@ -1064,17 +1214,15 @@ async function loadOffices() {
   // Show lightweight loading indicator inside existing table
   const tbodyPreview = document.getElementById('officesTableBody');
   if (tbodyPreview && tbodyPreview.children.length === 0) {
-    tbodyPreview.innerHTML = '<tr><td colspan="5" class="text-center text-muted p-6">⏳ جاري التحميل...</td></tr>';
+    tbodyPreview.innerHTML = '<tr><td colspan="4" class="text-center text-muted p-6">⏳ جاري التحميل...</td></tr>';
   }
 
   const summary = await OfficesModule.getOfficeSummary();
   const totalCountEl = document.getElementById('officeTotalCount');
-  const totalWeightEl = document.getElementById('officeTotalWeight');
 
   if (totalCountEl) totalCountEl.textContent = String(summary.total_offices || 0);
   const totalBalanceEl = document.getElementById("officeTotalBalance");
   if (totalBalanceEl) totalBalanceEl.textContent = _fmt(summary.rows.reduce((s, r) => s + (r.balance || 0), 0));
-  if (totalWeightEl) totalWeightEl.textContent = _fmt(summary.total_weight);
 
   const tbody = document.getElementById('officesTableBody');
   if (!tbody) return;
@@ -1107,7 +1255,6 @@ async function loadOffices() {
             : _text(office.phone || '—')
           }
         </td>
-        <td style="color:#374151;">${_fmt(item.weight)}</td>
         <td class="${Number(item.balance) < 0 ? 'balance-negative' : ''}" style="font-weight:700;">${_fmt(item.balance)}</td>
         <td>
           ${isEditing
@@ -1124,11 +1271,11 @@ async function loadOffices() {
         </td>
       </tr>
     `;
-  }).join('') || `<tr><td colspan="5" class="text-center text-muted p-6">
+  }).join('') || `<tr><td colspan="4" class="text-center text-muted p-6">
     <div style="display:flex;flex-direction:column;align-items:center;gap:12px;padding:24px;">
       <div style="width:64px;height:64px;background:#e2e8f0;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:2rem;">🏢</div>
-      <p style="font-weight:700;color:#64748b;margin:0;">لا يوجد شركات</p>
-      <p style="font-size:0.8125rem;color:#94a3b8;margin:0;">ابدأ بإضافة الشركات من الزر أعلاه</p>
+      <p style="font-weight:700;color:#64748b;margin:0;">لا يوجد مكاتب</p>
+      <p style="font-size:0.8125rem;color:#94a3b8;margin:0;">ابدأ بإضافة المكاتب من الزر أعلاه</p>
     </div>
   </td></tr>`;
 }
@@ -1139,6 +1286,7 @@ async function showOfficeDetails(id) {
   if (!id) throw new Error('[offices-page] office id is required');
 
   _detailsOfficeId = String(id);
+  _activeDetailsTab = 'balance';
   const office = await OfficesModule.getOfficeDetails(_detailsOfficeId);
   if (!office) throw new Error('Office not found');
 
@@ -1254,7 +1402,7 @@ function _renderOfficeCards(allCards) {
     </div>`;
 
   if (allCards.length === 0) {
-    return summaryHTML + '<div style="text-align:center;padding:32px;color:#94a3b8;">لا توجد كارتات لهذه الشركة</div>';
+    return summaryHTML + '<div style="text-align:center;padding:32px;color:#94a3b8;">لا توجد كارتات لهذا المكتب</div>';
   }
 
   if (cards.length === 0 && query) {
@@ -1317,9 +1465,7 @@ async function _renderDetailsContent(office) {
   }
 
   if (_activeDetailsTab === 'hamola') {
-    const weightMap = await _computeWeightMap(office);
-    content.innerHTML = _renderHamolaTable(office.hamolaRows || [], weightMap);
-    _attachPriceSaveListeners(office);
+    content.innerHTML = _renderHamolaTable(office.hamolaRows || []);
   }
 
   if (_activeDetailsTab === 'cards') {
@@ -1396,7 +1542,7 @@ async function _saveOfficeDeposit() {
 
   if (!_detailsOfficeId) {
     if (msg) {
-      msg.textContent = 'لا توجد شركة محددة';
+      msg.textContent = 'لا يوجد مكتب محدد';
       msg.classList.add('is-visible');
     }
     return;
@@ -1521,7 +1667,6 @@ function attachOfficesPageListeners() {
             tr.innerHTML = `
               <td data-action="office-details" data-id="${record.id}" style="cursor:pointer;color:#2563eb;font-weight:700;">${_text(record.name)}</td>
               <td style="color:#374151;">${_text(record.phone || '—')}</td>
-              <td style="color:#374151;">0.00</td>
               <td style="font-weight:700;">0.00</td>
               <td>
                 <button type="button" data-action="office-details" data-id="${record.id}" class="btn-icon" title="تفاصيل" style="background:#dbeafe;color:#2563eb;width:28px;height:28px;border:none;border-radius:6px;cursor:pointer;">📋</button>
@@ -1575,7 +1720,7 @@ function attachOfficesPageListeners() {
           const cells = row.querySelectorAll('td');
           if (cells[0]) { cells[0].textContent = name; cells[0].setAttribute('data-action','office-details'); cells[0].setAttribute('data-id', id); cells[0].style.cssText='cursor:pointer;color:#2563eb;font-weight:700;'; }
           if (cells[1]) { cells[1].textContent = phone || '—'; cells[1].style.color = '#374151'; }
-          if (cells[4]) { cells[4].innerHTML = `<button type="button" data-action="office-details" data-id="${id}" class="btn-icon" title="تفاصيل" style="background:#dbeafe;color:#2563eb;width:28px;height:28px;border:none;border-radius:6px;cursor:pointer;">📋</button><button type="button" data-action="office-delete" data-id="${id}" class="btn-icon" title="حذف" style="background:#fee2e2;color:#dc2626;width:28px;height:28px;border:none;border-radius:6px;cursor:pointer;">🗑️</button>`; }
+          if (cells[3]) { cells[3].innerHTML = `<button type="button" data-action="office-edit" data-id="${id}" class="btn-icon" title="تعديل" style="background:#fef3c7;color:#d97706;width:28px;height:28px;border:none;border-radius:6px;cursor:pointer;">✏️</button><button type="button" data-action="office-details" data-id="${id}" class="btn-icon" title="تفاصيل" style="background:#dbeafe;color:#2563eb;width:28px;height:28px;border:none;border-radius:6px;cursor:pointer;">📋</button><button type="button" data-action="office-delete" data-id="${id}" class="btn-icon" title="حذف" style="background:#fee2e2;color:#dc2626;width:28px;height:28px;border:none;border-radius:6px;cursor:pointer;">🗑️</button>`; }
         }
         loadOffices(); // background refresh for summary
       } catch (err) {
@@ -1590,7 +1735,7 @@ function attachOfficesPageListeners() {
     if (target.closest('[data-action="office-delete"]')) {
       const id = target.closest('[data-id]')?.dataset.id;
       if (!id) return;
-      if (!confirm('هل أنت متأكد من حذف الشركة؟')) return;
+      if (!confirm('هل أنت متأكد من حذف المكتب؟')) return;
       // Optimistic: remove row immediately
       const delRow = document.querySelector(`#officesTableBody tr[data-id="${id}"]`);
       if (delRow) delRow.remove();
@@ -1645,7 +1790,7 @@ function attachOfficesPageListeners() {
           const { printHTML, buildPrintDocument } = await import('./printEngine.js');
           const office = await OfficesModule.getOfficeDetails(_detailsOfficeId);
           printHTML(buildPrintDocument({
-            title: 'طباعة تفاصيل الشركة',
+            title: 'طباعة تفاصيل المكتب',
             body: '<h2 style="text-align:center;color:#0f766e;margin-bottom:12px;">' + (office?.name || '') + '</h2>' + content.innerHTML,
             orientation: 'portrait',
           }), { id: 'office-print-iframe' });
@@ -1747,7 +1892,9 @@ function initOfficesPage() {
   _renderListShell();
 }
 
-window.showOfficeDetails = showOfficeDetails;
+if (typeof window !== 'undefined') {
+  window.showOfficeDetails = showOfficeDetails;
+}
 
 
 // ========================================

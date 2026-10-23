@@ -290,7 +290,7 @@ const _RECEIPT_COLS = Object.freeze([
   { key: 'weight',       header: 'وزن وش',         type: 'number' },
   { key: 'weight2',      header: 'وزن م',          type: 'number' },
   { key: 'deficit',      header: 'عجز',            type: 'number' },
-  { key: 'office',       header: 'اسم الشركة',     type: 'text'   },
+  { key: 'office',       header: 'اسم المكتب',     legacyHeader: 'اسم الشركة', type: 'text'   },
   { key: 'loading',      header: 'التحميل',        type: 'text'   },
   { key: 'taktik',       header: 'الجهة',          type: 'text'   },
   { key: 'type',         header: 'النوع',          type: 'text'   },
@@ -363,7 +363,9 @@ async function importReceiptRows(file) {
   const { headers, rows } = _parseBuffer(buffer);
 
   // Validate: file must have at least one expected column
-  const matchedCols = _RECEIPT_COLS.filter(col => headers.includes(col.header));
+  const matchedCols = _RECEIPT_COLS.filter(col =>
+    headers.includes(col.header) || (col.legacyHeader && headers.includes(col.legacyHeader))
+  );
   if (matchedCols.length === 0) {
     throw new Error(
       `الملف لا يحتوي على أعمدة مطابقة.\n` +
@@ -381,12 +383,15 @@ async function importReceiptRows(file) {
   const result = rows
     .filter(r => {
       // Skip fully empty rows
-      return _RECEIPT_COLS.some(col => _str(r[col.header]) !== '');
+      return _RECEIPT_COLS.some(col => {
+        const val = r[col.header] ?? (col.legacyHeader ? r[col.legacyHeader] : '');
+        return _str(val) !== '';
+      });
     })
     .map(r => {
       const row = {};
       for (const col of _RECEIPT_COLS) {
-        let cellVal = r[col.header] ?? '';
+        let cellVal = r[col.header] ?? (col.legacyHeader ? r[col.legacyHeader] : '') ?? '';
         if (col.key === 'date') {
           cellVal = parseImportedDate(cellVal);
         }
@@ -668,7 +673,7 @@ const _ALL_RECEIPTS_COLS = Object.freeze([
       return (w1 > 0 || w2 > 0) ? _allReceiptsNum(w1 + w2 - d) : '';
     },
   },
-  { header: 'اسم الشركة',   getValue: (row, _rec) => _str(row.office ?? '') },
+  { header: 'اسم المكتب',   getValue: (row, _rec) => _str(row.office ?? '') },
   { header: 'التحميل',      getValue: (row, _rec) => _str(row.loading ?? '') },
   { header: 'الجهة',        getValue: (row, _rec) => _str(row.taktik ?? row.direction ?? '') },
   { header: 'النوع',        getValue: (row, _rec) => _str(row.type ?? '') },
