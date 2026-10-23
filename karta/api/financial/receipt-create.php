@@ -101,7 +101,9 @@ try {
             strval($receipt['receipt_number'] ?? $receiptNumber),
             $receipt['receipt_date'] ?? ($body['receipt_date'] ?? null),
             is_array($body['rows'] ?? null) ? $body['rows'] : [],
-            $officeRepo
+            $officeRepo,
+            $receipt['client_name'] ?? ($body['client_name'] ?? null),
+            isset($receipt['client_id']) ? strval($receipt['client_id']) : (isset($body['client_id']) ? strval($body['client_id']) : null)
         );
 
         // Create treasury entries (from treasury_ops array)

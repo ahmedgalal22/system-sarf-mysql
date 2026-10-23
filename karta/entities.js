@@ -292,7 +292,18 @@ function _ledgerNote(entry) {
   }
   // Office entries
   if (type === 'OFFICE_DEPOSIT') return note || 'إيداع مكتب';
-  if (type === 'OFFICE_WITHDRAW_AUTO') return note || 'سحب مكتب';
+  if (type === 'OFFICE_WITHDRAW_AUTO') {
+    const raw = String(note || entry.vehicle_owner_name || entry.owner_name || '').trim().replace(/\s+/g, ' ');
+    if (raw) {
+      const m = raw.match(/^(?:قيمة\s+كارتة\s*-\s*)+(.+)$/);
+      const owner = m ? m[1].trim() : (raw === 'قيمة كارتة' ? '' : raw);
+      if (owner && !/^خصم\s+من\s+الرصيد/.test(owner)) {
+        return `قيمة كارتة - ${owner}`;
+      }
+      return raw;
+    }
+    return 'قيمة كارتة';
+  }
   // Generic
   if (note) return note;
   return _ledgerType(type);

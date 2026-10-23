@@ -103,7 +103,7 @@ class VehicleLedgerRepository {
             if ($cur && $cur['updated_at'] !== $expectedUpdatedAt) return null;
         }
         $allowed = ['type','effect','amount','date','note','is_reversed','reversed_at','reversed_by',
-                     'client_id','client_type','client_name'];
+                     'client_id','client_type','client_name','vehicle_owner_id','vehicle_owner_name'];
         $fields = []; $params = [':id' => $id, ':updated_by' => $username];
         foreach ($allowed as $f) {
             if (array_key_exists($f, $patch)) { $fields[] = "`{$f}` = :{$f}"; $params[":{$f}"] = $patch[$f]; }
@@ -126,12 +126,28 @@ class VehicleLedgerRepository {
     }
 
     /**
+     * Format the office balance withdrawal reference string:
+     *   "قيمة كارتة - {selected vehicle owner's name}"
+     * Avoids duplicating the prefix if already formatted.
+     */
+    public static function formatOfficeWithdrawalReference(?string $ownerName): string {
+        $clean = preg_replace('/\s+/u', ' ', trim((string)($ownerName ?? '')));
+        if (preg_match('/^(?:قيمة\s+كارتة\s*-\s*)+(.+)$/u', $clean, $m)) {
+            $clean = trim($m[1]);
+        }
+        return $clean !== '' ? ('قيمة كارتة - ' . $clean) : 'قيمة كارتة';
+    }
+
+    /**
      * Synchronize office balance deductions (OFFICE_WITHDRAW_AUTO) for a receipt
      * inside the active database transaction.
      *
      * Exact deduction rule per row:
      *   Office balance deduction = الصافي (net) + قيمة خانة الصرف (sarf)
      *   where net = (weight - deficit) * noloon - (ohda + officeAmount + sarf) + add
+     *
+     * Exact reference format:
+     *   قيمة كارتة - {selected vehicle owner's name}
      *
      * Reverses any previous active OFFICE_WITHDRAW_AUTO entries for this receipt
      * before inserting the new deduction entries so edits/retries never duplicate
@@ -143,7 +159,10 @@ class VehicleLedgerRepository {
         ?string $receiptNumber,
         ?string $receiptDate,
         array $rows,
-        OfficeRepository $officeRepo
+        OfficeRepository $officeRepo,
+        ?string $receiptClientName = null,
+        ?string $receiptClientId = null,
+        ?string $previousClientName = null
     ): array {
         $now = (new DateTime('now', new DateTimeZone('Africa/Cairo')))->format('Y-m-d H:i:s.v');
 
@@ -186,8 +205,23 @@ class VehicleLedgerRepository {
             }
         }
 
-        // 3. Aggregate (net + sarf) in cents per office
-        $deductionsByOfficeId = [];
+        // Detect whether rows carry multiple distinct vehicle owners
+        $distinctRowOwners = [];
+        foreach ($rows as $r) {
+            if (!is_array($r)) continue;
+            $rt = $r['_type'] ?? ($r['type'] ?? ($r['row_type'] ?? ''));
+            if ($rt === 'separator') continue;
+            $rn = preg_replace('/\s+/u', ' ', trim((string)($r['owner_name'] ?? ($r['vehicle_owner_name'] ?? ''))));
+            if ($rn !== '') {
+                $distinctRowOwners[mb_strtolower($rn, 'UTF-8')] = $rn;
+            }
+        }
+        $hasMultipleRowOwners = count($distinctRowOwners) > 1;
+        $recOwnerName = preg_replace('/\s+/u', ' ', trim((string)($receiptClientName ?? '')));
+        $prevOwnerName = preg_replace('/\s+/u', ' ', trim((string)($previousClientName ?? '')));
+
+        // 3. Aggregate (net + sarf) in cents per (office, vehicle_owner)
+        $deductionGroups = [];
         foreach ($rows as $row) {
             if (!is_array($row)) continue;
             $rowType = $row['_type'] ?? ($row['type'] ?? ($row['row_type'] ?? ''));
@@ -221,36 +255,65 @@ class VehicleLedgerRepository {
             $rowSarfDecimal = round(floatval($row['sarf'] ?? 0), 2);
             $rowDeductionCents = (int)round($rowNetDecimal * 100) + (int)round($rowSarfDecimal * 100);
 
-            $oid = (int)$office['id'];
-            if (!isset($deductionsByOfficeId[$oid])) {
-                $deductionsByOfficeId[$oid] = 0;
+            $rowOwnerName = preg_replace('/\s+/u', ' ', trim((string)($row['owner_name'] ?? ($row['vehicle_owner_name'] ?? ''))));
+            $rowOwnerId   = trim((string)($row['owner_id'] ?? ($row['vehicle_owner_id'] ?? '')));
+
+            if ($hasMultipleRowOwners) {
+                $effectiveOwnerName = $rowOwnerName !== '' ? $rowOwnerName : $recOwnerName;
+                $effectiveOwnerId   = $rowOwnerId !== '' ? $rowOwnerId : (trim((string)($receiptClientId ?? '')) ?: null);
+            } else {
+                if ($recOwnerName !== '' && $rowOwnerName !== '' && $recOwnerName !== $rowOwnerName) {
+                    $effectiveOwnerName = ($prevOwnerName !== '' && $recOwnerName === $prevOwnerName)
+                        ? $rowOwnerName
+                        : $recOwnerName;
+                } else {
+                    $effectiveOwnerName = $recOwnerName !== '' ? $recOwnerName : $rowOwnerName;
+                }
+                $effectiveOwnerId = trim((string)($receiptClientId ?? '')) ?: ($rowOwnerId !== '' ? $rowOwnerId : null);
             }
-            $deductionsByOfficeId[$oid] += $rowDeductionCents;
+
+            $oid = (int)$office['id'];
+            $groupKey = $oid . '::' . mb_strtolower($effectiveOwnerName, 'UTF-8');
+            if (!isset($deductionGroups[$groupKey])) {
+                $deductionGroups[$groupKey] = [
+                    'office_id'   => $oid,
+                    'owner_id'    => $effectiveOwnerId,
+                    'owner_name'  => $effectiveOwnerName,
+                    'total_cents' => 0,
+                ];
+            }
+            $deductionGroups[$groupKey]['total_cents'] += $rowDeductionCents;
         }
 
-        // 4. Create ledger entry per office (negative amount reduces office balance)
+        // 4. Create ledger entry per (office, vehicle_owner) with reference "قيمة كارتة - {owner_name}"
         $created = [];
-        $docNum = trim((string)($receiptNumber ?? '')) !== '' ? trim((string)$receiptNumber) : $receiptId;
         $effectiveDate = !empty($receiptDate) ? $receiptDate : (new DateTime('now', new DateTimeZone('Africa/Cairo')))->format('Y-m-d');
 
-        foreach ($deductionsByOfficeId as $oid => $totalDeductionCents) {
+        foreach ($deductionGroups as $group) {
+            $totalDeductionCents = (int)$group['total_cents'];
             if ($totalDeductionCents === 0) continue;
+            $oid = (int)$group['office_id'];
             $office = $officeById[$oid];
+            $ownerName = $group['owner_name'];
+            $refNote = self::formatOfficeWithdrawalReference($ownerName);
+
             $created[] = $this->create([
-                'username'       => $username,
-                'client_id'      => strval($oid),
-                'client_type'    => 'office',
-                'client_name'    => $office['name'] ?? null,
-                'type'           => 'OFFICE_WITHDRAW_AUTO',
-                'effect'         => 'office_deduction',
-                'amount'         => -$totalDeductionCents,
-                'reference_type' => 'receipt',
-                'reference_id'   => strval($receiptId),
-                'receipt_number' => $receiptNumber !== null ? strval($receiptNumber) : null,
-                'date'           => $effectiveDate,
-                'applied_at'     => $now,
-                'is_reversed'    => 0,
-                'note'           => 'خصم من الرصيد — إذن صرف رقم ' . $docNum,
+                'username'           => $username,
+                'vehicle_owner_id'   => $group['owner_id'],
+                'vehicle_owner_name' => $ownerName !== '' ? $ownerName : null,
+                'client_id'          => strval($oid),
+                'client_type'        => 'office',
+                'client_name'        => $office['name'] ?? null,
+                'type'               => 'OFFICE_WITHDRAW_AUTO',
+                'effect'             => 'office_deduction',
+                'amount'             => -$totalDeductionCents,
+                'reference_type'     => 'receipt',
+                'reference_id'       => strval($receiptId),
+                'receipt_number'     => $receiptNumber !== null ? strval($receiptNumber) : null,
+                'date'               => $effectiveDate,
+                'applied_at'         => $now,
+                'is_reversed'        => 0,
+                'note'               => $refNote,
             ]);
         }
 

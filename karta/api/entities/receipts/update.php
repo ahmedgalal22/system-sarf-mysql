@@ -75,7 +75,9 @@ try {
             strval($updated['receipt_number'] ?? $id),
             $updated['receipt_date'] ?? null,
             $effectiveRows,
-            $officeRepo
+            $officeRepo,
+            $updated['client_name'] ?? ($body['client_name'] ?? null),
+            isset($updated['client_id']) ? strval($updated['client_id']) : (isset($body['client_id']) ? strval($body['client_id']) : null)
         );
         $syncedHamola = $hamolaRepo->syncFromReceiptRows(
             $authUser['username'],

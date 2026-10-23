@@ -682,6 +682,14 @@ export function formatMovementTypeLabel(entry) {
   return 'حركة مالية';
 }
 
+export function formatOfficeWithdrawalReference(ownerNameOrNote) {
+  const raw = String(ownerNameOrNote ?? '').trim().replace(/\s+/g, ' ');
+  if (!raw) return 'قيمة كارتة';
+  const match = raw.match(/^(?:قيمة\s+كارتة\s*-\s*)+(.+)$/);
+  const cleanOwner = match ? match[1].trim() : raw;
+  return cleanOwner ? `قيمة كارتة - ${cleanOwner}` : 'قيمة كارتة';
+}
+
 export function formatMovementReference(entry) {
   if (!entry || typeof entry !== 'object') return 'حركة مالية';
   const type = String(entry.type || '').trim();
@@ -714,6 +722,25 @@ export function formatMovementReference(entry) {
     return 'رصيد افتتاحي';
   }
 
+  // 2b. Automatic office balance withdrawal generated when a receipt is saved:
+  //     "قيمة كارتة - {selected vehicle owner's name}"
+  if (type === 'OFFICE_WITHDRAW_AUTO' || effect === 'office_deduction') {
+    if (/^قيمة\s+كارتة(?:\s*-\s*.+)?$/.test(rawNote)) {
+      return formatOfficeWithdrawalReference(rawNote);
+    }
+    const ownerName = [
+      entry.vehicle_owner_name,
+      entry.owner_name,
+      entry.receipt_owner_name,
+    ]
+      .map((v) => String(v ?? '').trim().replace(/\s+/g, ' '))
+      .find((v) => v && !_isOpaqueReferenceString(v));
+    if (ownerName) {
+      return formatOfficeWithdrawalReference(ownerName);
+    }
+    return 'قيمة كارتة';
+  }
+
   // 3. Movements linked to a disbursement receipt
   if (
     refType === 'receipt' ||
@@ -729,7 +756,7 @@ export function formatMovementReference(entry) {
     if (type === 'receipt_payment' || effect === 'receipt_payout') {
       return `${base} (صرف مستحق)`;
     }
-    if (type === 'OFFICE_WITHDRAW_AUTO' || type === 'withdraw') {
+    if (type === 'withdraw') {
       return `${base} (خصم من الرصيد)`;
     }
     return base;
@@ -753,9 +780,8 @@ export function formatMovementReference(entry) {
     return 'سلفة مالية';
   }
 
-  // 6. Office auto-withdrawal / balance deduction
+  // 6. Manual office withdrawal / balance deduction
   if (
-    type === 'OFFICE_WITHDRAW_AUTO' ||
     refType === 'office_withdraw' ||
     type === 'withdraw' ||
     (type === 'OFFICE_DEPOSIT' && Number(entry.amount) < 0)
@@ -798,18 +824,32 @@ async function getOfficeLedger(username, office_id) {
   )];
 
   const receiptMap = new Map();
+  const officeKey = normalizeCargoKey(office.name);
   for (const id of receiptIds) {
     const receipt = await OfficeRepository.getReceiptById(id);
-    if (receipt && receipt.receipt_number) {
-      receiptMap.set(id, String(receipt.receipt_number));
+    if (receipt) {
+      const rRows = Array.isArray(receipt.rows) ? receipt.rows : [];
+      const matchingRow = rRows.find(
+        (r) => r && r._type !== 'separator' && normalizeCargoKey(r.office) === officeKey && (r.owner_name || r.vehicle_owner_name)
+      );
+      const anyRow = rRows.find((r) => r && r._type !== 'separator' && (r.owner_name || r.vehicle_owner_name));
+      const ownerName =
+        String(receipt.client_name || matchingRow?.owner_name || anyRow?.owner_name || '').trim() || null;
+      receiptMap.set(id, {
+        receipt_number: receipt.receipt_number ? String(receipt.receipt_number) : null,
+        owner_name: ownerName,
+      });
     }
   }
 
   return ledger.map((entry) => {
-    const reference_number = entry.receipt_number || receiptMap.get(String(entry.reference_id)) || null;
+    const recMeta = receiptMap.get(String(entry.reference_id)) || null;
+    const reference_number = entry.receipt_number || recMeta?.receipt_number || null;
+    const vehicle_owner_name = entry.vehicle_owner_name || entry.owner_name || recMeta?.owner_name || null;
     const enriched = {
       ...entry,
       reference_number,
+      vehicle_owner_name,
     };
     return {
       ...enriched,
@@ -882,6 +922,9 @@ const OfficesService = Object.freeze({
   getOfficeLedger,
   depositToOffice,
   adjustOfficeBalance,
+  formatOfficeWithdrawalReference,
+  formatMovementReference,
+  formatMovementTypeLabel,
   _getCachedHamola,
 });
 

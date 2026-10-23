@@ -154,10 +154,12 @@ function _normalizeRow(row) {
 
 function _normalize(rawData) {
   const receiptId = rawData.id ?? _uuid();
+  const topClientName = normalizeOptionalString(rawData.client_name);
   const rows     = rawData.rows.map((r, idx) => {
     const norm = _normalizeRow({ ...r });
     return {
       ...norm,
+      owner_name: norm.owner_name || topClientName || null,
       row_id: norm._rowId || norm.row_id || _uuid(),
       receipt_id: receiptId,
       row_order: idx,
@@ -166,6 +168,7 @@ function _normalize(rawData) {
     };
   });
   const dataRows = rows.filter(r => r.row_type !== ROW_TYPES.SEPARATOR);
+  const resolvedClientName = topClientName || dataRows.find(r => r.owner_name)?.owner_name || null;
 
   const previous_balance = Number(rawData.previous_balance) || 0;
   const general_add      = Number(rawData.general_add)      || 0;
@@ -184,7 +187,7 @@ function _normalize(rawData) {
     receipt_number : rawData.receipt_number  ?? null,
     client_id      : rawData.client_id != null ? String(rawData.client_id).trim() : null,
     client_type    : rawData.client_type,
-    client_name    : normalizeOptionalString(rawData.client_name),
+    client_name    : resolvedClientName,
     notes          : normalizeOptionalString(rawData.notes),
     shipping_number: null,
     vehicle_id     : rawData.vehicle_id != null ? String(rawData.vehicle_id) : null,

@@ -102,7 +102,10 @@ try {
             strval($updated['receipt_number'] ?? $existing['receipt_number'] ?? $receiptId),
             $updated['receipt_date'] ?? $existing['receipt_date'] ?? null,
             $effectiveRows,
-            $officeRepo
+            $officeRepo,
+            $updated['client_name'] ?? ($body['client_name'] ?? ($existing['client_name'] ?? null)),
+            isset($updated['client_id']) ? strval($updated['client_id']) : (isset($body['client_id']) ? strval($body['client_id']) : (isset($existing['client_id']) ? strval($existing['client_id']) : null)),
+            $existing['client_name'] ?? null
         );
 
         // 5. Automatically register any missing office cargo combinations inside the same transaction
