@@ -6,8 +6,10 @@
 
 import { Money } from './money.js';
 import { AuthModule } from './auth.js';
+import { FinancialService } from './financial.js';
 import { printHTML, buildPrintDocument } from './printEngine.js';
 import { DBProvider } from './services/dbProvider.js';
+import { ClientRepository } from './services/clientRepository.js';
 import { ReceiptRepository } from './services/receiptRepository.js';
 import { TreasuryRepository } from './services/treasuryRepository.js';
 import { DashboardRepository } from './services/dashboardRepository.js';
@@ -22,6 +24,7 @@ const DOMAIN_EVENT = Object.freeze({
   TREASURY_CHANGED : 'treasury:changed',
   RECEIPTS_CHANGED : 'receipts:changed',
   OFFICES_CHANGED  : 'offices:changed',
+  OWNERS_CHANGED   : 'owners:changed',
 });
 
 // ─── CONFIGURATION ──────────────────────────────────────────────────────────
@@ -959,17 +962,29 @@ async function _refreshDashboard() {
   const allTreasury = await TreasuryRepository.getAll(username);
   const offices = await DBProvider.getAll(STORE_OFFICES, { username });
 
-  // 2. Filter datasets based on selected dates with defense guards
+  // 2. Filter datasets based on selected dates with defense & deduplication guards
+  const seenReceiptIds = new Set();
   const activeReceipts = (allReceipts || []).filter(r => {
-    if (!r || r.deleted_at !== null) return false;
+    if (!r || (r.deleted_at !== null && r.deleted_at !== undefined) || dbBool(r.is_archived)) return false;
+    if (r.id !== undefined && r.id !== null) {
+      const rid = String(r.id);
+      if (seenReceiptIds.has(rid)) return false;
+      seenReceiptIds.add(rid);
+    }
     const d = String(r.receipt_date || '').split('T')[0];
     if (STATE.from && d < STATE.from) return false;
     if (STATE.to && d > STATE.to) return false;
     return true;
   });
 
+  const seenTreasuryIds = new Set();
   const activeTreasury = (allTreasury || []).filter(t => {
-    if (!t || dbBool(t.is_reversed) || t.deleted_at !== null) return false;
+    if (!t || dbBool(t.is_reversed) || (t.deleted_at !== null && t.deleted_at !== undefined) || dbBool(t.is_archived)) return false;
+    if (t.id !== undefined && t.id !== null) {
+      const tid = String(t.id);
+      if (seenTreasuryIds.has(tid)) return false;
+      seenTreasuryIds.add(tid);
+    }
     const d = String(t.date || '').split('T')[0];
     if (STATE.from && d < STATE.from) return false;
     if (STATE.to && d > STATE.to) return false;
@@ -987,48 +1002,138 @@ async function _refreshDashboard() {
   }
   const totalReceiptsVal = Money.toDecimal(totalReceiptCents);
 
-  // Card 2: "المصروفات والمرتبات" — Sum of amount from filtered active treasury (expenses/salaries)
-  let totalExpenseCents = 0;
-  for (const t of activeTreasury) {
-    if (t && (t.effect === TREASURY_EFFECT.EXPENSE || t.effect === TREASURY_EFFECT.SALARY)) {
-      totalExpenseCents += Number(t.amount) || 0; // amount is stored as cents
-    }
-  }
+  // Card 2: "المصروفات والمرتبات" & net profit components
+  // صافي الربح = مجموع قيمة خانة الصرف في النماذج المدخلة - المصروفات - المرتبات
+  const {
+    totalSarfCents,
+    expensesCents,
+    salariesCents,
+    totalExpenseCents,
+    netProfitCents,
+  } = calculateDashboardNetProfit(activeReceipts, activeTreasury);
   const totalExpenseVal = Money.toDecimal(totalExpenseCents);
+  const netProfitVal = Money.toDecimal(netProfitCents);
 
-  // Card 3: "إجمالي المكتب" — Sum of officeAmount from active receipts within selected period
-  let totalOfficeCents = 0;
-  for (const r of activeReceipts) {
-    if (r) {
-      const rows = Array.isArray(r.rows) ? r.rows : [];
-      for (const row of rows) {
-        if (!row || row._type === 'separator') continue;
-        totalOfficeCents += Money.toCents(row.officeAmount || row.office_amount || 0);
-      }
-    }
-  }
-  const totalOfficeVal = Money.toDecimal(totalOfficeCents);
-
-  // Card 4: "إجمالي المحصل من المكاتب" — Calculated with prices map & routes weight
+  // Card 3: "إجمالي المحصل من المكاتب" — Calculated with prices map & routes weight
   const totalCollectedFromCompanies = await _calculateTotalCollectedFromCompanies(username, activeReceipts, offices);
 
-  // Card 5: "صافي الربح" = Offices Collected + Office Amount - Receipts Spent - Salaries/Expenses
-  const netProfitCents = Money.toCents(totalCollectedFromCompanies) 
-                         + Money.toCents(totalOfficeVal) 
-                         - Money.toCents(totalReceiptsVal) 
-                         - Money.toCents(totalExpenseVal);
-  const netProfitVal = Money.toDecimal(netProfitCents);
+  // Card 5: "المبالغ المعلقة" — Sum of ABS(balance) for all customers with negative current balance (period-independent)
+  const pendingBalancesVal = await calculatePendingCustomerBalances(username);
 
   // ─── RENDER STATISTICS CARDS ────────────────────────────────────────────────
 
-  _renderSummaryCards(totalReceiptsVal, totalExpenseVal, totalOfficeVal, totalCollectedFromCompanies, netProfitVal);
+  _renderSummaryCards(totalReceiptsVal, totalExpenseVal, totalCollectedFromCompanies, netProfitVal, pendingBalancesVal);
 
   // ─── RENDER CAPITAL TREASURY ────────────────────────────────────────────────
 
   await _renderCapitalTreasury(username);
 }
 
-function _renderSummaryCards(card1, card2, card3, card4, card5) {
+/**
+ * Compute period-scoped net profit components:
+ *   صافي الربح = مجموع قيمة خانة الصرف في النماذج المدخلة - المصروفات - المرتبات
+ */
+export function calculateDashboardNetProfit(activeReceipts, activeTreasury) {
+  let totalSarfCents = 0;
+  const seenReceipts = new Set();
+
+  for (const r of (activeReceipts || [])) {
+    if (!r || (r.deleted_at !== null && r.deleted_at !== undefined) || dbBool(r.is_archived)) continue;
+    if (r.id !== undefined && r.id !== null) {
+      const rid = String(r.id);
+      if (seenReceipts.has(rid)) continue;
+      seenReceipts.add(rid);
+    }
+    const rows = Array.isArray(r.rows)
+      ? r.rows
+      : typeof r.rows === 'string'
+        ? (() => { try { return JSON.parse(r.rows || '[]'); } catch { return []; } })()
+        : [];
+    for (const row of rows) {
+      if (!row || row._type === 'separator' || row.type === 'separator' || row.row_type === 'separator') continue;
+      totalSarfCents += Money.toCents(row.sarf || 0);
+    }
+  }
+
+  let expensesCents = 0;
+  let salariesCents = 0;
+  const seenTreasury = new Set();
+
+  for (const t of (activeTreasury || [])) {
+    if (!t || dbBool(t.is_reversed) || (t.deleted_at !== null && t.deleted_at !== undefined) || dbBool(t.is_archived)) continue;
+    if (t.id !== undefined && t.id !== null) {
+      const tid = String(t.id);
+      if (seenTreasury.has(tid)) continue;
+      seenTreasury.add(tid);
+    }
+    if (t.effect === TREASURY_EFFECT.EXPENSE) {
+      expensesCents += Number(t.amount) || 0;
+    } else if (t.effect === TREASURY_EFFECT.SALARY) {
+      salariesCents += Number(t.amount) || 0;
+    }
+  }
+
+  const totalExpenseCents = expensesCents + salariesCents;
+  const netProfitCents = totalSarfCents - expensesCents - salariesCents;
+
+  return {
+    totalSarfCents,
+    expensesCents,
+    salariesCents,
+    totalExpenseCents,
+    netProfitCents,
+    totalSarf: Money.toDecimal(totalSarfCents),
+    expenses: Money.toDecimal(expensesCents),
+    salaries: Money.toDecimal(salariesCents),
+    totalExpensesAndSalaries: Money.toDecimal(totalExpenseCents),
+    netProfit: Money.toDecimal(netProfitCents),
+  };
+}
+
+/**
+ * Calculate "المبالغ المعلقة":
+ *   SUM(ABS(balance)) for all active customers (vehicle owners) where final current balance < 0.
+ *   Independent of the dashboard's selected date filter.
+ */
+export async function calculatePendingCustomerBalances(_username) {
+  const allOwners = await ClientRepository.getAllOwners();
+  const seenCustomerIds = new Set();
+  const uniqueCustomers = [];
+
+  for (const owner of (allOwners || [])) {
+    if (!owner || (owner.deleted_at !== null && owner.deleted_at !== undefined)) continue;
+    if (owner.owner_type === 'broker' || owner.owner_type === 'office' || owner.client_type === 'office') continue;
+    if (!String(owner.name || '').trim()) continue;
+    const ownerId = String(owner.id ?? '').trim();
+    if (!ownerId || seenCustomerIds.has(ownerId)) continue;
+    seenCustomerIds.add(ownerId);
+    uniqueCustomers.push({ id: ownerId, rawBalance: owner.balance });
+  }
+
+  const balances = await Promise.all(
+    uniqueCustomers.map(async (cust) => {
+      const snap = await FinancialService.getClientBalance(cust.id, 'owner');
+      const finalBalance = (snap && (snap.entry_count > 0 || snap.balance !== 0))
+        ? Number(snap.balance) || 0
+        : (cust.rawBalance !== undefined && cust.rawBalance !== null
+            ? Number(cust.rawBalance) || 0
+            : Number(snap?.balance) || 0);
+      return finalBalance;
+    })
+  );
+
+  let totalPendingCents = 0;
+  for (const balance of balances) {
+    const balanceCents = Money.toCents(balance);
+    if (balanceCents < 0) {
+      totalPendingCents += Math.abs(balanceCents);
+    }
+  }
+
+  return Money.toDecimal(totalPendingCents);
+}
+
+function _renderSummaryCards(totalReceiptsVal, totalExpenseVal, totalCollectedFromCompanies, netProfitVal, pendingBalancesVal) {
   const container = document.getElementById('dashboardStatsGrid');
   if (!container) return;
 
@@ -1044,11 +1149,11 @@ function _renderSummaryCards(card1, card2, card3, card4, card5) {
     </div>`;
 
   container.innerHTML = `
-    ${cardHtml('إجمالي صرف الكارتات', card1, 'صافي الصرف في الفترة المحددة', 'dashboard-stat-indigo')}
-    ${cardHtml('المصروفات والمرتبات', card2, 'المصاريف التشغيلية والمرتبات المباشرة', 'dashboard-stat-rose')}
-    ${cardHtml('إجمالي المكتب', card3, 'نسبة عمولة المكتب المحصلة من الكارتات', 'dashboard-stat-teal')}
-    ${cardHtml('إجمالي المحصل من المكاتب', card4, 'مجموع مستحقات الحمولة من المكاتب ماليًا', 'dashboard-stat-sky')}
-    ${cardHtml('صافي الربح', card5, 'المعادلة: المحصل + المكتب - الكارتات - المصاريف', card5 >= 0 ? 'dashboard-stat-emerald' : 'dashboard-stat-rose')}
+    ${cardHtml('إجمالي صرف الكارتات', totalReceiptsVal, 'صافي الصرف في الفترة المحددة', 'dashboard-stat-indigo')}
+    ${cardHtml('المصروفات والمرتبات', totalExpenseVal, 'المصاريف التشغيلية والمرتبات المباشرة', 'dashboard-stat-rose')}
+    ${cardHtml('إجمالي المحصل من المكاتب', totalCollectedFromCompanies, 'مجموع مستحقات الحمولة من المكاتب ماليًا', 'dashboard-stat-sky')}
+    ${cardHtml('صافي الربح', netProfitVal, 'المعادلة: إجمالي خانة الصرف - المصروفات - المرتبات', netProfitVal >= 0 ? 'dashboard-stat-emerald' : 'dashboard-stat-rose')}
+    ${cardHtml('المبالغ المعلقة', pendingBalancesVal, 'إجمالي الأرصدة السالبة المستحقة على العملاء', 'dashboard-stat-teal')}
   `;
 }
 
@@ -1447,6 +1552,13 @@ function _attachListeners() {
   });
 
   window.addEventListener(DOMAIN_EVENT.OFFICES_CHANGED, async () => {
+    const page = document.getElementById('dashboardPage');
+    if (page && !page.classList.contains('hidden')) {
+      await _refreshDashboard();
+    }
+  });
+
+  window.addEventListener(DOMAIN_EVENT.OWNERS_CHANGED, async () => {
     const page = document.getElementById('dashboardPage');
     if (page && !page.classList.contains('hidden')) {
       await _refreshDashboard();
