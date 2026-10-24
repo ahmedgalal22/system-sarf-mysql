@@ -7,6 +7,7 @@
  */
 
 require_once __DIR__ . '/../../core/bootstrap.php';
+require_once __DIR__ . '/../../core/permissions.php';
 require_once __DIR__ . '/../../api/middleware/auth.php';
 require_once __DIR__ . '/../../repositories/TreasuryRepository2.php';
 require_once __DIR__ . '/../../repositories/VehicleLedgerRepository.php';
@@ -14,14 +15,24 @@ require_once __DIR__ . '/../../repositories/ReceiptRepository.php';
 require_once __DIR__ . '/../../core/versionTracker.php';
 
 if (!isMethod('POST')) jsonMethodNotAllowed('POST');
+requirePermission($authUser['role'], 'treasury', 'write');
 
 $body = requireJsonBody();
 $username = $authUser['username'];
+
+$submittedRefType = $body['reference_type'] ?? '';
+$submittedEffect  = $body['effect'] ?? '';
+if (in_array($submittedRefType, [ReceiptRepository::REF_TYPE_ROW_DISBURSEMENT, ReceiptRepository::REF_TYPE_RECEIPT_PAYMENT], true)
+    || in_array($submittedEffect, ['row_disbursement', 'receipt_payout'], true)
+) {
+    jsonError('لا يمكن إنشاء حركة خزنة مرتبطة بحالة صرف أو دفع إيصال من شاشة الخزنة مباشرة', 400);
+}
 
 try {
     $db = getDB();
     $treasuryRepo = new TreasuryRepo($db);
     $ledgerRepo = new VehicleLedgerRepository($db);
+    $receiptRepo = new ReceiptRepository($db);
 
     $db->beginTransaction();
     try {
@@ -45,9 +56,8 @@ try {
         $effect = $body['effect'] ?? '';
         $clientId = $body['client_id'] ?? null;
         if ($effect === 'salfa' && $clientId) {
-            $receiptRepo = new ReceiptRepository($db);
             $unpaid = $receiptRepo->findAll($username, [
-                'client_id'     => $clientId,
+                'client_id' => $clientId,
                 'payout_status' => 'unpaid',
             ]);
             // findAll returns ORDER BY created_at DESC → first = latest

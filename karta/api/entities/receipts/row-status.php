@@ -25,6 +25,9 @@ require_once __DIR__ . '/../../../core/permissions.php';
 require_once __DIR__ . '/../../../core/errorMapper.php';
 require_once __DIR__ . '/../../../api/middleware/auth.php';
 require_once __DIR__ . '/../../../repositories/ReceiptRepository.php';
+require_once __DIR__ . '/../../../repositories/TreasuryRepository2.php';
+require_once __DIR__ . '/../../../repositories/VehicleLedgerRepository.php';
+require_once __DIR__ . '/../../../repositories/OfficeRepository.php';
 require_once __DIR__ . '/../../../core/versionTracker.php';
 
 if (!isMethod('POST') && !isMethod('PUT')) {
@@ -64,25 +67,31 @@ if ($validatedStatus === null) {
 try {
     $db = getDB();
     $repo = new ReceiptRepository($db);
+    $treasuryRepo = new TreasuryRepo($db);
+    $ledgerRepo = new VehicleLedgerRepository($db);
+    $officeRepo = new OfficeRepository($db);
 
     $db->beginTransaction();
     try {
-        $result = $repo->updateRowDisbursementStatus(
+        $result = $repo->transitionRowDisbursementStatus(
             $receiptId,
             $rowId,
             $validatedStatus,
-            $authUser['username']
+            $authUser['username'],
+            $treasuryRepo,
+            $ledgerRepo,
+            $officeRepo
         );
 
         switch ($result['code']) {
             case ReceiptRepository::RESULT_NOT_FOUND:
                 $db->rollBack();
-                jsonError('الإيصال غير موجود', 404);
+                jsonError($result['message'] ?? 'الإيصال غير موجود', 404);
                 break;
 
             case ReceiptRepository::RESULT_FORBIDDEN:
                 $db->rollBack();
-                jsonError('غير مسموح بتعديل هذا الإيصال', 403);
+                jsonError($result['message'] ?? 'غير مسموح بتعديل هذا الإيصال', 403);
                 break;
 
             case ReceiptRepository::RESULT_ARCHIVED:
@@ -92,22 +101,34 @@ try {
 
             case ReceiptRepository::RESULT_ROW_NOT_FOUND:
                 $db->rollBack();
-                jsonError('الصف المطلوب غير موجود في هذا الإيصال', 404);
+                jsonError($result['message'] ?? 'الصف المطلوب غير موجود في هذا الإيصال', 404);
                 break;
 
+            case ReceiptRepository::RESULT_NEGATIVE_AMOUNT:
+            case ReceiptRepository::RESULT_DUPLICATE_ROW_ID:
             case ReceiptRepository::RESULT_INVALID:
                 $db->rollBack();
-                jsonError('بيانات حالة الصف غير صالحة', 400);
+                jsonError($result['message'] ?? 'بيانات حالة الصف غير صالحة', 400);
+                break;
+
+            case ReceiptRepository::RESULT_INCONSISTENT_LEDGER:
+                $db->rollBack();
+                jsonError($result['message'] ?? 'تعارض في القيود المالية لحركة صرف الصف', 409);
                 break;
 
             case ReceiptRepository::RESULT_OK:
-                bumpVersions($db, ['receipts']);
+                if (!empty($result['changed'])) {
+                    bumpVersions($db, ['receipts', 'treasury', 'vehicle_ledger', 'offices']);
+                }
                 $db->commit();
                 jsonSuccess([
-                    'receipt' => $result['data'],
-                    'row'     => $result['row'],
-                    'row_id'  => $rowId,
-                    'status'  => $validatedStatus,
+                    'receipt'  => $result['data'],
+                    'row'      => $result['row'],
+                    'row_id'   => $rowId,
+                    'status'   => $validatedStatus,
+                    'changed'  => !empty($result['changed']),
+                    'treasury' => $result['treasury'] ?? null,
+                    'ledger'   => $result['ledger'] ?? null,
                 ], 'تم تحديث حالة الصف بنجاح');
                 break;
 

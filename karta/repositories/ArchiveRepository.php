@@ -189,38 +189,52 @@ class ArchiveRepository {
     }
 
     /**
-     * Compute financial snapshot from current live data up to $toDate.
-     * Both treasury and vehicle_ledger are scoped to $username.
+     * Compute financial snapshot from current live (non-archived) data in the archived period.
+     * Both treasury and vehicle_ledger are scoped to $username, is_reversed = 0,
+     * deleted_at IS NULL, is_archived = 0, and the batch's date range.
+     * Sign conventions and client grouping match FinancialService.getClientBalance().
      */
-    public function computeSnapshot(string $username, string $toDate): array {
-        // Treasury balance — scoped to username
+    public function computeSnapshot(string $username, string $toDate, ?string $fromDate = null): array {
+        $hasFrom = $fromDate !== null && trim($fromDate) !== '';
+        $dateFilter = $hasFrom ? 'AND date >= :from_date AND date <= :d' : 'AND date <= :d';
+        $params = [':u' => $username, ':d' => $toDate];
+        if ($hasFrom) {
+            $params[':from_date'] = $fromDate;
+        }
+
+        // Treasury balance — scoped to username and non-archived period records
         $stmt = $this->db->prepare(
             "SELECT
                 COALESCE(SUM(CASE WHEN type = 'deposit' THEN amount ELSE 0 END), 0) AS total_in,
                 COALESCE(SUM(CASE WHEN type = 'withdraw' THEN amount ELSE 0 END), 0) AS total_out
              FROM treasury
-             WHERE username = :u AND is_reversed = 0 AND deleted_at IS NULL AND date <= :d"
+             WHERE username = :u AND is_reversed = 0 AND deleted_at IS NULL AND is_archived = 0 $dateFilter"
         );
-        $stmt->execute([':u' => $username, ':d' => $toDate]);
+        $stmt->execute($params);
         $row = $stmt->fetch();
         $treasuryBalance = intval($row['total_in']) - intval($row['total_out']);
 
-        // Client balances — scoped to username + isolated by client_type
+        // Client balances — grouped by stable (client_id, client_type), matching getClientBalance()
         $stmt = $this->db->prepare(
             "SELECT
                 client_id AS cid,
                 client_type AS ctype,
-                client_name AS cname,
+                MAX(client_name) AS cname,
                 SUM(CASE
-                    WHEN type IN ('deposit','receipt_due') THEN amount
+                    WHEN (client_type = 'office' OR type IN ('OFFICE_DEPOSIT', 'OFFICE_WITHDRAW_AUTO')) THEN
+                        CASE
+                            WHEN type IN ('OFFICE_WITHDRAW_AUTO', 'withdraw', 'receipt_payment') THEN -ABS(amount)
+                            ELSE amount
+                        END
+                    WHEN type IN ('deposit', 'receipt_due') THEN amount
                     ELSE -ABS(amount)
                 END) AS balance
              FROM vehicle_ledger
-             WHERE username = :u AND is_reversed = 0 AND deleted_at IS NULL AND date <= :d
-             GROUP BY cid, ctype, cname
+             WHERE username = :u AND is_reversed = 0 AND deleted_at IS NULL AND is_archived = 0 $dateFilter
+             GROUP BY client_id, client_type
              HAVING cid IS NOT NULL"
         );
-        $stmt->execute([':u' => $username, ':d' => $toDate]);
+        $stmt->execute($params);
         $clients = [];
         while ($r = $stmt->fetch()) {
             $clients[] = [

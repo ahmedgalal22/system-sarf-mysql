@@ -7,6 +7,7 @@
  */
 
 require_once __DIR__ . '/../../core/bootstrap.php';
+require_once __DIR__ . '/../../core/permissions.php';
 require_once __DIR__ . '/../../api/middleware/auth.php';
 require_once __DIR__ . '/../../repositories/TreasuryRepository2.php';
 require_once __DIR__ . '/../../repositories/VehicleLedgerRepository.php';
@@ -14,6 +15,7 @@ require_once __DIR__ . '/../../repositories/ReceiptRepository.php';
 require_once __DIR__ . '/../../core/versionTracker.php';
 
 if (!isMethod('POST')) jsonMethodNotAllowed('POST');
+requirePermission($authUser['role'], 'treasury', 'write');
 
 $body = requireJsonBody();
 $username = $authUser['username'];
@@ -24,6 +26,7 @@ try {
     $db = getDB();
     $treasuryRepo = new TreasuryRepo($db);
     $ledgerRepo = new VehicleLedgerRepository($db);
+    $receiptRepo = new ReceiptRepository($db);
 
     $db->beginTransaction();
     try {
@@ -35,11 +38,25 @@ try {
         $existing = $treasuryRepo->getById($id);
         if (!$existing) { $db->rollBack(); jsonError('السجل غير موجود', 404); }
         if ($existing['username'] !== $username) { $db->rollBack(); jsonError('غير مسموح', 403); }
+        if (!empty($existing['is_archived'])) {
+            $db->rollBack();
+            jsonError('لا يمكن تعديل حركة خزنة مؤرشفة', 409);
+        }
+        if (in_array($existing['reference_type'] ?? '', [ReceiptRepository::REF_TYPE_ROW_DISBURSEMENT, ReceiptRepository::REF_TYPE_RECEIPT_PAYMENT], true)
+            || in_array($existing['effect'] ?? '', ['row_disbursement', 'receipt_payout'], true)
+        ) {
+            $db->rollBack();
+            jsonError('لا يمكن تعديل حركة خزنة مرتبطة بحالة صرف أو دفع إيصال من شاشة الخزنة مباشرة', 409);
+        }
 
         // Update treasury entry
         $patch = [];
         foreach (['type','effect','amount','date','description','note','client_id','client_type','client_name'] as $f) {
             if (array_key_exists($f, $body)) $patch[$f] = $body[$f];
+        }
+        if (isset($patch['effect']) && in_array($patch['effect'], ['row_disbursement', 'receipt_payout'], true)) {
+            $db->rollBack();
+            jsonError('لا يمكن تحويل حركة الخزنة إلى حركة مرتبطة بحالة صرف أو دفع إيصال', 400);
         }
         $updated = $treasuryRepo->update($id, $patch, $username);
 
@@ -69,7 +86,6 @@ try {
             if ($delta !== 0) {
                 $targetReceiptId = $existing['receipt_number'] ?? null;
                 if ($targetReceiptId) {
-                    $receiptRepo = new ReceiptRepository($db);
                     $target = $receiptRepo->findById(intval($targetReceiptId));
                     if ($target && $target['deleted_at'] === null && ($target['payout_status'] ?? '') !== 'paid') {
                         $currentPaid = intval($target['paid'] ?? 0);

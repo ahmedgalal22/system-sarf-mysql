@@ -11,16 +11,19 @@
  */
 
 require_once __DIR__ . '/../../core/bootstrap.php';
+require_once __DIR__ . '/../../core/permissions.php';
 require_once __DIR__ . '/../../core/errorMapper.php';
 require_once __DIR__ . '/../../api/middleware/auth.php';
 require_once __DIR__ . '/../../repositories/ReceiptRepository.php';
 require_once __DIR__ . '/../../repositories/TreasuryRepository2.php';
 require_once __DIR__ . '/../../repositories/VehicleLedgerRepository.php';
 require_once __DIR__ . '/../../repositories/OfficeRepository.php';
+require_once __DIR__ . '/../../repositories/VehicleOwnerRepository.php';
 require_once __DIR__ . '/../../repositories/HamolaRepository.php';
 require_once __DIR__ . '/../../core/versionTracker.php';
 
 if (!isMethod('POST')) jsonMethodNotAllowed('POST');
+requirePermission($authUser['role'], 'receipts', 'write');
 
 $body = requireJsonBody();
 $username = $authUser['username'];
@@ -33,36 +36,18 @@ try {
     $treasuryRepo = new TreasuryRepo($db);
     $ledgerRepo = new VehicleLedgerRepository($db);
     $officeRepo = new OfficeRepository($db);
+    $ownerRepo = new VehicleOwnerRepository($db);
     $hamolaRepo = new HamolaRepository($db);
 
     $db->beginTransaction();
     try {
-        // 0. Read existing receipt
-        $existing = $receiptRepo->findById($receiptId);
-        if (!$existing) { $db->rollBack(); jsonError('الإيصال غير موجود', 404); }
-        if ($existing['username'] !== $username) { $db->rollBack(); jsonError('غير مسموح', 403); }
-
-        $isPaid = ($existing['payout_status'] ?? 'unpaid') === 'paid';
-
-        // 1. Reverse old entries — ONLY if receipt is unpaid
-        if (!$isPaid) {
-            $treasuryRepo->reverseByReference(strval($receiptId), 'receipt', $username);
-            $ledgerRepo->reverseByReference(strval($receiptId), 'receipt', $username);
-        }
-
-        // 2. Update receipt data
+        // 1. Update receipt data under exclusive FOR UPDATE lock (also validates row IDs & status immutability)
         $patch = [];
         $allowed = ['receipt_date','client_id','client_type','client_name',
-                     'payment_status','account_type',
+                     'payout_status','payment_status','account_type',
                      'total','net_due','net_total','paid','previous_balance','general_add',
                      'rows','notes','shipping_number'];
         foreach ($allowed as $f) { if (array_key_exists($f, $body)) $patch[$f] = $body[$f]; }
-
-        // PAID receipt: preserve payout_status and paid_at — never overwrite
-        if ($isPaid) {
-            unset($patch['payout_status']);
-            unset($patch['paid_at']);
-        }
 
         $result = $receiptRepo->updateReceipt($receiptId, $patch, $username, $body['updated_at'] ?? null);
         if ($result['code'] !== ReceiptRepository::RESULT_OK) {
@@ -70,32 +55,79 @@ try {
             mapResult($result['code'], $result['data']);
         }
 
-        // 3. Apply new entries — ONLY if receipt is unpaid
+        $existing = $result['previous'] ?? $result['data'];
+        $updated = $result['data'];
+        $isPaid = ($existing['payout_status'] ?? 'unpaid') === 'paid';
+
+        // 2. Reconcile status-linked movements (row disbursements and receipt-level payment)
+        $reconcileRes = $receiptRepo->reconcileStatusMovementsOnReceiptUpdate(
+            $existing,
+            $updated,
+            $username,
+            $treasuryRepo,
+            $ledgerRepo,
+            $officeRepo,
+            $ownerRepo
+        );
+        if ($reconcileRes['code'] !== ReceiptRepository::RESULT_OK) {
+            $db->rollBack();
+            if ($reconcileRes['code'] === ReceiptRepository::RESULT_INCONSISTENT_LEDGER) {
+                jsonError($reconcileRes['message'] ?? 'تعارض في القيود المالية للإيصال', 409);
+            }
+            jsonError($reconcileRes['message'] ?? 'فشل تحديث القيود المالية للإيصال', 400);
+        }
+
+        // 3. Reverse old receipt-creation entries — ONLY if legacy payout_status is unpaid
+        if (!$isPaid) {
+            $treasuryRepo->reverseByReference(strval($receiptId), 'receipt', $username);
+            $ledgerRepo->reverseByReference(strval($receiptId), 'receipt', $username);
+        }
+
+        // 4. Apply new receipt-creation entries — ONLY if legacy payout_status is unpaid
         $ledgerResults = [];
         $treasuryResults = [];
         if (!$isPaid) {
-            if (!empty($body['ledger_ops'])) {
+            if (!empty($body['ledger_ops']) && is_array($body['ledger_ops'])) {
                 foreach ($body['ledger_ops'] as $op) {
-                    if (($op['type'] ?? '') === 'OFFICE_WITHDRAW_AUTO') continue;
+                    if (!is_array($op)) continue;
+                    $opType = $op['type'] ?? '';
+                    $opEffect = $op['effect'] ?? '';
+                    $opRefType = $op['reference_type'] ?? '';
+                    if ($opType === 'OFFICE_WITHDRAW_AUTO') continue;
+                    if (in_array($opRefType, [ReceiptRepository::REF_TYPE_ROW_DISBURSEMENT, ReceiptRepository::REF_TYPE_RECEIPT_PAYMENT], true)
+                        || in_array($opType, ['row_disbursement', 'receipt_payment', 'OFFICE_DEPOSIT'], true)
+                        || in_array($opEffect, ['row_disbursement', 'receipt_payout'], true)
+                    ) {
+                        throw new InvalidArgumentException('لا يمكن تمرير حركات حالة الصرف أو الدفع ضمن عمليات تعديل الإيصال');
+                    }
                     $op['username'] = $username;
+                    $op['reference_type'] = 'receipt';
                     $op['reference_id'] = strval($receiptId);
                     $ledgerResults[] = $ledgerRepo->create($op);
                 }
             }
-            if (!empty($body['treasury_ops'])) {
+            if (!empty($body['treasury_ops']) && is_array($body['treasury_ops'])) {
                 foreach ($body['treasury_ops'] as $op) {
+                    if (!is_array($op)) continue;
+                    $opEffect = $op['effect'] ?? '';
+                    $opRefType = $op['reference_type'] ?? '';
+                    if (in_array($opRefType, [ReceiptRepository::REF_TYPE_ROW_DISBURSEMENT, ReceiptRepository::REF_TYPE_RECEIPT_PAYMENT], true)
+                        || in_array($opEffect, ['row_disbursement', 'receipt_payout'], true)
+                    ) {
+                        throw new InvalidArgumentException('لا يمكن تمرير حركات خزنة مرتبطة بحالة الصرف أو الدفع ضمن عمليات تعديل الإيصال');
+                    }
                     $op['username'] = $username;
+                    $op['reference_type'] = 'receipt';
                     $op['reference_id'] = strval($receiptId);
                     $treasuryResults[] = $treasuryRepo->create($op);
                 }
             }
         }
 
-        // 4. Synchronize office balance deductions (الصافي + قيمة خانة الصرف) atomically
-        $updated = $result['data'];
-        $effectiveRows = is_array($body['rows'] ?? null)
-            ? $body['rows']
-            : (is_string($updated['rows'] ?? null) ? (json_decode($updated['rows'], true) ?: []) : ($updated['rows'] ?? []));
+        // 5. Synchronize office balance deductions (الصافي + قيمة خانة الصرف) atomically
+        $effectiveRows = is_array($updated['rows'] ?? null)
+            ? $updated['rows']
+            : (is_string($updated['rows'] ?? null) ? (json_decode($updated['rows'], true) ?: []) : []);
         $officeLedgerResults = $ledgerRepo->syncOfficeDeductionsForReceipt(
             $username,
             strval($receiptId),
@@ -108,17 +140,14 @@ try {
             $existing['client_name'] ?? null
         );
 
-        // 5. Automatically register any missing office cargo combinations inside the same transaction
+        // 6. Automatically register any missing office cargo combinations inside the same transaction
         $syncedHamola = $hamolaRepo->syncFromReceiptRows(
             $username,
             $effectiveRows,
             $officeRepo
         );
 
-        $bumps = ['receipts', 'vehicle_ledger', 'offices'];
-        if (!$isPaid) {
-            $bumps[] = 'treasury';
-        }
+        $bumps = ['receipts', 'vehicle_ledger', 'treasury', 'offices', 'vehicle_owners'];
         if (!empty($syncedHamola)) {
             $bumps[] = 'hamola_details';
         }
@@ -134,6 +163,9 @@ try {
         ]);
 
     } catch (Exception $e) { if ($db->inTransaction()) $db->rollBack(); throw $e; }
+} catch (InvalidArgumentException $e) {
+    error_log('[FINANCIAL RECEIPT-UPDATE] ' . $e->getMessage());
+    jsonError($e->getMessage(), 400);
 } catch (Exception $e) {
     error_log('[FINANCIAL RECEIPT-UPDATE] ' . $e->getMessage());
     jsonError($e->getMessage(), 500);

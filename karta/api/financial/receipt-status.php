@@ -13,6 +13,8 @@ require_once __DIR__ . '/../../api/middleware/auth.php';
 require_once __DIR__ . '/../../repositories/ReceiptRepository.php';
 require_once __DIR__ . '/../../repositories/TreasuryRepository2.php';
 require_once __DIR__ . '/../../repositories/VehicleLedgerRepository.php';
+require_once __DIR__ . '/../../repositories/OfficeRepository.php';
+require_once __DIR__ . '/../../repositories/VehicleOwnerRepository.php';
 require_once __DIR__ . '/../../core/versionTracker.php';
 
 if (!isMethod('POST')) jsonMethodNotAllowed('POST');
@@ -30,9 +32,9 @@ $isPaymentUpdate = array_key_exists('payment_status', $body)
     || array_key_exists('paymentStatus', $body)
     || (($body['field'] ?? $body['status_type'] ?? '') === 'payment_status');
 
-// Receipt-level payment status update ('paid' / 'تم دفعه' or 'unpaid' / 'لم يتم دفعه').
-// Applies to the entire receipt (never to individual rows) and is completely separate
-// from receipt financial calculations, office balances, and ledger/treasury entries.
+// 1. Receipt-level payment status update ('paid' / 'تم دفعه' or 'unpaid' / 'لم يتم دفعه').
+// Applies to the entire receipt (never to individual rows) and atomically posts/reverses
+// the paired treasury withdrawal ('صرف كارتة - {ownerName}') and vehicle owner ledger movement.
 if ($isPaymentUpdate) {
     if ($rawRowId !== null) {
         jsonError('حالة الدفع تطبق على الإيصال بالكامل ولا تقبل معرف صف', 400);
@@ -45,27 +47,53 @@ if ($isPaymentUpdate) {
     try {
         $db = getDB();
         $receiptRepo = new ReceiptRepository($db);
+        $treasuryRepo = new TreasuryRepo($db);
+        $ledgerRepo = new VehicleLedgerRepository($db);
+        $ownerRepo = new VehicleOwnerRepository($db);
+
         $db->beginTransaction();
         try {
-            $res = $receiptRepo->updateReceiptPaymentStatus($receiptId, $validatedPaymentStatus, $username);
+            $res = $receiptRepo->transitionReceiptPaymentStatus(
+                $receiptId,
+                $validatedPaymentStatus,
+                $username,
+                $treasuryRepo,
+                $ledgerRepo,
+                $ownerRepo
+            );
             if ($res['code'] === ReceiptRepository::RESULT_NOT_FOUND) {
-                $db->rollBack(); jsonError('الإيصال غير موجود', 404);
+                $db->rollBack(); jsonError($res['message'] ?? 'الإيصال غير موجود', 404);
             }
             if ($res['code'] === ReceiptRepository::RESULT_FORBIDDEN) {
-                $db->rollBack(); jsonError('غير مسموح', 403);
+                $db->rollBack(); jsonError($res['message'] ?? 'غير مسموح', 403);
             }
             if ($res['code'] === ReceiptRepository::RESULT_ARCHIVED) {
                 $db->rollBack(); mapResult('ARCHIVED');
             }
-            if ($res['code'] !== ReceiptRepository::RESULT_OK) {
-                $db->rollBack(); jsonError('فشل تحديث حالة الدفع للإيصال', 400);
+            if (in_array($res['code'], [
+                ReceiptRepository::RESULT_NEGATIVE_AMOUNT,
+                ReceiptRepository::RESULT_INVALID,
+                ReceiptRepository::RESULT_DUPLICATE_ROW_ID,
+            ], true)) {
+                $db->rollBack(); jsonError($res['message'] ?? 'فشل تحديث حالة الدفع للإيصال', 400);
             }
-            bumpVersions($db, ['receipts']);
+            if ($res['code'] === ReceiptRepository::RESULT_INCONSISTENT_LEDGER) {
+                $db->rollBack(); jsonError($res['message'] ?? 'تعارض في القيود المالية لحركة دفع الإيصال', 409);
+            }
+            if ($res['code'] !== ReceiptRepository::RESULT_OK) {
+                $db->rollBack(); jsonError($res['message'] ?? 'فشل تحديث حالة الدفع للإيصال', 400);
+            }
+            if (!empty($res['changed'])) {
+                bumpVersions($db, ['receipts', 'treasury', 'vehicle_ledger', 'vehicle_owners']);
+            }
             $db->commit();
             jsonSuccess([
                 'receipt'        => $res['data'],
                 'receipt_id'     => $receiptId,
                 'payment_status' => $validatedPaymentStatus,
+                'changed'        => !empty($res['changed']),
+                'treasury'       => $res['treasury'] ?? null,
+                'ledger'         => $res['ledger'] ?? null,
             ], 'تم تحديث حالة الدفع للإيصال بنجاح');
         } catch (Exception $e) {
             if ($db->inTransaction()) $db->rollBack();
@@ -78,8 +106,8 @@ if ($isPaymentUpdate) {
     exit;
 }
 
-// If row_id is supplied, perform a row-level disbursement status update
-// (completely separate from receipt financial calculations and ledger entries).
+// 2. Row-level disbursement status update ('paid' / 'تم صرفه' or 'unpaid' / 'لم يتم صرفه').
+// Atomically posts/reverses the paired treasury deposit and office ledger deposit (net + sarf).
 if ($rawRowId !== null) {
     $rowId = (is_string($rawRowId) || is_numeric($rawRowId)) ? trim((string)$rawRowId) : '';
     if ($rowId === '') jsonError('معرف الصف مطلوب', 400);
@@ -91,31 +119,58 @@ if ($rawRowId !== null) {
     try {
         $db = getDB();
         $receiptRepo = new ReceiptRepository($db);
+        $treasuryRepo = new TreasuryRepo($db);
+        $ledgerRepo = new VehicleLedgerRepository($db);
+        $officeRepo = new OfficeRepository($db);
+
         $db->beginTransaction();
         try {
-            $res = $receiptRepo->updateRowDisbursementStatus($receiptId, $rowId, $validatedRowStatus, $username);
+            $res = $receiptRepo->transitionRowDisbursementStatus(
+                $receiptId,
+                $rowId,
+                $validatedRowStatus,
+                $username,
+                $treasuryRepo,
+                $ledgerRepo,
+                $officeRepo
+            );
             if ($res['code'] === ReceiptRepository::RESULT_NOT_FOUND) {
-                $db->rollBack(); jsonError('الإيصال غير موجود', 404);
+                $db->rollBack(); jsonError($res['message'] ?? 'الإيصال غير موجود', 404);
             }
             if ($res['code'] === ReceiptRepository::RESULT_FORBIDDEN) {
-                $db->rollBack(); jsonError('غير مسموح', 403);
+                $db->rollBack(); jsonError($res['message'] ?? 'غير مسموح', 403);
             }
             if ($res['code'] === ReceiptRepository::RESULT_ARCHIVED) {
                 $db->rollBack(); mapResult('ARCHIVED');
             }
             if ($res['code'] === ReceiptRepository::RESULT_ROW_NOT_FOUND) {
-                $db->rollBack(); jsonError('الصف المطلوب غير موجود في هذا الإيصال', 404);
+                $db->rollBack(); jsonError($res['message'] ?? 'الصف المطلوب غير موجود في هذا الإيصال', 404);
+            }
+            if (in_array($res['code'], [
+                ReceiptRepository::RESULT_NEGATIVE_AMOUNT,
+                ReceiptRepository::RESULT_DUPLICATE_ROW_ID,
+                ReceiptRepository::RESULT_INVALID,
+            ], true)) {
+                $db->rollBack(); jsonError($res['message'] ?? 'فشل تحديث حالة الصف', 400);
+            }
+            if ($res['code'] === ReceiptRepository::RESULT_INCONSISTENT_LEDGER) {
+                $db->rollBack(); jsonError($res['message'] ?? 'تعارض في القيود المالية لحركة صرف الصف', 409);
             }
             if ($res['code'] !== ReceiptRepository::RESULT_OK) {
-                $db->rollBack(); jsonError('فشل تحديث حالة الصف', 400);
+                $db->rollBack(); jsonError($res['message'] ?? 'فشل تحديث حالة الصف', 400);
             }
-            bumpVersions($db, ['receipts']);
+            if (!empty($res['changed'])) {
+                bumpVersions($db, ['receipts', 'treasury', 'vehicle_ledger', 'offices']);
+            }
             $db->commit();
             jsonSuccess([
-                'receipt' => $res['data'],
-                'row'     => $res['row'],
-                'row_id'  => $rowId,
-                'status'  => $validatedRowStatus,
+                'receipt'  => $res['data'],
+                'row'      => $res['row'],
+                'row_id'   => $rowId,
+                'status'   => $validatedRowStatus,
+                'changed'  => !empty($res['changed']),
+                'treasury' => $res['treasury'] ?? null,
+                'ledger'   => $res['ledger'] ?? null,
             ], 'تم تحديث حالة الصف بنجاح');
         } catch (Exception $e) {
             if ($db->inTransaction()) $db->rollBack();
@@ -128,123 +183,6 @@ if ($rawRowId !== null) {
     exit;
 }
 
-$status = sanitizeString($rawStatus);
-if (!in_array($status, ['paid', 'unpaid'])) jsonError('الحالة يجب أن تكون paid أو unpaid', 400);
-
-try {
-    $db = getDB();
-    $receiptRepo = new ReceiptRepository($db);
-    $treasuryRepo = new TreasuryRepo($db);
-    $ledgerRepo = new VehicleLedgerRepository($db);
-
-    $db->beginTransaction();
-    try {
-        // Row lock: prevent concurrent status changes on the same receipt
-        $lockStmt = $db->prepare('SELECT id FROM receipts WHERE id = :id AND deleted_at IS NULL FOR UPDATE');
-        $lockStmt->execute([':id' => $receiptId]);
-        if (!$lockStmt->fetch()) { $db->rollBack(); jsonError('الإيصال غير موجود', 404); }
-
-        $existing = $receiptRepo->findById($receiptId);
-        if (!$existing) { $db->rollBack(); jsonError('الإيصال غير موجود', 404); }
-        if ($existing['username'] !== $username) { $db->rollBack(); jsonError('غير مسموح', 403); }
-        if ($existing['is_archived']) { $db->rollBack(); mapResult('ARCHIVED'); }
-
-        $currentStatus = $existing['payout_status'] ?? 'unpaid';
-        if ($currentStatus === $status) {
-            $db->commit();
-            decodeRowsField($existing);
-            jsonSuccess(['receipt' => $existing, 'changed' => false]);
-        }
-
-        $now = nowEgypt();
-
-        if ($status === 'paid') {
-            // Create payment entries
-            $paidAmount = intval($existing['paid'] ?? 0);
-
-            if ($paidAmount > 0) {
-                // Ledger: receipt_payment
-                $ledgerRepo->create([
-                    'username' => $username,
-                    'client_id' => strval($existing['client_id']),
-                    'client_type' => $existing['client_type'] ?? 'owner',
-                    'client_name' => $existing['client_name'],
-                    'type' => 'receipt_payment',
-                    'amount' => $paidAmount,
-                    'reference_type' => 'receipt',
-                    'reference_id' => strval($receiptId),
-                    'receipt_number' => $existing['receipt_number'],
-                    'date' => todayEgypt(),
-                    'applied_at' => $now,
-                    'is_reversed' => 0,
-                    'note' => 'صرف نموذج ' . ($existing['receipt_number'] ?? $receiptId),
-                ]);
-
-                // Treasury: withdraw (cash out)
-                $treasuryRepo->create([
-                    'username' => $username,
-                    'type' => 'withdraw',
-                    'effect' => 'receipt_payout',
-                    'amount' => $paidAmount,
-                    'account_type' => 'cash',
-                    'reference_type' => 'receipt',
-                    'reference_id' => strval($receiptId),
-                    'receipt_number' => $existing['receipt_number'],
-                    'client_id' => strval($existing['client_id']),
-                    'client_type' => $existing['client_type'] ?? 'owner',
-                    'client_name' => $existing['client_name'],
-                    'date' => todayEgypt(),
-                    'applied_at' => $now,
-                    'is_reversed' => 0,
-                    'note' => 'صرف نموذج ' . ($existing['receipt_number'] ?? $receiptId),
-                ]);
-            }
-
-            // Update receipt status
-            $receiptRepo->updateReceipt($receiptId, [
-                'payout_status' => 'paid',
-                'paid_at' => $now,
-            ], $username);
-
-        } else {
-            // Unpay: reverse payment entries only (not receipt_due)
-            // Find active payment ledger entries
-            $ledgerEntries = $ledgerRepo->getByReference(strval($receiptId));
-            foreach ($ledgerEntries as $entry) {
-                if ($entry['reference_type'] !== 'receipt') continue;
-                if ($entry['type'] !== 'receipt_payment') continue;
-                if ($entry['is_reversed']) continue;
-                $ledgerRepo->update($entry['id'], [
-                    'is_reversed' => 1, 'reversed_at' => $now, 'reversed_by' => $username
-                ], $username);
-            }
-
-            // Reverse treasury payout entries
-            $treasuryEntries = $treasuryRepo->getByReference(strval($receiptId));
-            foreach ($treasuryEntries as $entry) {
-                if ($entry['reference_type'] !== 'receipt') continue;
-                if ($entry['effect'] !== 'receipt_payout') continue;
-                if ($entry['is_reversed']) continue;
-                $treasuryRepo->update($entry['id'], [
-                    'is_reversed' => 1, 'reversed_at' => $now, 'reversed_by' => $username
-                ], $username);
-            }
-
-            // Update receipt status
-            $receiptRepo->updateReceipt($receiptId, [
-                'payout_status' => 'unpaid',
-                'paid_at' => null,
-            ], $username);
-        }
-
-        bumpVersions($db, ['receipts', 'vehicle_ledger', 'treasury']);
-        $db->commit();
-        $updated = $receiptRepo->findById($receiptId);
-        decodeRowsField($updated);
-        jsonSuccess(['receipt' => $updated, 'changed' => true]);
-
-    } catch (Exception $e) { if ($db->inTransaction()) $db->rollBack(); throw $e; }
-} catch (Exception $e) {
-    error_log('[FINANCIAL RECEIPT-STATUS] ' . $e->getMessage());
-    jsonError($e->getMessage(), 500);
-}
+// 3. Reject ambiguous legacy status requests lacking both payment_status and row_id
+// so legacy payout_status cannot create competing financial postings or conflate statuses.
+jsonError('يجب تحديد نوع الحالة: حالة الدفع للإيصال (payment_status) أو معرف الصف لحالة الصرف (row_id)', 400);

@@ -22,7 +22,9 @@ require_once __DIR__ . '/../../../core/permissions.php';
 require_once __DIR__ . '/../../../core/errorMapper.php';
 require_once __DIR__ . '/../../../api/middleware/auth.php';
 require_once __DIR__ . '/../../../repositories/ReceiptRepository.php';
+require_once __DIR__ . '/../../../repositories/TreasuryRepository2.php';
 require_once __DIR__ . '/../../../repositories/OfficeRepository.php';
+require_once __DIR__ . '/../../../repositories/VehicleOwnerRepository.php';
 require_once __DIR__ . '/../../../repositories/HamolaRepository.php';
 require_once __DIR__ . '/../../../repositories/VehicleLedgerRepository.php';
 require_once __DIR__ . '/../../../core/versionTracker.php';
@@ -37,6 +39,11 @@ $id = validatePositiveInt($body['id'] ?? 0, 'معرف النموذج');
 try {
     $db = getDB();
     $repo = new ReceiptRepository($db);
+    $treasuryRepo = new TreasuryRepo($db);
+    $officeRepo = new OfficeRepository($db);
+    $ownerRepo = new VehicleOwnerRepository($db);
+    $hamolaRepo = new HamolaRepository($db);
+    $ledgerRepo = new VehicleLedgerRepository($db);
 
     $db->beginTransaction();
 
@@ -62,13 +69,29 @@ try {
             return;
         }
 
-        $officeRepo = new OfficeRepository($db);
-        $hamolaRepo = new HamolaRepository($db);
-        $ledgerRepo = new VehicleLedgerRepository($db);
+        $existing = $result['previous'] ?? $result['data'];
         $updated = $result['data'];
-        $effectiveRows = is_array($body['rows'] ?? null)
-            ? $body['rows']
-            : (is_string($updated['rows'] ?? null) ? (json_decode($updated['rows'], true) ?: []) : ($updated['rows'] ?? []));
+
+        $reconcileRes = $repo->reconcileStatusMovementsOnReceiptUpdate(
+            $existing,
+            $updated,
+            $authUser['username'],
+            $treasuryRepo,
+            $ledgerRepo,
+            $officeRepo,
+            $ownerRepo
+        );
+        if ($reconcileRes['code'] !== ReceiptRepository::RESULT_OK) {
+            $db->rollBack();
+            if ($reconcileRes['code'] === ReceiptRepository::RESULT_INCONSISTENT_LEDGER) {
+                jsonError($reconcileRes['message'] ?? 'تعارض في القيود المالية للإيصال', 409);
+            }
+            jsonError($reconcileRes['message'] ?? 'فشل تحديث القيود المالية للإيصال', 400);
+        }
+
+        $effectiveRows = is_array($updated['rows'] ?? null)
+            ? $updated['rows']
+            : (is_string($updated['rows'] ?? null) ? (json_decode($updated['rows'], true) ?: []) : []);
         $ledgerRepo->syncOfficeDeductionsForReceipt(
             $authUser['username'],
             strval($id),
@@ -77,7 +100,8 @@ try {
             $effectiveRows,
             $officeRepo,
             $updated['client_name'] ?? ($body['client_name'] ?? null),
-            isset($updated['client_id']) ? strval($updated['client_id']) : (isset($body['client_id']) ? strval($body['client_id']) : null)
+            isset($updated['client_id']) ? strval($updated['client_id']) : (isset($body['client_id']) ? strval($body['client_id']) : null),
+            $existing['client_name'] ?? null
         );
         $syncedHamola = $hamolaRepo->syncFromReceiptRows(
             $authUser['username'],
@@ -85,7 +109,7 @@ try {
             $officeRepo
         );
 
-        $bumps = ['receipts', 'vehicle_ledger', 'offices'];
+        $bumps = ['receipts', 'vehicle_ledger', 'treasury', 'offices', 'vehicle_owners'];
         if (!empty($syncedHamola)) {
             $bumps[] = 'hamola_details';
         }
@@ -99,6 +123,8 @@ try {
         throw $e;
     }
 
+} catch (InvalidArgumentException $e) {
+    jsonError($e->getMessage(), 400);
 } catch (PDOException $e) {
     error_log('[RECEIPT UPDATE] ' . $e->getMessage());
     $debugMsg = 'خطأ في الخادم';

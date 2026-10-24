@@ -55,6 +55,34 @@ class TreasuryRepo {
         return $stmt->fetchAll();
     }
 
+    /**
+     * Get active (non-reversed, non-deleted) entries for a user + reference.
+     * Supports optional FOR UPDATE locking inside an active transaction.
+     */
+    public function getActiveByReferenceForUser(
+        string $username,
+        string $referenceId,
+        string $referenceType,
+        bool $forUpdate = false
+    ): array {
+        $sql = 'SELECT * FROM treasury
+                WHERE username = :u
+                  AND reference_id = :rid
+                  AND reference_type = :rt
+                  AND is_reversed = 0
+                  AND deleted_at IS NULL';
+        if ($forUpdate) {
+            $sql .= ' FOR UPDATE';
+        }
+        $stmt = $this->db->prepare($sql);
+        $stmt->execute([
+            ':u'   => $username,
+            ':rid' => $referenceId,
+            ':rt'  => $referenceType,
+        ]);
+        return $stmt->fetchAll();
+    }
+
     public function getByIndex(string $username, string $indexName, $value): array {
         $allowed = ['type', 'effect', 'account_type', 'reference_type', 'client_id', 'is_reversed'];
         if (!in_array($indexName, $allowed, true)) return [];
@@ -137,6 +165,34 @@ class TreasuryRepo {
              WHERE reference_id = :rid AND reference_type = :rt AND is_reversed = 0 AND deleted_at IS NULL'
         );
         $stmt->execute([':rid' => $referenceId, ':rt' => $referenceType, ':u' => $username, ':now' => $now]);
+        return $stmt->rowCount();
+    }
+
+    /**
+     * Reverse all active entries matching a reference scoped to a specific user.
+     */
+    public function reverseByReferenceForUser(
+        string $username,
+        string $referenceId,
+        string $referenceType
+    ): int {
+        $now = (new DateTime('now', new DateTimeZone('Africa/Cairo')))->format('Y-m-d H:i:s.v');
+        $stmt = $this->db->prepare(
+            'UPDATE treasury
+             SET is_reversed = 1, reversed_at = :now, reversed_by = :rev_by, updated_at = NOW(3)
+             WHERE username = :u
+               AND reference_id = :rid
+               AND reference_type = :rt
+               AND is_reversed = 0
+               AND deleted_at IS NULL'
+        );
+        $stmt->execute([
+            ':rev_by' => $username,
+            ':u'      => $username,
+            ':rid'    => $referenceId,
+            ':rt'     => $referenceType,
+            ':now'    => $now,
+        ]);
         return $stmt->rowCount();
     }
 

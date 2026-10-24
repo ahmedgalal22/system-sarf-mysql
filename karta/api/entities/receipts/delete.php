@@ -20,7 +20,9 @@ require_once __DIR__ . '/../../../core/permissions.php';
 require_once __DIR__ . '/../../../core/errorMapper.php';
 require_once __DIR__ . '/../../../api/middleware/auth.php';
 require_once __DIR__ . '/../../../repositories/ReceiptRepository.php';
+require_once __DIR__ . '/../../../repositories/TreasuryRepository2.php';
 require_once __DIR__ . '/../../../repositories/VehicleLedgerRepository.php';
+require_once __DIR__ . '/../../../repositories/OfficeRepository.php';
 require_once __DIR__ . '/../../../core/versionTracker.php';
 
 if (!isMethod('DELETE')) jsonMethodNotAllowed('DELETE');
@@ -34,21 +36,48 @@ if ($id <= 0) jsonError('معرف النموذج مطلوب', 400);
 try {
     $db = getDB();
     $repo = new ReceiptRepository($db);
-
-    // Pre-check outside transaction (fast 404 + ownership)
-    $existing = $repo->findById($id);
-    if (!$existing) {
-        mapResult('NOT_FOUND');
-    }
-    if ($existing['username'] !== $authUser['username']) {
-        mapResult('FORBIDDEN', null, 'غير مسموح بالحذف');
-    }
+    $treasuryRepo = new TreasuryRepo($db);
+    $ledgerRepo = new VehicleLedgerRepository($db);
+    $officeRepo = new OfficeRepository($db);
 
     $db->beginTransaction();
 
     try {
-        $ledgerRepo = new VehicleLedgerRepository($db);
-        $ledgerRepo->reverseByReference(strval($id), 'receipt', $authUser['username']);
+        $revStatus = $repo->reverseAllStatusMovementsOnReceiptDelete(
+            $id,
+            $authUser['username'],
+            $treasuryRepo,
+            $ledgerRepo,
+            $officeRepo
+        );
+        if ($revStatus['code'] === ReceiptRepository::RESULT_NOT_FOUND) {
+            $db->rollBack();
+            mapResult('NOT_FOUND');
+            return;
+        }
+        if ($revStatus['code'] === ReceiptRepository::RESULT_FORBIDDEN) {
+            $db->rollBack();
+            mapResult('FORBIDDEN', null, 'غير مسموح بالحذف');
+            return;
+        }
+        if ($revStatus['code'] === ReceiptRepository::RESULT_ARCHIVED) {
+            $db->rollBack();
+            mapResult('ARCHIVED');
+            return;
+        }
+        if ($revStatus['code'] === ReceiptRepository::RESULT_INCONSISTENT_LEDGER) {
+            $db->rollBack();
+            jsonError($revStatus['message'] ?? 'تعارض في القيود المالية للإيصال', 409);
+            return;
+        }
+        if ($revStatus['code'] !== ReceiptRepository::RESULT_OK) {
+            $db->rollBack();
+            jsonError($revStatus['message'] ?? 'فشل حذف النموذج', 400);
+            return;
+        }
+
+        $treasuryRepo->reverseByReferenceForUser($authUser['username'], strval($id), 'receipt');
+        $ledgerRepo->reverseByReferenceForUser($authUser['username'], strval($id), 'receipt');
 
         // softDelete re-checks under FOR UPDATE lock
         $result = $repo->softDelete($id, $authUser['username']);
@@ -59,7 +88,7 @@ try {
             return;
         }
 
-        bumpVersions($db, ['receipts', 'vehicle_ledger', 'offices']);
+        bumpVersions($db, ['receipts', 'vehicle_ledger', 'treasury', 'offices', 'vehicle_owners']);
         $db->commit();
         mapResult('OK', ['id' => $id], 'تم حذف النموذج بنجاح');
 

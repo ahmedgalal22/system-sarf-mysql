@@ -27,6 +27,7 @@ import {
 import { DateUtils } from './dateUtils.js';
 import { MultiSelectFilter } from './components/multiSelectFilter.js';
 import { notifyReceiptStatusChanged } from './entities.js';
+import { calculateRowOfficeDeduction } from './services/financialCalculator.js';
 
 const PAGE_ID = 'allReceiptsPage';
 const SHORT_DATE_FMT = new Intl.DateTimeFormat('ar-EG', { dateStyle: 'medium' });
@@ -1705,6 +1706,12 @@ async function updateReceiptRowDisbursementStatus(receiptId, rowId, nextStatus, 
   let canonicalStatus;
   try {
     canonicalStatus = validateRowDisbursementStatus(nextStatus);
+    if (canonicalStatus === ROW_DISBURSEMENT_STATUS.PAID) {
+      const rowAmountCents = Money.toCents(calculateRowOfficeDeduction(targetRow));
+      if (rowAmountCents < 0) {
+        throw new Error('لا يمكن صرف صف بقيمة سالبة (الصافي + الصرف أقل من صفر)');
+      }
+    }
   } catch (validationErr) {
     if (selectEl) {
       selectEl.value = previousStatus;
@@ -1751,6 +1758,11 @@ async function updateReceiptRowDisbursementStatus(receiptId, rowId, nextStatus, 
     });
 
     renderAll();
+
+    if (typeof window !== 'undefined' && typeof window.dispatchEvent === 'function' && typeof CustomEvent === 'function') {
+      window.dispatchEvent(new CustomEvent('treasury:changed'));
+      window.dispatchEvent(new CustomEvent('offices:changed'));
+    }
 
     // Show brief saved indicator if row is still visible under the current filter
     const page = getPage();
@@ -1817,6 +1829,9 @@ async function updateReceiptPaymentStatus(receiptId, nextPaymentStatus, selectEl
   let canonicalPaymentStatus;
   try {
     canonicalPaymentStatus = validateReceiptPaymentStatus(nextPaymentStatus);
+    if (canonicalPaymentStatus === RECEIPT_PAYMENT_STATUS.PAID && Number(record.paid ?? 0) < 0) {
+      throw new Error('لا يمكن تأكيد دفع إيصال بقيمة مدفوعة سالبة');
+    }
   } catch (validationErr) {
     if (selectEl) {
       selectEl.value = previousPaymentStatus;
@@ -1852,6 +1867,14 @@ async function updateReceiptPaymentStatus(receiptId, nextPaymentStatus, selectEl
     record.rows = normalizedRows;
 
     renderAll();
+
+    try {
+      notifyReceiptStatusChanged();
+    } catch (_) {}
+    if (typeof window !== 'undefined' && typeof window.dispatchEvent === 'function' && typeof CustomEvent === 'function') {
+      window.dispatchEvent(new CustomEvent('treasury:changed'));
+      window.dispatchEvent(new CustomEvent('owners:changed'));
+    }
 
     const page = getPage();
     const updatedFeedbackEl =

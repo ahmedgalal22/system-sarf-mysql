@@ -56,6 +56,34 @@ class VehicleLedgerRepository {
         return $stmt->fetchAll();
     }
 
+    /**
+     * Get active (non-reversed, non-deleted) entries for a user + reference.
+     * Supports optional FOR UPDATE locking inside an active transaction.
+     */
+    public function getActiveByReferenceForUser(
+        string $username,
+        string $referenceId,
+        string $referenceType,
+        bool $forUpdate = false
+    ): array {
+        $sql = 'SELECT * FROM vehicle_ledger
+                WHERE username = :u
+                  AND reference_id = :rid
+                  AND reference_type = :rt
+                  AND is_reversed = 0
+                  AND deleted_at IS NULL';
+        if ($forUpdate) {
+            $sql .= ' FOR UPDATE';
+        }
+        $stmt = $this->db->prepare($sql);
+        $stmt->execute([
+            ':u'   => $username,
+            ':rid' => $referenceId,
+            ':rt'  => $referenceType,
+        ]);
+        return $stmt->fetchAll();
+    }
+
     public function create(array $data): array {
         $uuid = $data['uuid'] ?? $this->uuid();
         $stmt = $this->db->prepare(
@@ -123,6 +151,106 @@ class VehicleLedgerRepository {
         );
         $stmt->execute([':rid' => $referenceId, ':rt' => $referenceType, ':u' => $username, ':now' => $now]);
         return $stmt->rowCount();
+    }
+
+    /**
+     * Reverse all active entries matching a reference scoped to a specific user.
+     */
+    public function reverseByReferenceForUser(
+        string $username,
+        string $referenceId,
+        string $referenceType
+    ): int {
+        $now = (new DateTime('now', new DateTimeZone('Africa/Cairo')))->format('Y-m-d H:i:s.v');
+        $stmt = $this->db->prepare(
+            'UPDATE vehicle_ledger
+             SET is_reversed = 1, reversed_at = :now, reversed_by = :rev_by, updated_at = NOW(3)
+             WHERE username = :u
+               AND reference_id = :rid
+               AND reference_type = :rt
+               AND is_reversed = 0
+               AND deleted_at IS NULL'
+        );
+        $stmt->execute([
+            ':rev_by' => $username,
+            ':u'      => $username,
+            ':rid'    => $referenceId,
+            ':rt'     => $referenceType,
+            ':now'    => $now,
+        ]);
+        return $stmt->rowCount();
+    }
+
+    /**
+     * Canonical server-side calculation for a receipt row's net, sarf, and
+     * disbursement / office-deduction total (net + sarf) in integer minor units (cents).
+     *
+     * Rules:
+     *   - When formula inputs ('weight' or 'noloon' keys) are present on $row,
+     *     net is recalculated from the row inputs:
+     *       net = round((weight - deficit) * noloon - (ohda + officeAmount + sarf) + add, 2)
+     *   - When formula inputs are absent, stored 'net' is used (rounded to 2 decimals).
+     *   - Both net and sarf are converted to integer cents via (int)round($decimal * 100),
+     *     and total_cents = net_cents + sarf_cents.
+     *
+     * @return array{net_cents:int, sarf_cents:int, total_cents:int}
+     */
+    public static function calculateRowNetAndSarfCents(array $row): array {
+        $hasFormulaInputs = array_key_exists('weight', $row) || array_key_exists('noloon', $row);
+        if (!$hasFormulaInputs && isset($row['net']) && $row['net'] !== '') {
+            $rowNetDecimal = round(floatval($row['net']), 2);
+        } else {
+            $w   = floatval($row['weight'] ?? 0);
+            $def = floatval($row['deficit'] ?? 0);
+            $nol = floatval($row['noloon'] ?? 0);
+            $ohd = floatval($row['ohda'] ?? 0);
+            $ofc = floatval($row['officeAmount'] ?? ($row['office_amount'] ?? 0));
+            $srf = floatval($row['sarf'] ?? 0);
+            $add = floatval($row['add'] ?? 0);
+            $rowNetDecimal = round((($w - $def) * $nol) - ($ohd + $ofc + $srf) + $add, 2);
+        }
+
+        $rowSarfDecimal = round(floatval($row['sarf'] ?? 0), 2);
+        $netCents  = (int)round($rowNetDecimal * 100);
+        $sarfCents = (int)round($rowSarfDecimal * 100);
+
+        return [
+            'net_cents'   => $netCents,
+            'sarf_cents'  => $sarfCents,
+            'total_cents' => $netCents + $sarfCents,
+        ];
+    }
+
+    /**
+     * Resolve the active office record associated with a receipt row.
+     *
+     * Rules:
+     *   - If the row's `office` name matches an active office in $allOffices, return
+     *     that office (ensuring row edits that change the selected office name always
+     *     resolve to the newly selected office even if a stale office_id is present).
+     *   - Otherwise (e.g. if the office was renamed in the `offices` table after the
+     *     row was saved), fall back to stable `office_id`.
+     */
+    public static function resolveOfficeForRow(array $row, array $allOffices): ?array {
+        $officeById = [];
+        $officeByNameKey = [];
+        foreach ($allOffices as $o) {
+            $oid = (int)($o['id'] ?? 0);
+            if ($oid <= 0) continue;
+            $officeById[$oid] = $o;
+            $nameKey = mb_strtolower(preg_replace('/\s+/u', ' ', trim((string)($o['name'] ?? ''))), 'UTF-8');
+            if ($nameKey !== '') {
+                $officeByNameKey[$nameKey] = $o;
+            }
+        }
+        $officeKey = mb_strtolower(preg_replace('/\s+/u', ' ', trim((string)($row['office'] ?? ''))), 'UTF-8');
+        if ($officeKey !== '' && isset($officeByNameKey[$officeKey])) {
+            return $officeByNameKey[$officeKey];
+        }
+        if (!empty($row['office_id']) && isset($officeById[(int)$row['office_id']])) {
+            return $officeById[(int)$row['office_id']];
+        }
+        return null;
     }
 
     /**
@@ -227,33 +355,11 @@ class VehicleLedgerRepository {
             $rowType = $row['_type'] ?? ($row['type'] ?? ($row['row_type'] ?? ''));
             if ($rowType === 'separator') continue;
 
-            $office = null;
-            if (!empty($row['office_id']) && isset($officeById[(int)$row['office_id']])) {
-                $office = $officeById[(int)$row['office_id']];
-            } else {
-                $officeKey = mb_strtolower(preg_replace('/\s+/u', ' ', trim((string)($row['office'] ?? ''))), 'UTF-8');
-                if ($officeKey !== '' && isset($officeByNameKey[$officeKey])) {
-                    $office = $officeByNameKey[$officeKey];
-                }
-            }
+            $office = self::resolveOfficeForRow($row, $allOffices);
             if (!$office) continue;
 
-            $hasFormulaInputs = array_key_exists('weight', $row) || array_key_exists('noloon', $row);
-            if (!$hasFormulaInputs && isset($row['net']) && $row['net'] !== '') {
-                $rowNetDecimal = round(floatval($row['net']), 2);
-            } else {
-                $w   = floatval($row['weight'] ?? 0);
-                $def = floatval($row['deficit'] ?? 0);
-                $nol = floatval($row['noloon'] ?? 0);
-                $ohd = floatval($row['ohda'] ?? 0);
-                $ofc = floatval($row['officeAmount'] ?? ($row['office_amount'] ?? 0));
-                $srf = floatval($row['sarf'] ?? 0);
-                $add = floatval($row['add'] ?? 0);
-                $rowNetDecimal = round((($w - $def) * $nol) - ($ohd + $ofc + $srf) + $add, 2);
-            }
-
-            $rowSarfDecimal = round(floatval($row['sarf'] ?? 0), 2);
-            $rowDeductionCents = (int)round($rowNetDecimal * 100) + (int)round($rowSarfDecimal * 100);
+            $calc = self::calculateRowNetAndSarfCents($row);
+            $rowDeductionCents = $calc['total_cents'];
 
             $rowOwnerName = preg_replace('/\s+/u', ' ', trim((string)($row['owner_name'] ?? ($row['vehicle_owner_name'] ?? ''))));
             $rowOwnerId   = trim((string)($row['owner_id'] ?? ($row['vehicle_owner_id'] ?? '')));

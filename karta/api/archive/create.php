@@ -49,7 +49,7 @@ try {
             }
 
             // Compute fresh snapshot
-            $snapshot = $repo->computeSnapshot($username, $toDate);
+            $snapshot = $repo->computeSnapshot($username, $toDate, $fromDate);
             $newVersion = intval($batch['archive_version'] ?? 1) + 1;
             $snapUuid = $body['snapshot_id'] ?? bin2hex(random_bytes(18));
 
@@ -97,7 +97,7 @@ try {
         }
 
         // Compute snapshot
-        $snapshot = $repo->computeSnapshot($username, $toDate);
+        $snapshot = $repo->computeSnapshot($username, $toDate, $fromDate);
 
         $batchUuid = $body['batch_uuid'] ?? bin2hex(random_bytes(18));
         $snapUuid  = $body['snapshot_id'] ?? bin2hex(random_bytes(18));

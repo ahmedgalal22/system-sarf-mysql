@@ -121,6 +121,9 @@ try {
         decodeRowsField($receipt);
         mapResult('CREATED', $receipt);
 
+    } catch (InvalidArgumentException $e) {
+        if ($db->inTransaction()) $db->rollBack();
+        jsonError($e->getMessage(), 400);
     } catch (PDOException $e) {
         if ($db->inTransaction()) $db->rollBack();
 

@@ -83,18 +83,19 @@ const TREASURY_ENTRY_TYPE = Object.freeze({
 });
 
 const TREASURY_EFFECT = Object.freeze({
-  CAPITAL_DEPOSIT  : 'capital_deposit',
-  RECEIPT_PAYOUT   : 'receipt_payout',
-  SALFA            : 'salfa',
-  EXPENSE          : 'expense',
-  SALARY           : 'salary',
-  BOLSA_DEDUCTION  : 'bolsa_deduction',
-  MANDOUB_CASH_OUT : 'mandoub_cash_out',
-  MANDOUB_CASH_IN  : 'mandoub_cash_in',
-  CUSTODY_WITHDRAW : 'custody_withdraw',
-  CUSTODY_DEPOSIT  : 'custody_deposit',
-  CUSTODY_RETURN   : 'custody_return',
-  CUSTODY_RETURN_IN: 'custody_return_in',
+  CAPITAL_DEPOSIT   : 'capital_deposit',
+  RECEIPT_PAYOUT    : 'receipt_payout',
+  ROW_DISBURSEMENT  : 'row_disbursement',
+  SALFA             : 'salfa',
+  EXPENSE           : 'expense',
+  SALARY            : 'salary',
+  BOLSA_DEDUCTION   : 'bolsa_deduction',
+  MANDOUB_CASH_OUT  : 'mandoub_cash_out',
+  MANDOUB_CASH_IN   : 'mandoub_cash_in',
+  CUSTODY_WITHDRAW  : 'custody_withdraw',
+  CUSTODY_DEPOSIT   : 'custody_deposit',
+  CUSTODY_RETURN    : 'custody_return',
+  CUSTODY_RETURN_IN : 'custody_return_in',
   RECEIPT_ADJUSTMENT: 'receipt_adjustment',
 });
 
@@ -212,6 +213,7 @@ function _effectLabel(effect) {
   switch (effect) {
     case EFFECTS.CAPITAL_DEPOSIT:   return 'إيداع رأس مال';
     case EFFECTS.RECEIPT_PAYOUT:    return 'صرف كارتة';
+    case EFFECTS.ROW_DISBURSEMENT:  return 'صرف كارتة مكتب';
     case EFFECTS.SALFA:             return 'سلفة';
     case EFFECTS.EXPENSE:           return 'مصروف';
     case EFFECTS.SALARY:            return 'مرتب';

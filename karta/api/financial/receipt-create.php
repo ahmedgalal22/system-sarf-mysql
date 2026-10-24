@@ -9,6 +9,7 @@
 
 require_once __DIR__ . '/../../core/bootstrap.php';
 require_once __DIR__ . '/../../core/validator.php';
+require_once __DIR__ . '/../../core/permissions.php';
 require_once __DIR__ . '/../../core/errorMapper.php';
 require_once __DIR__ . '/../../api/middleware/auth.php';
 require_once __DIR__ . '/../../repositories/ReceiptRepository.php';
@@ -19,6 +20,7 @@ require_once __DIR__ . '/../../repositories/HamolaRepository.php';
 require_once __DIR__ . '/../../core/versionTracker.php';
 
 if (!isMethod('POST')) jsonMethodNotAllowed('POST');
+requirePermission($authUser['role'], 'receipts', 'write');
 
 $body = requireJsonBody();
 $username = $authUser['username'];
@@ -82,14 +84,24 @@ try {
         $receiptId = strval($receipt['id']);
 
         // Create ledger entries (from ledger_ops array)
-        // IMPORTANT: Always use the DB integer ID as reference_id,
-        // NOT the frontend UUID. This ensures update/delete/status
-        // can locate and reverse these entries by the same ID.
+        // IMPORTANT: Always use the DB integer ID as reference_id and 'receipt'
+        // as reference_type, and reject status-linked movement types.
         $ledgerResults = [];
         if (!empty($body['ledger_ops']) && is_array($body['ledger_ops'])) {
             foreach ($body['ledger_ops'] as $op) {
-                if (($op['type'] ?? '') === 'OFFICE_WITHDRAW_AUTO') continue;
+                if (!is_array($op)) continue;
+                $opType = $op['type'] ?? '';
+                $opEffect = $op['effect'] ?? '';
+                $opRefType = $op['reference_type'] ?? '';
+                if ($opType === 'OFFICE_WITHDRAW_AUTO') continue;
+                if (in_array($opRefType, [ReceiptRepository::REF_TYPE_ROW_DISBURSEMENT, ReceiptRepository::REF_TYPE_RECEIPT_PAYMENT], true)
+                    || in_array($opType, ['row_disbursement', 'receipt_payment', 'OFFICE_DEPOSIT'], true)
+                    || in_array($opEffect, ['row_disbursement', 'receipt_payout'], true)
+                ) {
+                    throw new InvalidArgumentException('لا يمكن تمرير حركات حالة الصرف أو الدفع ضمن عمليات إنشاء الإيصال');
+                }
                 $op['username'] = $username;
+                $op['reference_type'] = 'receipt';
                 $op['reference_id'] = $receiptId;
                 $ledgerResults[] = $ledgerRepo->create($op);
             }
@@ -111,7 +123,16 @@ try {
         $treasuryResults = [];
         if (!empty($body['treasury_ops']) && is_array($body['treasury_ops'])) {
             foreach ($body['treasury_ops'] as $op) {
+                if (!is_array($op)) continue;
+                $opEffect = $op['effect'] ?? '';
+                $opRefType = $op['reference_type'] ?? '';
+                if (in_array($opRefType, [ReceiptRepository::REF_TYPE_ROW_DISBURSEMENT, ReceiptRepository::REF_TYPE_RECEIPT_PAYMENT], true)
+                    || in_array($opEffect, ['row_disbursement', 'receipt_payout'], true)
+                ) {
+                    throw new InvalidArgumentException('لا يمكن تمرير حركات خزنة مرتبطة بحالة الصرف أو الدفع ضمن عمليات إنشاء الإيصال');
+                }
                 $op['username'] = $username;
+                $op['reference_type'] = 'receipt';
                 $op['reference_id'] = $receiptId;
                 $treasuryResults[] = $treasuryRepo->create($op);
             }

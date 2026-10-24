@@ -6,14 +6,17 @@
  */
 
 require_once __DIR__ . '/../../core/bootstrap.php';
+require_once __DIR__ . '/../../core/permissions.php';
 require_once __DIR__ . '/../../core/errorMapper.php';
 require_once __DIR__ . '/../../api/middleware/auth.php';
 require_once __DIR__ . '/../../repositories/ReceiptRepository.php';
 require_once __DIR__ . '/../../repositories/TreasuryRepository2.php';
 require_once __DIR__ . '/../../repositories/VehicleLedgerRepository.php';
+require_once __DIR__ . '/../../repositories/OfficeRepository.php';
 require_once __DIR__ . '/../../core/versionTracker.php';
 
 if (!isMethod('POST')) jsonMethodNotAllowed('POST');
+requirePermission($authUser['role'], 'receipts', 'delete');
 
 $body = requireJsonBody();
 $username = $authUser['username'];
@@ -25,26 +28,46 @@ try {
     $receiptRepo = new ReceiptRepository($db);
     $treasuryRepo = new TreasuryRepo($db);
     $ledgerRepo = new VehicleLedgerRepository($db);
+    $officeRepo = new OfficeRepository($db);
 
     $db->beginTransaction();
     try {
-        // 0. Read receipt
-        $existing = $receiptRepo->findById($receiptId);
-        if (!$existing) { $db->rollBack(); jsonError('الإيصال غير موجود', 404); }
-        if ($existing['username'] !== $username) { $db->rollBack(); jsonError('غير مسموح', 403); }
+        // 1. Lock receipt & validate/reverse all status-linked movements (row disbursements + receipt payment)
+        $revStatus = $receiptRepo->reverseAllStatusMovementsOnReceiptDelete(
+            $receiptId,
+            $username,
+            $treasuryRepo,
+            $ledgerRepo,
+            $officeRepo
+        );
+        if ($revStatus['code'] === ReceiptRepository::RESULT_NOT_FOUND) {
+            $db->rollBack(); jsonError('الإيصال غير موجود', 404);
+        }
+        if ($revStatus['code'] === ReceiptRepository::RESULT_FORBIDDEN) {
+            $db->rollBack(); jsonError('غير مسموح', 403);
+        }
+        if ($revStatus['code'] === ReceiptRepository::RESULT_ARCHIVED) {
+            $db->rollBack(); mapResult('ARCHIVED');
+        }
+        if ($revStatus['code'] === ReceiptRepository::RESULT_INCONSISTENT_LEDGER) {
+            $db->rollBack(); jsonError($revStatus['message'] ?? 'تعارض في القيود المالية للإيصال', 409);
+        }
+        if ($revStatus['code'] !== ReceiptRepository::RESULT_OK) {
+            $db->rollBack(); jsonError($revStatus['message'] ?? 'فشل حذف الإيصال', 400);
+        }
 
-        // 1. Reverse all linked financial entries
-        $treasuryRepo->reverseByReference(strval($receiptId), 'receipt', $username);
-        $ledgerRepo->reverseByReference(strval($receiptId), 'receipt', $username);
+        // 2. Reverse all original receipt-creation entries
+        $treasuryRepo->reverseByReferenceForUser($username, strval($receiptId), 'receipt');
+        $ledgerRepo->reverseByReferenceForUser($username, strval($receiptId), 'receipt');
 
-        // 2. Soft-delete the receipt
+        // 3. Soft-delete the receipt
         $result = $receiptRepo->softDelete($receiptId, $username);
         if ($result['code'] !== ReceiptRepository::RESULT_OK) {
             $db->rollBack();
             mapResult($result['code']);
         }
 
-        bumpVersions($db, ['receipts', 'vehicle_ledger', 'treasury', 'offices']);
+        bumpVersions($db, ['receipts', 'vehicle_ledger', 'treasury', 'offices', 'vehicle_owners']);
         $db->commit();
         jsonSuccess(['id' => $receiptId], 'تم حذف الإيصال بنجاح');
 
