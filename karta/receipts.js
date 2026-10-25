@@ -649,38 +649,6 @@ function _deficitNum(row) {
   return _num(row, 'receipt-deficit');
 }
 
-const SARF_ZERO_WARNING_TEXT = 'تنبيه: قيمة الصرف صفر أو فارغة.';
-
-/**
- * Returns true if any non-empty data row in the saved receipt has an empty,
- * missing, or numerically zero `sarf` (الصرف) value.
- */
-function hasZeroOrEmptySarf(rows) {
-  if (!Array.isArray(rows)) return true;
-  const dataRows = rows.filter(r => r && r._type !== 'separator' && !r._isEmpty);
-  if (dataRows.length === 0) return true;
-  return dataRows.some(r => {
-    const raw = r.sarf;
-    if (raw === '' || raw === null || raw === undefined) return true;
-    const num = Number(raw);
-    return !Number.isFinite(num) || num === 0;
-  });
-}
-
-function _setPostSaveSarfWarning(visible) {
-  const el = typeof document !== 'undefined' ? document.getElementById('sarfZeroPostSaveWarning') : null;
-  if (!el) return;
-  if (visible) {
-    el.textContent = SARF_ZERO_WARNING_TEXT;
-    el.classList.remove('hidden');
-    el.dataset.visible = '1';
-  } else {
-    el.textContent = '';
-    el.classList.add('hidden');
-    el.dataset.visible = '0';
-  }
-}
-
 function tFmt(n) { // delegated to Money.fmt
   return Money.fmt(n);
 }
@@ -1102,9 +1070,7 @@ function renderFooterActions() {
         </svg>
         إلغاء التعديل
       </button>
-    </div>
-    <div id="sarfZeroPostSaveWarning" role="status" aria-live="polite" data-visible="0"
-      class="hidden no-print sarf-zero-warning"></div>`;
+    </div>`;
 }
 
 // ─── RENDER: TOTALS FOOTER ────────────────────────────────────────────────────
@@ -1303,19 +1269,6 @@ function _injectReceiptStyles() {
       background-color: #fef3c7 !important;
       border-color: #d97706 !important;
       box-shadow: 0 0 0 2px rgba(245, 158, 11, 0.25) !important;
-    }
-
-    /* ═══ POST-SAVE ZERO/EMPTY SARF WARNING ═══ */
-    .sarf-zero-warning {
-      margin-top: 8px;
-      padding: 6px 12px;
-      border-radius: 6px;
-      border: 1px solid #fecaca;
-      background-color: #fef2f2;
-      color: #b91c1c;
-      font-size: 12px;
-      font-weight: 600;
-      line-height: 1.4;
     }
 
     /* ═══ SNAPSHOT COLUMNS VISUAL ENHANCEMENTS ═══ */
@@ -2791,7 +2744,6 @@ async function validateBeforeSave(rawData) {
 async function saveReceipt() {
   if (_isSaving) return;
   _isSaving = true;
-  _setPostSaveSarfWarning(false);
 
   let rawData;
   try {
@@ -2816,8 +2768,6 @@ async function saveReceipt() {
     return;
   }
 
-  const warnZeroSarf = hasZeroOrEmptySarf(rawData.rows);
-
   // EDIT MODE — no modal
   if (ReceiptState.isEditing && ReceiptState.editingReceiptId) {
     rawData.account_type = null;
@@ -2829,7 +2779,6 @@ async function saveReceipt() {
       window.dispatchEvent(new CustomEvent('receipts:changed'));
       alert('✅ تم تحديث النموذج بنجاح');
       clearReceiptSilent();
-      _setPostSaveSarfWarning(warnZeroSarf);
       if (typeof showPage === 'function') showPage('allReceipts');
       setTimeout(() => { if (typeof applyAllReceiptsFilter === 'function') applyAllReceiptsFilter(); }, 400);
     } catch (err) {
@@ -2855,7 +2804,6 @@ async function saveReceipt() {
     window.dispatchEvent(new CustomEvent('receipts:changed'));
     alert('✅ تم حفظ النموذج بنجاح');
     clearReceiptSilent();
-    _setPostSaveSarfWarning(warnZeroSarf);
   } catch (err) {
     console.error('[SAVE ERROR]', err);
     alert(err.message || '❌ حدث خطأ أثناء الحفظ');
@@ -3065,7 +3013,6 @@ function clearReceiptSilent() {
   _isSaving         = false;
   _vehicleAnalysisCache.clear();
   _exitEditMode();
-  _setPostSaveSarfWarning(false);
 
   const rnInput = document.getElementById('receiptNumber');
   if (rnInput) rnInput.value = '';
@@ -3125,7 +3072,6 @@ function _exitEditMode() {
 // ─── LOAD RECEIPT FOR EDIT ────────────────────────────────────────────────────
 
 async function loadReceiptForEdit(receiptData) {
-  _setPostSaveSarfWarning(false);
   _enterReceiptEditMode(receiptData);
 
   const setV = (id, val) => { const el = document.getElementById(id); if (el) el.value = val || ''; };
@@ -3563,8 +3509,6 @@ export {
   getSnapshotCellRawValue,
   convertShortageToCalculationValue,
   formatShortageForInput,
-  hasZeroOrEmptySarf,
-  SARF_ZERO_WARNING_TEXT,
   COL_DEFS,
   DATA_COL_COUNT,
 };
