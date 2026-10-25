@@ -774,7 +774,6 @@ async function _renderLedger(client, preloadedLedger = null) {
             <tr>
               <th>التاريخ</th>
               <th>المبلغ</th>
-              <th>المركبة</th>
               <th>ملاحظة</th>
             </tr>
           </thead>
@@ -783,12 +782,11 @@ async function _renderLedger(client, preloadedLedger = null) {
               <tr>
                 <td>${_dateLabel(e.date || e.applied_at)}</td>
                 <td class="font-semibold">${_fmt(e.amount)}</td>
-                <td>${e.vehicle_plate || '-'}</td>
                 <td>${_ledgerNote(e)}</td>
               </tr>
             `).join('') : `
               <tr>
-                <td colspan="4" class="text-muted text-center">لا توجد حركات</td>
+                <td colspan="3" class="text-muted text-center">لا توجد حركات</td>
               </tr>
             `}
           </tbody>
@@ -1400,10 +1398,9 @@ function attachOwnersPageListeners() {
         <tr>
           <td class="p-2 text-right">${_dateLabel(e1.date || e1.applied_at)}</td>
           <td class="p-2 text-right font-semibold">${_fmt(e1.amount)}</td>
-          <td class="p-2 text-right">${e1.vehicle_plate || '-'}</td>
           <td class="p-2 text-right">${_ledgerNote(e1)}</td>
         </tr>
-      `).join('') : `<tr><td colspan="4" class="text-center text-muted p-4">لا توجد حركات</td></tr>`;
+      `).join('') : `<tr><td colspan="3" class="text-center text-muted p-4">لا توجد حركات</td></tr>`;
       return;
     }
 
@@ -1422,10 +1419,9 @@ function attachOwnersPageListeners() {
         <tr>
           <td class="p-2 text-right">${_dateLabel(e1.date || e1.applied_at)}</td>
           <td class="p-2 text-right font-semibold">${_fmt(e1.amount)}</td>
-          <td class="p-2 text-right">${e1.vehicle_plate || '-'}</td>
           <td class="p-2 text-right">${_ledgerNote(e1)}</td>
         </tr>
-      `).join('') : `<tr><td colspan="4" class="text-center text-muted p-4">لا توجد حركات</td></tr>`;
+      `).join('') : `<tr><td colspan="3" class="text-center text-muted p-4">لا توجد حركات</td></tr>`;
       return;
     }
   });
