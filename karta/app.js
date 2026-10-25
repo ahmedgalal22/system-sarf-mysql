@@ -82,19 +82,6 @@ function _resolvePageKey(pageName, targetId) {
 }
 
 async function showPage(pageName) {
-  const session = AuthModule.getSession();
-  const role = session?.role || 'user';
-
-  // Secure Navigation Layer
-  if (role !== 'admin') {
-    const targetEl = _resolvePageElement(pageName);
-    const targetId = targetEl?.id || '';
-    const pageKey = _resolvePageKey(pageName, targetId);
-    if (pageKey === 'dashboardPage' || targetId === 'dashboardPage') {
-      pageName = 'homePage';
-    }
-  }
-
   const pages = document.querySelectorAll('.page');
   pages.forEach(p => p.classList.add('hidden'));
 
@@ -123,11 +110,7 @@ async function showPage(pageName) {
     await initAllReceiptsPage();
   }
   if (pageName === 'dashboardPage' || targetId === 'dashboardPage') {
-    if (role === 'admin') {
-      await initDashboardPage();
-    } else {
-      await showPage('homePage');
-    }
+    await initDashboardPage();
   }
   if (pageName === 'treasuryPage' || targetId === 'treasuryPage') {
     initHomePage();
@@ -184,17 +167,7 @@ async function boot() {
 
     window.__APP_CONTEXT__ = Object.freeze({
       username,
-      role: session.role,
     });
-
-
-    // Secure Sidebar Visibility for non-admins
-    if (session.role !== 'admin') {
-      const dbLink = document.querySelector('[data-page="dashboardPage"]');
-      if (dbLink) {
-        dbLink.remove();
-      }
-    }
 
     initSidebarLayout();
     _bindLogout();

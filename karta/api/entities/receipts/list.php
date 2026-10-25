@@ -8,12 +8,10 @@
  */
 
 require_once __DIR__ . '/../../../core/bootstrap.php';
-require_once __DIR__ . '/../../../core/permissions.php';
 require_once __DIR__ . '/../../../api/middleware/auth.php';
 require_once __DIR__ . '/../../../repositories/ReceiptRepository.php';
 
 if (!isMethod('GET')) jsonMethodNotAllowed('GET');
-requirePermission($authUser['role'], 'receipts', 'read');
 
 try {
     $repo = new ReceiptRepository(getDB());

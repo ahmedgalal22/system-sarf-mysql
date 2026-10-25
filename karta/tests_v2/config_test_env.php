@@ -60,8 +60,6 @@ function detectApiBase(): string {
 define('API_BASE', detectApiBase());
 define('TEST_ADMIN_USER', 'admin');
 define('TEST_ADMIN_PASS', 'admin123');
-define('TEST_ACCOUNTANT_USER', 'accountant');
-define('TEST_ACCOUNTANT_PASS', 'accountant123');
 
 // ── Database Connection (READ-ONLY for verification) ──────────────────────────
 

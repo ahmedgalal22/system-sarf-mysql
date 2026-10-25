@@ -1741,8 +1741,7 @@ function _attachListeners() {
 
 export async function initDashboardPage() {
   const session = AuthModule.getSession();
-  if (session?.role !== 'admin') {
-    console.warn('[Dashboard] Unauthorized access attempt blocked.');
+  if (!session?.username) {
     return;
   }
 

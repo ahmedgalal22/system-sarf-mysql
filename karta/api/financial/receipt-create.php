@@ -9,7 +9,6 @@
 
 require_once __DIR__ . '/../../core/bootstrap.php';
 require_once __DIR__ . '/../../core/validator.php';
-require_once __DIR__ . '/../../core/permissions.php';
 require_once __DIR__ . '/../../core/errorMapper.php';
 require_once __DIR__ . '/../../api/middleware/auth.php';
 require_once __DIR__ . '/../../repositories/ReceiptRepository.php';
@@ -20,7 +19,6 @@ require_once __DIR__ . '/../../repositories/HamolaRepository.php';
 require_once __DIR__ . '/../../core/versionTracker.php';
 
 if (!isMethod('POST')) jsonMethodNotAllowed('POST');
-requirePermission($authUser['role'], 'receipts', 'write');
 
 $body = requireJsonBody();
 $username = $authUser['username'];

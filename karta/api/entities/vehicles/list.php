@@ -8,7 +8,6 @@
 
 require_once __DIR__ . '/../../../core/bootstrap.php';
 require_once __DIR__ . '/../../../api/middleware/auth.php';
-require_once __DIR__ . '/../../../api/middleware/accountantOrAdmin.php';
 require_once __DIR__ . '/../../../repositories/VehicleRepository.php';
 
 if (!isMethod('GET')) {

@@ -215,7 +215,7 @@ globalThis.fetch = async (url, options = {}) => {
   let payload = { ok: true, success: true, data: [] };
 
   if (u.includes('/auth/login.php')) {
-    payload = { ok: true, success: true, data: { username: 'admin', role: 'admin' } };
+    payload = { ok: true, success: true, data: { username: 'admin' } };
   } else if (u.includes('/entities/offices/get.php') || u.includes('/offices')) {
     payload = { ok: true, success: true, data: OFFICE_RECORD };
   } else if (u.includes('/entities/vehicle-ledger/list.php')) {

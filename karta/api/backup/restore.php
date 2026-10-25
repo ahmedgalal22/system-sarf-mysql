@@ -17,11 +17,6 @@ require_once __DIR__ . '/../../core/versionTracker.php';
 
 if (!isMethod('POST')) jsonMethodNotAllowed('POST');
 
-// Admin only
-if (($authUser['role'] ?? '') !== 'admin') {
-    jsonError('غير مسموح — يتطلب صلاحيات المدير', 403);
-}
-
 // Accept JSON body or file upload
 $backup = null;
 

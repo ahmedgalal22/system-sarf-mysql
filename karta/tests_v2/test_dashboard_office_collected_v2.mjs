@@ -551,7 +551,7 @@ test('6. End-to-end Dashboard rendering updates "إجمالي المحصل من 
     const u = String(url);
     let payload = { ok: true, success: true, data: [] };
     if (u.includes('/auth/login.php')) {
-      payload = { ok: true, success: true, data: { username: 'admin', role: 'admin' } };
+      payload = { ok: true, success: true, data: { username: 'admin' } };
     } else if (u.includes('/receipts')) {
       payload = { ok: true, success: true, data: apiReceipts };
     } else if (u.includes('/treasury')) {

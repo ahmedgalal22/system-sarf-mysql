@@ -13,11 +13,6 @@ require_once __DIR__ . '/../../repositories/BackupRepository.php';
 
 if (!isMethod('GET')) jsonMethodNotAllowed('GET');
 
-// Admin only
-if (($authUser['role'] ?? '') !== 'admin') {
-    jsonError('غير مسموح — يتطلب صلاحيات المدير', 403);
-}
-
 try {
     $db = getDB();
     $repo = new BackupRepository($db);
