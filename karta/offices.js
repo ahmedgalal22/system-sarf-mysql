@@ -979,6 +979,7 @@ let _detailsOfficeId = null;
 let _officeCardsSearchQuery = '';
 let _officeCardsCache = [];
 let _hamolaEditId = null;
+let _officeBalanceActionType = 'deposit';
 const LAST_PAGE_CTX_KEY = 'karta_v2_last_page_ctx';
 
 function _requireSession() {
@@ -1151,18 +1152,15 @@ function _renderDetailsShell(office) {
 
       <div id="officeDetailsContent"></div>
     </div>
+    ${_renderOfficeDepositModal()}
   `;
 
   if (!document.getElementById('hamolaModal')) {
     const modal = document.createElement('div');
     modal.innerHTML = _renderHamolaModal();
-    document.body.appendChild(modal.firstElementChild);
-  }
-
-  if (!document.getElementById('officeDepositModal')) {
-    const modal = document.createElement('div');
-    modal.innerHTML = _renderOfficeDepositModal();
-    document.body.appendChild(modal.firstElementChild);
+    if (modal.firstElementChild) {
+      document.body.appendChild(modal.firstElementChild);
+    }
   }
 }
 
@@ -1208,15 +1206,21 @@ function _renderHamolaModal() {
 }
 
 function _renderOfficeDepositModal() {
+  const isWithdraw = _officeBalanceActionType === 'withdraw';
+  const titleText = isWithdraw ? 'سحب رصيد' : 'إيداع رصيد';
   return `
-    <div id="officeDepositModal" class="hidden fixed inset-0 bg-black bg-opacity-60 flex items-center justify-center z-50 p-4">
+    <div id="officeDepositModal" data-operation="${isWithdraw ? 'withdraw' : 'deposit'}" class="hidden fixed inset-0 bg-black bg-opacity-60 flex items-center justify-center z-50 p-4">
       <div class="bg-white rounded-2xl shadow-2xl p-6 w-full max-w-md">
         <div class="flex items-center justify-between mb-4">
-          <h3 class="text-lg font-bold">إيداع رصيد</h3>
+          <h3 id="officeDepositModalTitle" class="text-lg font-bold">${titleText}</h3>
           <button type="button" data-action="office-deposit-close" class="btn btn-secondary btn-sm">إغلاق</button>
         </div>
 
         <div class="grid grid-cols-1 gap-3 mb-4">
+          <div>
+            <label class="label mb-1" for="officeDepositDate">التاريخ</label>
+            <input id="officeDepositDate" type="date" class="input input-sm" value="${DateUtils.todayLocal()}" />
+          </div>
           <div>
             <label class="label mb-1" for="officeDepositAmount">المبلغ</label>
             <input id="officeDepositAmount" type="number" step="0.01" min="0" class="input input-sm" />
@@ -1296,7 +1300,8 @@ function _renderOfficeBalance(entries) {
         <p class="text-2xl font-bold ${currentClass}">${_fmt(currentBalance)}</p>
       </div>
       <div class="flex gap-2">
-        <button type="button" data-action="office-deposit-open" style="background:#2563eb;color:#fff;border:none;border-radius:8px;padding:8px 16px;font-weight:700;font-size:0.8125rem;cursor:pointer;font-family:inherit;">💰 إيداع / سحب</button>
+        <button type="button" data-action="office-deposit-open" data-entry-type="deposit" style="background:#16a34a;color:#fff;border:none;border-radius:8px;padding:8px 16px;font-weight:700;font-size:0.8125rem;cursor:pointer;font-family:inherit;">إيداع</button>
+        <button type="button" data-action="office-withdraw-open" data-entry-type="withdraw" style="background:#dc2626;color:#fff;border:none;border-radius:8px;padding:8px 16px;font-weight:700;font-size:0.8125rem;cursor:pointer;font-family:inherit;">سحب</button>
       </div>
     </div>
     <div class="table-wrapper">
@@ -1728,15 +1733,32 @@ function _closeHamolaModal() {
   document.getElementById('hamolaModal')?.classList.add('hidden');
 }
 
-function _openOfficeDepositModal() {
+function _openOfficeDepositModal(type = 'deposit') {
+  _officeBalanceActionType = type === 'withdraw' ? 'withdraw' : 'deposit';
   const modal = document.getElementById('officeDepositModal');
+  if (modal) {
+    if (modal.dataset) modal.dataset.operation = _officeBalanceActionType;
+    if (typeof modal.setAttribute === 'function') {
+      modal.setAttribute('data-operation', _officeBalanceActionType);
+    }
+  }
+  const titleEl = document.getElementById('officeDepositModalTitle');
+  if (titleEl) {
+    titleEl.textContent = _officeBalanceActionType === 'withdraw' ? 'سحب رصيد' : 'إيداع رصيد';
+  }
   const msg = document.getElementById('officeDepositMsg');
   if (msg) { msg.textContent = ''; msg.classList.remove('is-visible'); }
+  const dateEl = document.getElementById('officeDepositDate');
   const amountEl = document.getElementById('officeDepositAmount');
   const noteEl = document.getElementById('officeDepositNote');
+  if (dateEl) dateEl.value = DateUtils.todayLocal();
   if (amountEl) amountEl.value = '';
   if (noteEl) noteEl.value = '';
   modal?.classList.remove('hidden');
+}
+
+function _openOfficeWithdrawModal() {
+  _openOfficeDepositModal('withdraw');
 }
 
 function _closeOfficeDepositModal() {
@@ -1747,12 +1769,28 @@ async function _saveOfficeDeposit() {
   const msg = document.getElementById('officeDepositMsg');
   if (msg) { msg.textContent = ''; msg.classList.remove('is-visible'); }
 
+  const modal = document.getElementById('officeDepositModal');
+  const actionType =
+    (modal?.dataset?.operation === 'withdraw' || _officeBalanceActionType === 'withdraw')
+      ? 'withdraw'
+      : 'deposit';
+
+  const dateEl = document.getElementById('officeDepositDate');
+  const dateVal = dateEl ? String(dateEl.value || '').trim() : DateUtils.todayLocal();
   const amountVal = parseFloat(document.getElementById('officeDepositAmount')?.value) || 0;
   const note = document.getElementById('officeDepositNote')?.value || '';
 
   if (!_detailsOfficeId) {
     if (msg) {
       msg.textContent = 'لا يوجد مكتب محدد';
+      msg.classList.add('is-visible');
+    }
+    return;
+  }
+
+  if (!dateVal || Number.isNaN(Date.parse(dateVal))) {
+    if (msg) {
+      msg.textContent = 'التاريخ مطلوب';
       msg.classList.add('is-visible');
     }
     return;
@@ -1767,29 +1805,44 @@ async function _saveOfficeDeposit() {
   }
 
   try {
-    const depositFn = typeof OfficesModule.depositToOffice === 'function'
-      ? OfficesModule.depositToOffice
-      : OfficesModule.adjustOfficeBalance;
+    if (actionType === 'withdraw') {
+      if (typeof OfficesModule.adjustOfficeBalance !== 'function') {
+        throw new Error('Office withdrawal handler is not available');
+      }
 
-    if (typeof depositFn !== 'function') {
-      throw new Error('Office deposit handler is not available');
+      await OfficesModule.adjustOfficeBalance(_detailsOfficeId, {
+        amount: amountVal,
+        note: note.trim() || null,
+        date: dateVal,
+        type: 'withdraw',
+        client_id: _detailsOfficeId,
+        client_type: 'office',
+      });
+    } else {
+      const depositFn = typeof OfficesModule.depositToOffice === 'function'
+        ? OfficesModule.depositToOffice
+        : OfficesModule.adjustOfficeBalance;
+
+      if (typeof depositFn !== 'function') {
+        throw new Error('Office deposit handler is not available');
+      }
+
+      await depositFn(_detailsOfficeId, {
+        amount: amountVal,
+        note: note.trim() || null,
+        date: dateVal,
+        type: 'deposit',
+        client_id: _detailsOfficeId,
+        client_type: 'office',
+      });
     }
-
-    await depositFn(_detailsOfficeId, {
-      amount: amountVal,
-      note: note.trim() || null,
-      date: DateUtils.todayLocal(),
-      type: 'deposit',
-      client_id: _detailsOfficeId,
-      client_type: 'office',
-    });
 
     _closeOfficeDepositModal();
     const office = await OfficesModule.getOfficeDetails(_detailsOfficeId);
     await _renderDetailsContent(office);
   } catch (err) {
     if (msg) {
-      msg.textContent = err.message || 'حدث خطأ أثناء الإيداع';
+      msg.textContent = err.message || (actionType === 'withdraw' ? 'حدث خطأ أثناء السحب' : 'حدث خطأ أثناء الإيداع');
       msg.classList.add('is-visible');
     }
   }
@@ -1977,7 +2030,12 @@ function attachOfficesPageListeners() {
     }
 
     if (target.closest('[data-action="office-deposit-open"]')) {
-      _openOfficeDepositModal();
+      _openOfficeDepositModal('deposit');
+      return;
+    }
+
+    if (target.closest('[data-action="office-withdraw-open"]')) {
+      _openOfficeWithdrawModal();
       return;
     }
 
