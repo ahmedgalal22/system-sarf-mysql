@@ -246,6 +246,8 @@ window.OwnersModule = OwnersModule;
 
 let _selectedClient = null;
 let _balanceActionType = 'deposit';
+let _activeOwnerDetailsTab = 'movements';
+let _lastOwnerDetailsClientId = null;
 const LAST_PAGE_CTX_KEY = 'karta_v2_last_page_ctx';
 
 function _fmt(n) {
@@ -737,12 +739,16 @@ async function _getClient(type, id) {
   return OwnersModule.getClientByType(type, id);
 }
 
-async function _renderLedger(client) {
-  const ledger = await OwnersModule.getClientLedger(client.id, client.type);
+async function _renderLedger(client, preloadedLedger = null) {
+  const ledger = Array.isArray(preloadedLedger)
+    ? preloadedLedger
+    : await OwnersModule.getClientLedger(client.id, client.type);
   return `
-    <section class="mb-8">
-      <h3 class="text-lg font-bold mb-4">الحركات</h3>
-      <div class="filter-row mb-6 flex-wrap">
+    <section class="ent-tab-section">
+      <div class="ent-section-header">
+        <h3 class="ent-section-title text-lg font-bold mb-0">الحركات</h3>
+      </div>
+      <div class="filter-row ent-filter-bar mb-6 flex-wrap">
         <div class="form-group mb-0">
           <label class="label mb-2 text-muted text-xs" for="clientFromDate">من</label>
           <input id="clientFromDate" type="date" class="input input-sm">
@@ -751,14 +757,16 @@ async function _renderLedger(client) {
           <label class="label mb-2 text-muted text-xs" for="clientToDate">إلى</label>
           <input id="clientToDate" type="date" class="input input-sm">
         </div>
-        <button type="button" data-action="client-apply-filter" data-id="${client.id}" data-type="${client.type}"
-          class="btn btn-primary btn-sm mb-4">
-          تطبيق
-        </button>
-        <button type="button" data-action="client-clear-filter" data-id="${client.id}" data-type="${client.type}"
-          class="btn btn-secondary btn-sm mb-4">
-          مسح التحديد
-        </button>
+        <div class="ent-filter-actions">
+          <button type="button" data-action="client-apply-filter" data-id="${client.id}" data-type="${client.type}"
+            class="btn btn-primary btn-sm">
+            تطبيق
+          </button>
+          <button type="button" data-action="client-clear-filter" data-id="${client.id}" data-type="${client.type}"
+            class="btn btn-secondary btn-sm">
+            مسح التحديد
+          </button>
+        </div>
       </div>
       <div class="table-wrapper">
         <table class="table">
@@ -840,18 +848,20 @@ function _openVehicleModal(title, plate, driver, ownerId, editId) {
   modal?.classList.remove('hidden');
 }
 
-async function _renderOwnerVehicles(client) {
-  const owned = await OwnersModule.getOwnerVehicles(client.id);
+async function _renderOwnerVehicles(client, preloadedVehicles = null) {
+  const owned = Array.isArray(preloadedVehicles)
+    ? preloadedVehicles
+    : await OwnersModule.getOwnerVehicles(client.id);
 
   return `
-    <section>
-      <div class="flex items-center justify-between mb-4">
-        <h3 class="text-lg font-bold mb-0">المركبات والسائقين</h3>
+    <section class="ent-tab-section">
+      <div class="ent-section-header flex items-center justify-between mb-4">
+        <h3 class="ent-section-title text-lg font-bold mb-0">المركبات والسائقين</h3>
         <div class="flex gap-2">
-          <button type="button" data-action="add-vehicle-manual" data-owner-id="${client.id}" style="background:#16a34a;color:#fff;border:none;border-radius:8px;padding:6px 14px;font-weight:700;font-size:0.8125rem;cursor:pointer;font-family:inherit;">➕ إضافة مركبة</button>
+          <button type="button" data-action="add-vehicle-manual" data-owner-id="${client.id}" class="ent-btn-add-vehicle">➕ إضافة مركبة</button>
         </div>
       </div>
-      <div class="table-wrapper mb-10">
+      <div class="table-wrapper">
         <table class="table">
           <thead>
             <tr>
@@ -882,9 +892,36 @@ async function _renderOwnerVehicles(client) {
   `;
 }
 
+function _switchOwnerDetailsTab(tabName) {
+  const nextTab = tabName === 'vehicles' ? 'vehicles' : 'movements';
+  _activeOwnerDetailsTab = nextTab;
+
+  const page = document.getElementById('ownerDetailsPage');
+  if (!page) return;
+
+  const tabBtns = page.querySelectorAll('[data-owner-tab]');
+  tabBtns.forEach((btn) => {
+    const isMatch = btn.getAttribute('data-owner-tab') === nextTab;
+    btn.classList.toggle('is-active', isMatch);
+    btn.setAttribute('aria-selected', isMatch ? 'true' : 'false');
+    btn.setAttribute('tabindex', isMatch ? '0' : '-1');
+  });
+
+  const panels = page.querySelectorAll('[data-owner-tab-panel]');
+  panels.forEach((panel) => {
+    const isMatch = panel.getAttribute('data-owner-tab-panel') === nextTab;
+    panel.classList.toggle('is-active', isMatch);
+    panel.classList.toggle('hidden', !isMatch);
+  });
+}
+
 async function showOwnerDetails(id, type = 'owner') {
   const client = await _getClient(type, id);
   if (!client) return;
+  if (String(_lastOwnerDetailsClientId) !== String(client.id)) {
+    _activeOwnerDetailsTab = 'movements';
+    _lastOwnerDetailsClientId = String(client.id);
+  }
   _selectedClient = client;
 
   sessionStorage.setItem(LAST_PAGE_CTX_KEY, JSON.stringify({
@@ -894,8 +931,12 @@ async function showOwnerDetails(id, type = 'owner') {
   }));
 
   const balance = await OwnersModule.getClientBalance(client.id, client.type);
-  const ledgerHtml = await _renderLedger(client);
-  const relatedHtml = await _renderOwnerVehicles(client);
+  const ledger = await OwnersModule.getClientLedger(client.id, client.type);
+  const owned = await OwnersModule.getOwnerVehicles(client.id);
+  const ledgerHtml = await _renderLedger(client, ledger);
+  const relatedHtml = await _renderOwnerVehicles(client, owned);
+  const activeTab = _activeOwnerDetailsTab === 'vehicles' ? 'vehicles' : 'movements';
+  const phoneText = String(client.phone || '').trim();
 
   const page = document.getElementById('ownerDetailsPage');
   if (!page) return;
@@ -903,30 +944,89 @@ async function showOwnerDetails(id, type = 'owner') {
   page.innerHTML = `
     <div class="ent-details-page">
       <div class="ent-details-header">
-        <button type="button" data-action="back-to-customers" class="ent-btn-back">← رجوع</button>
-        <h2 class="ent-details-name">${client.name}</h2>
-        <span class="ent-details-type">صاحب مركبة</span>
-      </div>
+        <div class="ent-details-header__top">
+          <button type="button" data-action="back-to-customers" class="ent-btn-back">← رجوع</button>
+          <div class="ent-details-identity">
+            <h2 class="ent-details-name">${client.name}</h2>
+            <div class="ent-details-badges">
+              <span class="ent-details-type">صاحب مركبة</span>
+              ${phoneText ? `<span class="ent-details-meta-item" dir="ltr">📞 ${phoneText}</span>` : ''}
+            </div>
+          </div>
+        </div>
 
-      <div class="stat-grid mb-8">
-        <div class="card">
-          <p class="text-muted text-xs mb-2">الرصيد الحالي</p>
-          <div class="text-3xl font-bold ${_balanceClass(balance.balance)} mb-6">${_fmt(balance.balance)}</div>
-          <div class="flex gap-2 flex-wrap justify-end">
-            <button type="button" data-action="open-balance-entry" data-entry-type="deposit"
-              class="btn btn-success btn-sm">
-              إيداع رصيد
-            </button>
-            <button type="button" data-action="open-balance-entry" data-entry-type="withdraw"
-              class="btn btn-danger btn-sm">
-              سحب رصيد
-            </button>
+        <div class="stat-grid ent-details-balance-grid">
+          <div class="card ent-details-balance-card">
+            <div class="ent-details-balance-info">
+              <p class="ent-details-balance-label text-muted text-xs mb-2">الرصيد الحالي</p>
+              <div class="ent-details-balance-value text-3xl font-bold ${_balanceClass(balance.balance)}">${_fmt(balance.balance)}</div>
+            </div>
+            <div class="ent-details-balance-actions flex gap-2 flex-wrap justify-end">
+              <button type="button" data-action="open-balance-entry" data-entry-type="deposit"
+                class="btn btn-success btn-sm ent-balance-btn ent-balance-btn--deposit">
+                إيداع رصيد
+              </button>
+              <button type="button" data-action="open-balance-entry" data-entry-type="withdraw"
+                class="btn btn-danger btn-sm ent-balance-btn ent-balance-btn--withdraw">
+                سحب رصيد
+              </button>
+            </div>
           </div>
         </div>
       </div>
 
-      ${ledgerHtml}
-      ${relatedHtml}
+      <div class="ent-details-tabs-wrap">
+        <div class="ent-details-tabs" role="tablist" aria-label="أقسام حساب صاحب المركبة">
+          <button
+            type="button"
+            id="ownerTabBtnMovements"
+            role="tab"
+            data-action="owner-details-tab"
+            data-owner-tab="movements"
+            aria-selected="${activeTab === 'movements' ? 'true' : 'false'}"
+            aria-controls="ownerTabPanelMovements"
+            tabindex="${activeTab === 'movements' ? '0' : '-1'}"
+            class="ent-details-tab ${activeTab === 'movements' ? 'is-active' : ''}"
+          >
+            <span class="ent-details-tab__label">الحركات</span>
+            <span class="ent-details-tab__count">${ledger.length}</span>
+          </button>
+          <button
+            type="button"
+            id="ownerTabBtnVehicles"
+            role="tab"
+            data-action="owner-details-tab"
+            data-owner-tab="vehicles"
+            aria-selected="${activeTab === 'vehicles' ? 'true' : 'false'}"
+            aria-controls="ownerTabPanelVehicles"
+            tabindex="${activeTab === 'vehicles' ? '0' : '-1'}"
+            class="ent-details-tab ${activeTab === 'vehicles' ? 'is-active' : ''}"
+          >
+            <span class="ent-details-tab__label">المركبات والسائقين</span>
+            <span class="ent-details-tab__count">${owned.length}</span>
+          </button>
+        </div>
+      </div>
+
+      <div
+        id="ownerTabPanelMovements"
+        role="tabpanel"
+        aria-labelledby="ownerTabBtnMovements"
+        data-owner-tab-panel="movements"
+        class="ent-details-tab-panel ${activeTab === 'movements' ? 'is-active' : 'hidden'}"
+      >
+        ${ledgerHtml}
+      </div>
+
+      <div
+        id="ownerTabPanelVehicles"
+        role="tabpanel"
+        aria-labelledby="ownerTabBtnVehicles"
+        data-owner-tab-panel="vehicles"
+        class="ent-details-tab-panel ${activeTab === 'vehicles' ? 'is-active' : 'hidden'}"
+      >
+        ${relatedHtml}
+      </div>
 
       <div id="balanceEntryModal" class="modal-overlay hidden">
         <div class="modal">
@@ -1012,6 +1112,7 @@ async function _saveBalanceEntry() {
   });
 
   _closeBalanceEntryModal();
+  _activeOwnerDetailsTab = 'movements';
   await showOwnerDetails(_selectedClient.id, _selectedClient.type);
   loadOwners(); // non-blocking background refresh
 }
@@ -1266,9 +1367,17 @@ function attachOwnersPageListeners() {
     }
 
     if (e.target.closest('[data-action="back-to-customers"]') || e.target.closest('[data-action="back-to-accounts"]')) {
+      _lastOwnerDetailsClientId = null;
+      _activeOwnerDetailsTab = 'movements';
       if (typeof window.showPage === 'function') {
         await window.showPage('ownersPage');
       }
+      return;
+    }
+
+    const ownerTabBtn = e.target.closest('[data-action="owner-details-tab"]');
+    if (ownerTabBtn) {
+      _switchOwnerDetailsTab(ownerTabBtn.dataset.ownerTab);
       return;
     }
 
@@ -1318,6 +1427,31 @@ function attachOwnersPageListeners() {
         </tr>
       `).join('') : `<tr><td colspan="4" class="text-center text-muted p-4">لا توجد حركات</td></tr>`;
       return;
+    }
+  });
+
+  document.addEventListener('keydown', (e) => {
+    const tabBtn = e.target?.closest?.('[data-action="owner-details-tab"]');
+    if (!tabBtn) return;
+    if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(e.key)) return;
+    const tablist = tabBtn.closest('[role="tablist"]');
+    if (!tablist) return;
+    const tabs = Array.from(tablist.querySelectorAll('[data-action="owner-details-tab"]'));
+    if (tabs.length < 2) return;
+    e.preventDefault();
+    const currentIndex = tabs.indexOf(tabBtn);
+    let nextIndex = currentIndex;
+    if (e.key === 'Home') {
+      nextIndex = 0;
+    } else if (e.key === 'End') {
+      nextIndex = tabs.length - 1;
+    } else {
+      nextIndex = (currentIndex + 1) % tabs.length;
+    }
+    const nextBtn = tabs[nextIndex];
+    if (nextBtn) {
+      _switchOwnerDetailsTab(nextBtn.dataset.ownerTab);
+      nextBtn.focus?.();
     }
   });
 }
