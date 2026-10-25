@@ -582,6 +582,16 @@ function getReceiptCardsFiltered() {
  * Used when client-side filters are active (status, row-level) and
  * meta.summary does not apply. Also called by frozen print system.
  */
+function sumReceiptSarf(record, rows) {
+  const dataRows = Array.isArray(rows)
+    ? rows.filter((row) => row && row._type !== 'separator')
+    : [];
+  if (dataRows.length > 0 && dataRows.some((row) => row.sarf !== undefined)) {
+    return sumVisibleRowField(dataRows, 'sarf');
+  }
+  return toNumber(record?.sarf);
+}
+
 function summarizeReceipts(records) {
   return records.reduce((acc, record) => {
     acc.netDue += toNumber(record.net_due);
@@ -592,8 +602,9 @@ function summarizeReceipts(records) {
     acc.weight += sumVisibleRowWeight(rows);
     acc.noloon += sumVisibleRowField(rows, 'noloon');
     acc.ohda += sumVisibleRowField(rows, 'ohda');
+    acc.sarf += sumReceiptSarf(record, rows);
     return acc;
-  }, { netDue: 0, netTotal: 0, paid: 0, count: 0, weight: 0, noloon: 0, ohda: 0 });
+  }, { netDue: 0, netTotal: 0, paid: 0, count: 0, weight: 0, noloon: 0, ohda: 0, sarf: 0 });
 }
 
 
@@ -714,6 +725,7 @@ function renderSummaryCards(_preFiltered) {
                         f.karta.length > 0 || f.type.length > 0);
   const useServerSummary = (statusFilter === 'all' && paymentStatusFilter === 'all' && !hasRowFilter && STATE.meta?.summary);
   const filtered = _preFiltered || getReceiptCardsFiltered();
+  const clientSums = summarizeReceipts(filtered);
   const sums = useServerSummary
     ? {
         netDue:  STATE.meta.summary.net_due  ?? 0,
@@ -723,13 +735,15 @@ function renderSummaryCards(_preFiltered) {
         weight:  STATE.meta.summary.weight   ?? 0,
         noloon:  STATE.meta.summary.noloon   ?? 0,
         ohda:    STATE.meta.summary.ohda     ?? 0,
+        sarf:    clientSums.sarf,
       }
-    : summarizeReceipts(filtered);
+    : clientSums;
 
   const html = `
     <div class="summary-grid summary-grid--receipts">
       ${summaryCard('💰 إجمالي الصافي الكلي', centsToMoney(sums.netTotal), 'summary-card--violet')}
       ${summaryCard('🗂️ عدد الكارتات', String(sums.count), 'summary-card--blue')}
+      ${summaryCard('💵 إجمالي الصرف', fmtMoney(sums.sarf), 'summary-card--orange')}
     </div>
   `;
   const container = document.getElementById('receiptsSummaryContainer');

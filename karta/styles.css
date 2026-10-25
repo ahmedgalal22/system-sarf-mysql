@@ -2965,6 +2965,9 @@ input[type="number"] {
     min-width: 80px;
     padding: 6px 8px;
   }
+  .summary-grid--receipts {
+    flex-wrap: wrap;
+  }
   .summary-card {
     min-width: 120px;
     padding: 10px 12px;
