@@ -5,7 +5,12 @@
  */
 
 import { Money } from './money.js';
-import { calculateWeightTotal } from './services/financialCalculator.js';
+import { calculateRowOfficeDeduction, calculateWeightTotal } from './services/financialCalculator.js';
+import {
+  ROW_DISBURSEMENT_STATUS,
+  getRowDisbursementStatus,
+  getStableRowId,
+} from './constants/payoutStatus.js';
 import { AuthModule } from './auth.js';
 import { FinancialService } from './financial.js';
 import { printHTML, buildPrintDocument } from './printEngine.js';
@@ -90,71 +95,231 @@ function _setQuickFilterRange(rangeType) {
 // ─── AGGREGATE CALCULATIONS (DETERMINISTIC & MEMORIZED) ──────────────────────
 
 /**
- * Calculates Card 4: "إجمالي المحصل من المكاتب"
- * Sums weight * unit_price for each office's routes from active receipts in period.
- * Optimized to run in a single pass over receipt rows using an indexed weightMap (complexity: O(R * L)).
+ * Normalize an office name using the canonical office-matching rules from
+ * VehicleLedgerRepository::resolveOfficeForRow (trim, collapse whitespace, lowercase).
  */
-async function _calculateTotalCollectedFromCompanies(username, activeReceipts, offices) {
-  const weightMap = {}; // key = officeId::loadingPlace::destinationPlace -> accumulatedWeight
+function _normalizeOfficeKey(value) {
+  return String(value ?? '').trim().replace(/\s+/g, ' ').toLowerCase();
+}
 
-  // Helper map to quickly find officeId by its normalized name
-  const officeNameMap = new Map();
+/**
+ * Build lookup maps for active offices (`deleted_at == null`).
+ */
+function _buildActiveOfficesLookup(offices) {
+  const officeById = new Map();
+  const officeByNameKey = new Map();
   if (Array.isArray(offices)) {
     for (const office of offices) {
-      if (office && office.name) {
-        officeNameMap.set(String(office.name).trim().toLowerCase(), String(office.id));
+      if (!office || typeof office !== 'object') continue;
+      if (office.deleted_at !== null && office.deleted_at !== undefined) continue;
+      if (office.id !== undefined && office.id !== null && String(office.id).trim() !== '') {
+        officeById.set(String(office.id).trim(), office);
+      }
+      const nameKey = _normalizeOfficeKey(office.name);
+      if (nameKey && !officeByNameKey.has(nameKey)) {
+        officeByNameKey.set(nameKey, office);
+      }
+    }
+  }
+  return { officeById, officeByNameKey };
+}
+
+/**
+ * Resolve the active office associated with a receipt row using the exact
+ * matching order of VehicleLedgerRepository::resolveOfficeForRow:
+ *   1. Normalized `row.office` name matched against active offices.
+ *   2. Fallback to `row.office_id` matched against active offices.
+ */
+function _resolveOfficeForRow(row, officeById, officeByNameKey) {
+  if (!row || typeof row !== 'object') return null;
+  const officeKey = _normalizeOfficeKey(row.office);
+  if (officeKey && officeByNameKey.has(officeKey)) {
+    return officeByNameKey.get(officeKey);
+  }
+  const officeId = row.office_id !== undefined && row.office_id !== null
+    ? String(row.office_id).trim()
+    : '';
+  if (officeId && officeById.has(officeId)) {
+    return officeById.get(officeId);
+  }
+  return null;
+}
+
+/**
+ * Check whether a treasury or vehicle_ledger movement represents a row-disbursement
+ * credit to an office balance (`reference_type === 'receipt_row_disbursement'` or
+ * `effect === 'row_disbursement'` with deposit/OFFICE_DEPOSIT type for an office).
+ */
+function _isRowDisbursementOfficeMovement(movement) {
+  if (!movement || typeof movement !== 'object') return false;
+  if (movement.deleted_at !== null && movement.deleted_at !== undefined) return false;
+  if (dbBool(movement.is_archived)) return false;
+
+  const refType = String(movement.reference_type ?? '').trim();
+  const effect = String(movement.effect ?? '').trim();
+  if (refType !== 'receipt_row_disbursement' && effect !== 'row_disbursement') {
+    return false;
+  }
+
+  const type = String(movement.type ?? '').trim();
+  if (type && type !== 'deposit' && type !== 'OFFICE_DEPOSIT') {
+    return false;
+  }
+
+  const clientType = String(movement.client_type ?? '').trim().toLowerCase();
+  if (clientType && clientType !== 'office') {
+    return false;
+  }
+
+  return true;
+}
+
+/**
+ * Calculate the canonical office credit in integer cents for a disbursed receipt row:
+ *   total_cents = net_cents + sarf_cents = Money.toCents(calculateRowOfficeDeduction(row))
+ * Matches VehicleLedgerRepository::calculateRowNetAndSarfCents($row).
+ */
+function _calculateRowDisbursementCents(row) {
+  if (!row || typeof row !== 'object') return 0;
+  return Money.toCents(calculateRowOfficeDeduction(row));
+}
+
+/**
+ * Calculates "إجمالي المحصل من المكاتب":
+ * Total amount credited to active office balances when receipt rows are marked
+ * as disbursed (`disbursement_status === 'paid'`, `تم صرفه`).
+ *
+ * Source of truth & accounting rules:
+ *   - Uses the canonical row-disbursement formula `net + sarf`
+ *     (`calculateRowOfficeDeduction` / `VehicleLedgerRepository::calculateRowNetAndSarfCents`).
+ *   - Only counts non-separator rows whose row-level `disbursement_status` is `'paid'`
+ *     (`getRowDisbursementStatus(row) === ROW_DISBURSEMENT_STATUS.PAID`), never inferring
+ *     row disbursement from receipt-level `payment_status` or `payout_status`.
+ *   - Resolves each row's office against active offices via normalized `row.office` name
+ *     with fallback to `row.office_id` (`VehicleLedgerRepository::resolveOfficeForRow`).
+ *   - Reconciles against `receipt_row_disbursement` movements when provided: reversed
+ *     disbursements (`is_reversed = 1` without a subsequent active disbursement) are
+ *     excluded, and unrelated office/receipt movements are ignored.
+ *   - Deduplicates receipts, row IDs, and `receiptId:rowId` reference keys to prevent
+ *     double-counting across repeated updates or duplicate records.
+ */
+export function calculateTotalCollectedFromCompanies(activeReceipts, offices, movements = null) {
+  const hasOfficesArg = Array.isArray(offices);
+  const { officeById, officeByNameKey } = _buildActiveOfficesLookup(offices);
+
+  const activeMovementByRefId = new Map();
+  const reversedRefIds = new Set();
+  const seenMovementIds = new Set();
+
+  if (Array.isArray(movements)) {
+    for (const m of movements) {
+      if (!_isRowDisbursementOfficeMovement(m)) continue;
+
+      if (m.id !== undefined && m.id !== null && String(m.id).trim() !== '') {
+        const mid = `${String(m.type ?? '')}:${String(m.id).trim()}`;
+        if (seenMovementIds.has(mid)) continue;
+        seenMovementIds.add(mid);
+      }
+
+      const refId = String(m.reference_id ?? '').trim();
+      if (!refId) continue;
+
+      if (dbBool(m.is_reversed)) {
+        reversedRefIds.add(refId);
+        continue;
+      }
+
+      const amountCents = Math.round(Number(m.amount) || 0);
+      if (amountCents <= 0) continue;
+
+      if (!activeMovementByRefId.has(refId)) {
+        activeMovementByRefId.set(refId, m);
       }
     }
   }
 
-  // Single pass through all active receipt rows to build the weightMap
-  if (Array.isArray(activeReceipts)) {
-    for (const receipt of activeReceipts) {
-      if (!receipt) continue;
-      const rows = Array.isArray(receipt.rows) ? receipt.rows : [];
-      for (const row of rows) {
-        if (!row || row._type === 'separator') continue;
-        const rowOffice = String(row.office || '').trim().toLowerCase();
-        if (!rowOffice) continue;
-
-        const officeId = officeNameMap.get(rowOffice);
-        if (!officeId) continue; // Skip if office is not registered
-
-        const loading = String(row.loading || '').trim().toLowerCase();
-        const dest = String(row.taktik || row.direction || '').trim().toLowerCase();
-        const w = calculateWeightTotal(row);
-        if (!loading || !dest) continue;
-
-        const key = `${officeId}::${loading}::${dest}`;
-        weightMap[key] = (weightMap[key] || 0) + w;
-      }
-    }
-  }
-
-  // Calculate totals by iterating offices once and their routes once
   let totalCents = 0;
-  if (Array.isArray(offices)) {
-    for (const office of offices) {
-      if (!office) continue;
-      const officeId = String(office.id);
-      const hamolaRows = Array.isArray(office.hamolaRows) ? office.hamolaRows : [];
-      
-      let officeGrandTotalCents = 0;
-      for (const r of hamolaRows) {
-        if (!r) continue;
-        const loading = String(r.loading_place || r.loading || '').trim().toLowerCase();
-        const dest = String(r.destination_place || r.direction || r.taktik || '').trim().toLowerCase();
-        const key = `${officeId}::${loading}::${dest}`;
-        
-        const weight = weightMap[key] || 0;
-        const price = Number(r.price) || 0;
-        officeGrandTotalCents += Money.toCents(weight * price);
+  const seenReceiptIds = new Set();
+  const seenRefIds = new Set();
+
+  if (Array.isArray(activeReceipts)) {
+    for (let rIdx = 0; rIdx < activeReceipts.length; rIdx++) {
+      const receipt = activeReceipts[rIdx];
+      if (!receipt || typeof receipt !== 'object') continue;
+      if (receipt.deleted_at !== null && receipt.deleted_at !== undefined) continue;
+      if (dbBool(receipt.is_archived)) continue;
+
+      const receiptId =
+        receipt.id !== undefined && receipt.id !== null && String(receipt.id).trim() !== ''
+          ? String(receipt.id).trim()
+          : '';
+      if (receiptId) {
+        if (seenReceiptIds.has(receiptId)) continue;
+        seenReceiptIds.add(receiptId);
       }
-      totalCents += officeGrandTotalCents;
+
+      const rows = Array.isArray(receipt.rows)
+        ? receipt.rows
+        : typeof receipt.rows === 'string'
+          ? (() => {
+              try {
+                return JSON.parse(receipt.rows) || [];
+              } catch (_) {
+                return [];
+              }
+            })()
+          : [];
+
+      const seenRowIds = new Set();
+
+      for (let idx = 0; idx < rows.length; idx++) {
+        const row = rows[idx];
+        if (!row || typeof row !== 'object') continue;
+        if (row._type === 'separator' || row.type === 'separator' || row.row_type === 'separator') {
+          continue;
+        }
+
+        const rowId = getStableRowId(row, receiptId || `r${rIdx}`, idx);
+        if (seenRowIds.has(rowId)) continue;
+
+        const rowRefId = receiptId ? `${receiptId}:${rowId}` : rowId;
+        if (seenRefIds.has(rowRefId)) continue;
+
+        if (getRowDisbursementStatus(row) !== ROW_DISBURSEMENT_STATUS.PAID) {
+          continue;
+        }
+
+        if (reversedRefIds.has(rowRefId) && !activeMovementByRefId.has(rowRefId)) {
+          continue;
+        }
+
+        const office = _resolveOfficeForRow(row, officeById, officeByNameKey);
+        if (hasOfficesArg && !office) {
+          continue;
+        }
+
+        const activeMovement = activeMovementByRefId.get(rowRefId);
+        if (activeMovement && office && activeMovement.client_id !== undefined && activeMovement.client_id !== null && String(activeMovement.client_id).trim() !== '') {
+          if (String(activeMovement.client_id).trim() !== String(office.id).trim()) {
+            continue;
+          }
+        }
+
+        const rowCents = _calculateRowDisbursementCents(row);
+        if (rowCents <= 0) continue;
+
+        seenRowIds.add(rowId);
+        seenRefIds.add(rowRefId);
+        totalCents += rowCents;
+      }
     }
   }
 
   return Money.toDecimal(totalCents);
+}
+
+async function _calculateTotalCollectedFromCompanies(username, activeReceipts, offices, movements = null) {
+  return calculateTotalCollectedFromCompanies(activeReceipts, offices, movements);
 }
 
 // ─── PRIMARY CAPITAL TREASURY STORAGE LAYER ──────────────────────────────────
@@ -1015,8 +1180,13 @@ async function _refreshDashboard() {
   const totalExpenseVal = Money.toDecimal(totalExpenseCents);
   const netProfitVal = Money.toDecimal(netProfitCents);
 
-  // Card 3: "إجمالي المحصل من المكاتب" — Calculated with prices map & routes weight
-  const totalCollectedFromCompanies = await _calculateTotalCollectedFromCompanies(username, activeReceipts, offices);
+  // Card 3: "إجمالي المحصل من المكاتب" — Total credited to office balances from disbursed receipt rows
+  const totalCollectedFromCompanies = await _calculateTotalCollectedFromCompanies(
+    username,
+    activeReceipts,
+    offices,
+    allTreasury
+  );
 
   // Card 5: "المبالغ المعلقة" — Sum of ABS(balance) for all customers with negative current balance (period-independent)
   const pendingBalancesVal = await calculatePendingCustomerBalances(username);
