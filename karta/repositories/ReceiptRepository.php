@@ -910,7 +910,7 @@ class ReceiptRepository {
                 if (isset($row['_type']) && $row['_type'] === 'separator') continue;
                 if ($rowStatusFilter !== null && self::getRowDisbursementStatus($row) !== $rowStatusFilter) continue;
                 $rowCount++;
-                $totalWeight += (float)($row['weight'] ?? 0) - (float)($row['deficit'] ?? 0);
+                $totalWeight += (float)($row['weight'] ?? 0) - ((float)($row['deficit'] ?? 0) / 1000.0);
                 $totalNoloon += (float)($row['noloon'] ?? 0);
                 $totalOhda   += (float)($row['ohda'] ?? 0);
             }

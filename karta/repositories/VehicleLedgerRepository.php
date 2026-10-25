@@ -188,7 +188,8 @@ class VehicleLedgerRepository {
      * Rules:
      *   - When formula inputs ('weight' or 'noloon' keys) are present on $row,
      *     net is recalculated from the row inputs:
-     *       net = round((weight - deficit) * noloon - (ohda + officeAmount + sarf) + add, 2)
+     *       net = round((weight - (deficit / 1000)) * noloon - (ohda + officeAmount + sarf) + add, 2)
+     *     where weight is in tons and deficit (shortage) is in kilograms.
      *   - When formula inputs are absent, stored 'net' is used (rounded to 2 decimals).
      *   - Both net and sarf are converted to integer cents via (int)round($decimal * 100),
      *     and total_cents = net_cents + sarf_cents.
@@ -201,7 +202,7 @@ class VehicleLedgerRepository {
             $rowNetDecimal = round(floatval($row['net']), 2);
         } else {
             $w   = floatval($row['weight'] ?? 0);
-            $def = floatval($row['deficit'] ?? 0);
+            $def = floatval($row['deficit'] ?? 0) / 1000.0;
             $nol = floatval($row['noloon'] ?? 0);
             $ohd = floatval($row['ohda'] ?? 0);
             $ofc = floatval($row['officeAmount'] ?? ($row['office_amount'] ?? 0));
@@ -272,7 +273,8 @@ class VehicleLedgerRepository {
      *
      * Exact deduction rule per row:
      *   Office balance deduction = الصافي (net) + قيمة خانة الصرف (sarf)
-     *   where net = (weight - deficit) * noloon - (ohda + officeAmount + sarf) + add
+     *   where net = (weight - (deficit / 1000)) * noloon - (ohda + officeAmount + sarf) + add
+     *   (weight in tons, deficit/shortage in kilograms)
      *
      * Exact reference format:
      *   قيمة كارتة - {selected vehicle owner's name}

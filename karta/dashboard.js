@@ -5,6 +5,7 @@
  */
 
 import { Money } from './money.js';
+import { calculateWeightTotal } from './services/financialCalculator.js';
 import { AuthModule } from './auth.js';
 import { FinancialService } from './financial.js';
 import { printHTML, buildPrintDocument } from './printEngine.js';
@@ -121,7 +122,7 @@ async function _calculateTotalCollectedFromCompanies(username, activeReceipts, o
 
         const loading = String(row.loading || '').trim().toLowerCase();
         const dest = String(row.taktik || row.direction || '').trim().toLowerCase();
-        const w = (Number(row.weight) || 0) - (Number(row.deficit) || 0);
+        const w = calculateWeightTotal(row);
         if (!loading || !dest) continue;
 
         const key = `${officeId}::${loading}::${dest}`;

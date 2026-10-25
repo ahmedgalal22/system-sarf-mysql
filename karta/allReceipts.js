@@ -27,7 +27,7 @@ import {
 import { DateUtils } from './dateUtils.js';
 import { MultiSelectFilter } from './components/multiSelectFilter.js';
 import { notifyReceiptStatusChanged } from './entities.js';
-import { calculateRowOfficeDeduction } from './services/financialCalculator.js';
+import { calculateRowOfficeDeduction, calculateWeightTotal } from './services/financialCalculator.js';
 
 const PAGE_ID = 'allReceiptsPage';
 const SHORT_DATE_FMT = new Intl.DateTimeFormat('ar-EG', { dateStyle: 'medium' });
@@ -497,7 +497,7 @@ function sumVisibleRowWeight(rows) {
   return rows
     .filter((row) => row._type !== 'separator')
     .reduce((sum, row) => {
-      return sum + toNumber(row.weight) - toNumber(row.deficit);
+      return sum + calculateWeightTotal(row);
     }, 0);
 }
 

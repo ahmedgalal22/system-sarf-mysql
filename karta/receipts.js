@@ -14,7 +14,7 @@ import { ExcelService } from './excelService.js';
 import { DBProvider } from './services/dbProvider.js';
 import { ReceiptRepository } from './services/receiptRepository.js';
 import { ClientRepository } from './services/clientRepository.js';
-import { calculateRowNet, calculateReceiptTotals } from './services/financialCalculator.js';
+import { calculateRowNet, calculateReceiptTotals, shortageKgToTons } from './services/financialCalculator.js';
 import {
   RECEIPT_PAYOUT_STATUS,
   ROW_DISBURSEMENT_STATUS,
@@ -577,7 +577,7 @@ const COL_DEFS = [
   // index: 3 (owner column removed — owner comes from clientInput)
   { key: 'car',          label: 'رقم المركبة',        cls: 'receipt-car',          type: 'text',   minW: '80px',  printHide: false },
   // index: 4
-  { key: 'weight',       label: 'وزن وش',             cls: 'receipt-weight',       type: 'number', minW: '55px',  printHide: false, printConditional: true },
+  { key: 'weight',       label: 'الوزن',              cls: 'receipt-weight',       type: 'number', minW: '55px',  printHide: false, printConditional: true },
   // index: 5
   { key: 'deficit',      label: 'عجز',                cls: 'receipt-deficit',      type: 'number', minW: '45px',  printHide: false },
   // index: 6  ← اسم المكتب (office) — مخفي في الطباعة (Feature 4)
@@ -625,6 +625,60 @@ function _field(row, cls) {
 function _num(row, cls) {
   const el = row.querySelector('.' + cls);
   return parseFloat(el?.value) || 0;
+}
+
+/**
+ * Converts the shortage (العجز) value in kilograms (e.g. 200)
+ * into the ton calculation value (e.g. 0.2) by dividing by 1000.
+ */
+function convertShortageToCalculationValue(rawInput) {
+  return shortageKgToTons(rawInput);
+}
+
+/**
+ * Formats a persisted shortage (العجز) value in kilograms (e.g. 200) for
+ * display in the `.receipt-deficit` input when opening a receipt for editing.
+ */
+function formatShortageForInput(deficitKg) {
+  const num = Number(deficitKg);
+  if (!Number.isFinite(num) || num === 0) return '';
+  return String(num);
+}
+
+function _deficitNum(row) {
+  return _num(row, 'receipt-deficit');
+}
+
+const SARF_ZERO_WARNING_TEXT = 'تنبيه: قيمة الصرف صفر أو فارغة.';
+
+/**
+ * Returns true if any non-empty data row in the saved receipt has an empty,
+ * missing, or numerically zero `sarf` (الصرف) value.
+ */
+function hasZeroOrEmptySarf(rows) {
+  if (!Array.isArray(rows)) return true;
+  const dataRows = rows.filter(r => r && r._type !== 'separator' && !r._isEmpty);
+  if (dataRows.length === 0) return true;
+  return dataRows.some(r => {
+    const raw = r.sarf;
+    if (raw === '' || raw === null || raw === undefined) return true;
+    const num = Number(raw);
+    return !Number.isFinite(num) || num === 0;
+  });
+}
+
+function _setPostSaveSarfWarning(visible) {
+  const el = typeof document !== 'undefined' ? document.getElementById('sarfZeroPostSaveWarning') : null;
+  if (!el) return;
+  if (visible) {
+    el.textContent = SARF_ZERO_WARNING_TEXT;
+    el.classList.remove('hidden');
+    el.dataset.visible = '1';
+  } else {
+    el.textContent = '';
+    el.classList.add('hidden');
+    el.dataset.visible = '0';
+  }
 }
 
 function tFmt(n) { // delegated to Money.fmt
@@ -742,7 +796,7 @@ function formatSnapshotCellValue(row, col) {
       return '';
     }
   }
-  if (col.key === 'noloon' || col.key === 'ohda' || col.key === 'officeAmount' || col.key === 'sarf') {
+  if (col.key === 'noloon' || col.key === 'ohda' || col.key === 'officeAmount' || col.key === 'sarf' || col.key === 'deficit') {
     const n = Number(raw);
     if (Number.isFinite(n)) {
       if (Number.isInteger(n)) {
@@ -865,7 +919,7 @@ function renderMetaFields() {
           class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none">
       </div>
       <div id="receiptClientFieldWrap">
-        <label class="block text-sm font-semibold text-gray-700 mb-2">صاحب المركبة / الصريف</label>
+        <label class="block text-sm font-semibold text-gray-700 mb-2">صاحب المركبة</label>
         <div class="relative">
           <input id="clientInput" type="text" list="clientsList"
             class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none"
@@ -1048,7 +1102,9 @@ function renderFooterActions() {
         </svg>
         إلغاء التعديل
       </button>
-    </div>`;
+    </div>
+    <div id="sarfZeroPostSaveWarning" role="status" aria-live="polite" data-visible="0"
+      class="hidden no-print sarf-zero-warning"></div>`;
 }
 
 // ─── RENDER: TOTALS FOOTER ────────────────────────────────────────────────────
@@ -1232,6 +1288,34 @@ function _injectReceiptStyles() {
       outline: 2px solid #3b82f6 !important;
       outline-offset: -1px;
       background: #eff6ff !important;
+    }
+
+    /* ═══ SARF FIELD VISUAL HIGHLIGHT ═══ */
+    #receiptPage .receipt-sarf,
+    #receiptPage .receipt-sarf-highlight {
+      background-color: #fffbeb !important;
+      border: 1.5px solid #f59e0b !important;
+      color: #78350f !important;
+      font-weight: 600;
+    }
+    #receiptPage .receipt-sarf:focus,
+    #receiptPage .receipt-sarf-highlight:focus {
+      background-color: #fef3c7 !important;
+      border-color: #d97706 !important;
+      box-shadow: 0 0 0 2px rgba(245, 158, 11, 0.25) !important;
+    }
+
+    /* ═══ POST-SAVE ZERO/EMPTY SARF WARNING ═══ */
+    .sarf-zero-warning {
+      margin-top: 8px;
+      padding: 6px 12px;
+      border-radius: 6px;
+      border: 1px solid #fecaca;
+      background-color: #fef2f2;
+      color: #b91c1c;
+      font-size: 12px;
+      font-weight: 600;
+      line-height: 1.4;
     }
 
     /* ═══ SNAPSHOT COLUMNS VISUAL ENHANCEMENTS ═══ */
@@ -1521,6 +1605,15 @@ function _buildRowHTML() {
             class="${col.cls} w-full px-1 py-1 border border-gray-300 rounded text-xs focus:ring-1 focus:ring-blue-500 outline-none"
             placeholder="رقم المركبة">
           <div class="vehicle-owner-warning-msg field-msg-inline field-msg-inline--warn" role="status"></div>
+        </td>`;
+    }
+
+    if (col.key === 'sarf') {
+      return `
+        <td class="px-1 py-1 text-center receipt-sarf-cell${printClass}">
+          <input type="number"
+            class="${col.cls} receipt-sarf-highlight w-full px-1 py-1 border border-amber-400 bg-amber-50 rounded text-xs font-semibold text-amber-950 focus:ring-2 focus:ring-amber-500 focus:border-amber-500 outline-none"
+            placeholder="0">
         </td>`;
     }
 
@@ -2551,7 +2644,7 @@ async function collectReceiptRows() {
       type         : normalizeOptionalString(_field(row, 'receipt-type')),
       office       : normalizeOptionalString(_field(row, 'receipt-office')),
       weight       : _num(row, 'receipt-weight'),
-      deficit      : _num(row, 'receipt-deficit'),
+      deficit      : _deficitNum(row),
       noloon       : _num(row, 'receipt-noloon'),
       ohda         : _num(row, 'receipt-ohda'),
       officeAmount : _num(row, 'receipt-office-amount'),
@@ -2698,6 +2791,7 @@ async function validateBeforeSave(rawData) {
 async function saveReceipt() {
   if (_isSaving) return;
   _isSaving = true;
+  _setPostSaveSarfWarning(false);
 
   let rawData;
   try {
@@ -2722,6 +2816,8 @@ async function saveReceipt() {
     return;
   }
 
+  const warnZeroSarf = hasZeroOrEmptySarf(rawData.rows);
+
   // EDIT MODE — no modal
   if (ReceiptState.isEditing && ReceiptState.editingReceiptId) {
     rawData.account_type = null;
@@ -2733,6 +2829,7 @@ async function saveReceipt() {
       window.dispatchEvent(new CustomEvent('receipts:changed'));
       alert('✅ تم تحديث النموذج بنجاح');
       clearReceiptSilent();
+      _setPostSaveSarfWarning(warnZeroSarf);
       if (typeof showPage === 'function') showPage('allReceipts');
       setTimeout(() => { if (typeof applyAllReceiptsFilter === 'function') applyAllReceiptsFilter(); }, 400);
     } catch (err) {
@@ -2758,6 +2855,7 @@ async function saveReceipt() {
     window.dispatchEvent(new CustomEvent('receipts:changed'));
     alert('✅ تم حفظ النموذج بنجاح');
     clearReceiptSilent();
+    _setPostSaveSarfWarning(warnZeroSarf);
   } catch (err) {
     console.error('[SAVE ERROR]', err);
     alert(err.message || '❌ حدث خطأ أثناء الحفظ');
@@ -2967,6 +3065,7 @@ function clearReceiptSilent() {
   _isSaving         = false;
   _vehicleAnalysisCache.clear();
   _exitEditMode();
+  _setPostSaveSarfWarning(false);
 
   const rnInput = document.getElementById('receiptNumber');
   if (rnInput) rnInput.value = '';
@@ -3026,6 +3125,7 @@ function _exitEditMode() {
 // ─── LOAD RECEIPT FOR EDIT ────────────────────────────────────────────────────
 
 async function loadReceiptForEdit(receiptData) {
+  _setPostSaveSarfWarning(false);
   _enterReceiptEditMode(receiptData);
 
   const setV = (id, val) => { const el = document.getElementById(id); if (el) el.value = val || ''; };
@@ -3102,7 +3202,7 @@ async function loadReceiptForEdit(receiptData) {
     // receipt-owner removed from table
     setF('receipt-car',           rowData.vehicle_plate || rowData.car || '');
     setF('receipt-weight',        rowData.weight ? Money.fmt(rowData.weight) : '');
-    setF('receipt-deficit',       rowData.deficit ? Money.fmt(rowData.deficit) : '');
+    setF('receipt-deficit',       formatShortageForInput(rowData.deficit));
     setF('receipt-type',          rowData.type         || '');
     setF('receipt-office',        rowData.office       || '');
     setF('receipt-loading',       rowData.loading      || '');
@@ -3461,6 +3561,10 @@ export {
   formatSnapshotNumber,
   formatSnapshotCellValue,
   getSnapshotCellRawValue,
+  convertShortageToCalculationValue,
+  formatShortageForInput,
+  hasZeroOrEmptySarf,
+  SARF_ZERO_WARNING_TEXT,
   COL_DEFS,
   DATA_COL_COUNT,
 };

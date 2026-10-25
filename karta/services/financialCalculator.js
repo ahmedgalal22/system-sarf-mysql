@@ -15,22 +15,32 @@ const _EFFECT = Object.freeze({
 });
 
 /**
+ * Converts a shortage (العجز) value in kilograms (e.g. 200) into tons (e.g. 0.2)
+ * by dividing by 1000.
+ */
+export function shortageKgToTons(deficitKg) {
+  const kg = Number(deficitKg);
+  if (!Number.isFinite(kg) || kg === 0) return 0;
+  return kg / 1000;
+}
+
+/**
  * Calculates the net value of a single data row.
- * Formula: (weight - deficit) * noloon - (ohda + officeAmount + sarf) + add
+ * Formula: (weight - (deficit / 1000)) * noloon - (ohda + officeAmount + sarf) + add
+ * where weight is in tons and deficit (shortage) is in kilograms.
  */
 export function calculateRowNet(row) {
   if (!row) return 0;
   if (row._type === 'separator' || row.type === 'separator' || row.row_type === 'separator') return 0;
 
-  const weight       = Number(row.weight)       || 0;
-  const deficit      = Number(row.deficit)      || 0;
+  const weightTotal  = calculateWeightTotal(row);
   const noloon       = Number(row.noloon)       || 0;
   const ohda         = Number(row.ohda)         || 0;
   const officeAmount = Number(row.officeAmount ?? row.office_amount ?? row.officeAmount) || 0;
   const sarf         = Number(row.sarf)         || 0;
   const add          = Number(row.add)          || 0;
 
-  const net = (weight - deficit) * noloon
+  const net = weightTotal * noloon
             - (ohda + officeAmount + sarf)
             + add;
 
@@ -38,15 +48,16 @@ export function calculateRowNet(row) {
 }
 
 /**
- * Calculates the weight total of a single data row.
- * Formula: weight - deficit
+ * Calculates the net weight (in tons) of a single data row.
+ * Formula: weight - (deficit / 1000)
+ * where weight is in tons and deficit (shortage) is in kilograms.
  */
 export function calculateWeightTotal(row) {
   if (!row) return 0;
   if (row._type === 'separator' || row.type === 'separator' || row.row_type === 'separator') return 0;
-  const weight  = Number(row.weight)  || 0;
-  const deficit = Number(row.deficit) || 0;
-  return weight - deficit;
+  const weight      = Number(row.weight) || 0;
+  const deficitTons = shortageKgToTons(row.deficit);
+  return weight - deficitTons;
 }
 
 /**
