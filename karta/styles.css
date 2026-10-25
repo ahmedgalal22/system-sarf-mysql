@@ -3612,3 +3612,10 @@ input[type="number"] {
     justify-content: center;
   }
 }
+
+@media print {
+  .no-print,
+  .snapshot-cell-status {
+    display: none !important;
+  }
+}

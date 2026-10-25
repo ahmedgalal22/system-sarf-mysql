@@ -622,8 +622,6 @@ function renderShell() {
       <div class="all-receipts-card">
 
         <div class="all-receipts-header">
-          <h2 class="all-receipts-title">جميع الكارتات</h2>
-          <p class="all-receipts-subtitle">عرض مركزي للكارتات مع التصفية والطباعة والتعديل الآمن.</p>
           <div class="all-receipts-tabs no-print" role="tablist" aria-label="جميع النماذج">
             <button type="button" class="all-tab" data-tab="receipts">📋 الكارتات</button>
           </div>
@@ -1130,9 +1128,6 @@ function buildReceiptPrintBlock(record) {
   const thead      = _bulkReceiptBuildTableHead(activeCols);
   const tbody      = _bulkReceiptBuildTableBody(allRows, activeCols);
 
-  const payoutStatus = String(record.payout_status || 'unpaid');
-  const statusLabel  = payoutStatus === 'paid' ? 'تم صرفه' : 'لم يتم الصرف';
-
   return `
     <section class="print-card">
       <header>
@@ -1142,7 +1137,6 @@ function buildReceiptPrintBlock(record) {
       </header>
       <div class="print-meta">
         ${esc(record.client_name || '')}
-        · ${esc(statusLabel)}
       </div>
       <table>
         ${thead}
@@ -1431,9 +1425,6 @@ function _receiptPrintBuildHeader(record) {
   const receiptDate   = esc(receiptDisplayDate(record.receipt_date));
   const dayName       = esc(receiptDayName(record.receipt_date));
   const ownerName     = esc(record.client_name || '—');
-  const meta          = getPayoutStatusMeta(record.payout_status);
-  const statusLabel   = meta.printLabel;
-  const statusColor   = meta.color;
   const shipping      = record.paid_at
     ? `<span>تاريخ الصرف: <strong>${esc(record.paid_at.split('T')[0])}</strong></span>`
     : '';
@@ -1464,7 +1455,6 @@ function _receiptPrintBuildHeader(record) {
         <span>إذن الصرف: <strong>${receiptNumber}</strong></span>
         <span>التاريخ: <strong>${receiptDate} — ${dayName}</strong></span>
         ${shipping}
-        <span style="color:${statusColor};font-weight:800;">${statusLabel}</span>
       </div>
       <div class="print-header-info" style="margin-top:4px;">
         <span>صاحب المركبة: <strong>${ownerName}</strong></span>
@@ -1561,6 +1551,10 @@ function printSingleReceipt(record) {
       body,
       orientation: 'landscape',
       extraCSS: `
+        .no-print,
+        .snapshot-cell-status {
+          display: none !important;
+        }
         .print-separator td {
           background: #fff7ed !important;
           border-top: 2px solid #fb923c !important;
@@ -1585,6 +1579,10 @@ function printSingleReceipt(record) {
 function printStyles() {
   return `
     * { box-sizing: border-box; }
+    .no-print,
+    .snapshot-cell-status {
+      display: none !important;
+    }
     body {
       direction: rtl;
       font-family: 'Cairo', Arial, sans-serif;
