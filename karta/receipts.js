@@ -636,13 +636,23 @@ function convertShortageToCalculationValue(rawInput) {
 }
 
 /**
+ * Formats a persisted numeric value for display in a receipt form <input type="number">
+ * without appending unnecessary '.00' suffixes or rounding/truncating decimal precision.
+ * Empty, null, undefined, NaN, or 0 values return '' so the input shows its placeholder.
+ */
+function formatReceiptInputNumber(value) {
+  if (value === '' || value === null || value === undefined) return '';
+  const num = Number(value);
+  if (!Number.isFinite(num) || num === 0) return '';
+  return String(num);
+}
+
+/**
  * Formats a persisted shortage (العجز) value in kilograms (e.g. 200) for
  * display in the `.receipt-deficit` input when opening a receipt for editing.
  */
 function formatShortageForInput(deficitKg) {
-  const num = Number(deficitKg);
-  if (!Number.isFinite(num) || num === 0) return '';
-  return String(num);
+  return formatReceiptInputNumber(deficitKg);
 }
 
 function _deficitNum(row) {
@@ -1925,7 +1935,7 @@ function attachRowCalculation(row) {
       const noloonVal = parseFloat(noloonRaw) || 0;
       const noloonInp = row.querySelector('.receipt-noloon');
       if (noloonInp && noloonVal > 0) {
-        noloonInp.value = String(noloonRaw);
+        noloonInp.value = formatReceiptInputNumber(noloonRaw);
         noloonInp.dispatchEvent(new Event('input'));
       }
       // المكتب — display raw stored value (no forced .toFixed(2))
@@ -1933,7 +1943,7 @@ function attachRowCalculation(row) {
       const maktabVal = parseFloat(maktabRaw) || 0;
       const maktabInp = row.querySelector('.receipt-office-amount');
       if (maktabInp && maktabVal > 0) {
-        maktabInp.value = String(maktabRaw);
+        maktabInp.value = formatReceiptInputNumber(maktabRaw);
         maktabInp.dispatchEvent(new Event('input'));
       }
       // النوع — auto-fill when empty or previously auto-filled
@@ -3083,7 +3093,7 @@ async function loadReceiptForEdit(receiptData) {
   setV('receiptNumber',     receiptData.receipt_number || receiptData.receiptNumber || '');
 
   // Financial fields are stored as cents in DB — convert to decimals for UI
-  const generalAdd      = Money.fmtCents(receiptData.general_add ?? receiptData.generalAdd ?? receiptData.totals?.general_add ?? 0);
+  const generalAdd      = String(Money.toDecimal(receiptData.general_add ?? receiptData.generalAdd ?? receiptData.totals?.general_add ?? 0));
 
   const balEl           = document.getElementById('receiptBalance');
   const paidEl = document.getElementById('paidAmount');
@@ -3147,18 +3157,18 @@ async function loadReceiptForEdit(receiptData) {
     setF('receipt-data',          rowData.data         || '');
     // receipt-owner removed from table
     setF('receipt-car',           rowData.vehicle_plate || rowData.car || '');
-    setF('receipt-weight',        rowData.weight ? Money.fmt(rowData.weight) : '');
+    setF('receipt-weight',        formatReceiptInputNumber(rowData.weight));
     setF('receipt-deficit',       formatShortageForInput(rowData.deficit));
     setF('receipt-type',          rowData.type         || '');
     setF('receipt-office',        rowData.office       || '');
     setF('receipt-loading',       rowData.loading      || '');
     setF('receipt-taktik',        rowData.taktik       || '');
-    setF('receipt-ohda',          rowData.ohda ? Money.fmt(rowData.ohda) : '');
+    setF('receipt-ohda',          formatReceiptInputNumber(rowData.ohda));
     // bolsa محذوف من الواجهة — البيانات القديمة محفوظة في rowData.bolsa
-    setF('receipt-noloon',        rowData.noloon ? Money.fmt(rowData.noloon) : '');
-    setF('receipt-office-amount', rowData.officeAmount ? Money.fmt(rowData.officeAmount) : '');
-    setF('receipt-add',           rowData.add ? Money.fmt(rowData.add) : '');
-    setF('receipt-sarf',          rowData.sarf ? Money.fmt(rowData.sarf) : '');
+    setF('receipt-noloon',        formatReceiptInputNumber(rowData.noloon));
+    setF('receipt-office-amount', formatReceiptInputNumber(rowData.officeAmount));
+    setF('receipt-add',           formatReceiptInputNumber(rowData.add));
+    setF('receipt-sarf',          formatReceiptInputNumber(rowData.sarf));
     setF('receipt-net',           Money.fmt(calculateRowNet(rowData)));
 
     tr.dataset.calcAttached = '1';
@@ -3412,17 +3422,17 @@ function _handleReceiptExcelImport() {
         setVal('receipt-date',          rowData.date         ?? '');
         setVal('receipt-data',          rowData.data         ?? '');
         setVal('receipt-car',           rowData.car          ?? '');
-        setVal('receipt-weight',        rowData.weight  !== 0 ? rowData.weight  : '');
-        setVal('receipt-deficit',       rowData.deficit !== 0 ? rowData.deficit : '');
+        setVal('receipt-weight',        formatReceiptInputNumber(rowData.weight));
+        setVal('receipt-deficit',       formatShortageForInput(rowData.deficit));
         setVal('receipt-office',        rowData.office       ?? '');
         setVal('receipt-loading',       rowData.loading      ?? '');
         setVal('receipt-taktik',        rowData.taktik       ?? '');
         setVal('receipt-type',          rowData.type         ?? '');
-        setVal('receipt-noloon',        rowData.noloon  !== 0 ? rowData.noloon  : '');
-        setVal('receipt-ohda',          rowData.ohda    !== 0 ? rowData.ohda    : '');
-        setVal('receipt-office-amount', rowData.officeAmount !== 0 ? rowData.officeAmount : '');
-        setVal('receipt-add',           rowData.add     !== 0 ? rowData.add     : '');
-        setVal('receipt-sarf',          rowData.sarf    !== 0 ? rowData.sarf    : '');
+        setVal('receipt-noloon',        formatReceiptInputNumber(rowData.noloon));
+        setVal('receipt-ohda',          formatReceiptInputNumber(rowData.ohda));
+        setVal('receipt-office-amount', formatReceiptInputNumber(rowData.officeAmount));
+        setVal('receipt-add',           formatReceiptInputNumber(rowData.add));
+        setVal('receipt-sarf',          formatReceiptInputNumber(rowData.sarf));
 
         // Compute net inline using the same formula as calculateNet()
         const _net = calculateRowNet(rowData);
@@ -3508,6 +3518,7 @@ export {
   formatSnapshotCellValue,
   getSnapshotCellRawValue,
   convertShortageToCalculationValue,
+  formatReceiptInputNumber,
   formatShortageForInput,
   COL_DEFS,
   DATA_COL_COUNT,
