@@ -46,7 +46,8 @@ try {
             $authUser['username'],
             $treasuryRepo,
             $ledgerRepo,
-            $officeRepo
+            $officeRepo,
+            true
         );
         if ($revStatus['code'] === ReceiptRepository::RESULT_NOT_FOUND) {
             $db->rollBack();
@@ -74,7 +75,6 @@ try {
             return;
         }
 
-        $treasuryRepo->reverseByReferenceForUser($authUser['username'], strval($id), 'receipt');
         $ledgerRepo->reverseByReferenceForUser($authUser['username'], strval($id), 'receipt');
 
         // softDelete re-checks under FOR UPDATE lock

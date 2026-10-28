@@ -76,12 +76,12 @@ try {
             'payment_status'   => sanitizeString($body['payment_status'] ?? null) ?: null,
             'paid_at'          => sanitizeString($body['paid_at'] ?? null) ?: null,
             'account_type'     => sanitizeString($body['account_type'] ?? null) ?: null,
-            'total'            => intval($body['total'] ?? 0),
-            'net_due'          => intval($body['net_due'] ?? 0),
-            'net_total'        => intval($body['net_total'] ?? 0),
-            'paid'             => intval($body['paid'] ?? 0),
-            'previous_balance' => intval($body['previous_balance'] ?? 0),
-            'general_add'      => intval($body['general_add'] ?? 0),
+            'total'            => ($body['total'] ?? null) !== null && ($body['total'] ?? null) !== '' ? $body['total'] : 0,
+            'net_due'          => $body['net_due'] ?? null,
+            'net_total'        => $body['net_total'] ?? null,
+            'paid'             => ($body['paid'] ?? null) !== null && ($body['paid'] ?? null) !== '' ? $body['paid'] : 0,
+            'previous_balance' => ($body['previous_balance'] ?? null) !== null && ($body['previous_balance'] ?? null) !== '' ? $body['previous_balance'] : 0,
+            'general_add'      => ($body['general_add'] ?? null) !== null && ($body['general_add'] ?? null) !== '' ? $body['general_add'] : 0,
             'rows'             => $body['rows'] ?? [],
             'notes'            => sanitizeString($body['notes'] ?? null) ?: null,
             'shipping_number'  => sanitizeString($body['shipping_number'] ?? null) ?: null,
@@ -92,23 +92,35 @@ try {
         $officeRepo = new OfficeRepository($db);
         $hamolaRepo = new HamolaRepository($db);
         $ledgerRepo = new VehicleLedgerRepository($db);
-        $rowsArr = is_array($body['rows'] ?? null) ? $body['rows'] : [];
+        $effectiveRows = is_array($receipt['rows'] ?? null)
+            ? $receipt['rows']
+            : (is_string($receipt['rows'] ?? null) ? (json_decode($receipt['rows'], true) ?: []) : []);
+        $ledgerRepo->syncOwnerReceiptDueForReceipt(
+            $authUser['username'],
+            strval($receipt['id']),
+            strval($receipt['receipt_number'] ?? $receiptNumber),
+            $receipt['receipt_date'] ?? ($body['receipt_date'] ?? null),
+            intval($receipt['net_due'] ?? 0),
+            isset($receipt['client_id']) ? strval($receipt['client_id']) : (isset($body['client_id']) ? strval($body['client_id']) : null),
+            $receipt['client_type'] ?? ($body['client_type'] ?? 'owner'),
+            $receipt['client_name'] ?? ($body['client_name'] ?? null)
+        );
         $ledgerRepo->syncOfficeDeductionsForReceipt(
             $authUser['username'],
             strval($receipt['id']),
             strval($receipt['receipt_number'] ?? $receiptNumber),
             $receipt['receipt_date'] ?? ($body['receipt_date'] ?? null),
-            $rowsArr,
+            $effectiveRows,
             $officeRepo,
             $receipt['client_name'] ?? ($body['client_name'] ?? null),
             isset($receipt['client_id']) ? strval($receipt['client_id']) : (isset($body['client_id']) ? strval($body['client_id']) : null)
         );
         $syncedHamola = $hamolaRepo->syncFromReceiptRows(
             $authUser['username'],
-            $rowsArr,
+            $effectiveRows,
             $officeRepo
         );
-        $bumps = ['receipts', 'vehicle_ledger', 'offices'];
+        $bumps = ['receipts', 'vehicle_ledger', 'offices', 'vehicle_owners'];
         if (!empty($syncedHamola)) {
             $bumps[] = 'hamola_details';
         }

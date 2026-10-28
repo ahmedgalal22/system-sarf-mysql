@@ -30,13 +30,14 @@ try {
 
     $db->beginTransaction();
     try {
-        // 1. Lock receipt & validate/reverse all status-linked movements (row disbursements + receipt payment)
+        // 1. Lock receipt & validate/reverse all status-linked movements AND receipt-creation treasury entries
         $revStatus = $receiptRepo->reverseAllStatusMovementsOnReceiptDelete(
             $receiptId,
             $username,
             $treasuryRepo,
             $ledgerRepo,
-            $officeRepo
+            $officeRepo,
+            true
         );
         if ($revStatus['code'] === ReceiptRepository::RESULT_NOT_FOUND) {
             $db->rollBack(); jsonError('الإيصال غير موجود', 404);
@@ -54,8 +55,7 @@ try {
             $db->rollBack(); jsonError($revStatus['message'] ?? 'فشل حذف الإيصال', 400);
         }
 
-        // 2. Reverse all original receipt-creation entries
-        $treasuryRepo->reverseByReferenceForUser($username, strval($receiptId), 'receipt');
+        // 2. Reverse all original receipt-creation vehicle_ledger entries
         $ledgerRepo->reverseByReferenceForUser($username, strval($receiptId), 'receipt');
 
         // 3. Soft-delete the receipt

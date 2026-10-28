@@ -11,6 +11,7 @@
 require_once __DIR__ . '/../../core/bootstrap.php';
 require_once __DIR__ . '/../../api/middleware/auth.php';
 require_once __DIR__ . '/../../repositories/ArchiveRepository.php';
+require_once __DIR__ . '/../../repositories/ReceiptRepository.php';
 require_once __DIR__ . '/../../core/versionTracker.php';
 
 if (!isMethod('POST')) jsonMethodNotAllowed('POST');
@@ -28,19 +29,33 @@ if ($fromDate > $toDate) jsonError('تاريخ البداية يجب أن يكو
 try {
     $db = getDB();
     $repo = new ArchiveRepository($db);
+    $receiptRepo = new ReceiptRepository($db);
     $now = nowEgypt();
+
+    // Ensure per-user counter row exists outside transaction so archive creation
+    // can deterministically serialize per user even when archive_batches is empty.
+    $receiptRepo->ensureCounterExists($username);
 
     $db->beginTransaction();
     try {
         // ── RE-ARCHIVE path ───────────────────────────────────────────────
         if ($batchId) {
-            $batch = $repo->getBatchByUuid($batchId);
+            // 1. Lock archive_batches FIRST
+            $batch = $repo->getBatchByUuid($batchId, true);
             if (!$batch) { $db->rollBack(); jsonError('الأرشيف غير موجود', 404); }
             if ($batch['username'] !== $username) { $db->rollBack(); jsonError('غير مسموح', 403); }
             if ($batch['status'] !== 'restored') { $db->rollBack(); jsonError('لا يمكن إعادة الأرشفة — الدفعة ليست مستعادة', 400); }
 
+            // 2. Lock per-user receipt_counters SECOND
+            $cntStmt = $db->prepare('SELECT next_number FROM receipt_counters WHERE username = :u FOR UPDATE');
+            $cntStmt->execute([':u' => $username]);
+
             $fromDate = $batch['from_date'];
             $toDate   = $batch['to_date'];
+
+            // 3. Lock all archivable records in [fromDate, toDate] in canonical table & PK order
+            //    BEFORE computing the snapshot so snapshot and archived rows are identical.
+            $lockedRecordsMap = $repo->lockArchivableRecords($username, $fromDate, $toDate);
 
             // Soft-delete old snapshot
             $oldSnap = $repo->getSnapshotByBatchUuid($batchId);
@@ -48,7 +63,7 @@ try {
                 $repo->softDeleteSnapshot($oldSnap['uuid']);
             }
 
-            // Compute fresh snapshot
+            // Compute fresh snapshot over the locked period records
             $snapshot = $repo->computeSnapshot($username, $toDate, $fromDate);
             $newVersion = intval($batch['archive_version'] ?? 1) + 1;
             $snapUuid = $body['snapshot_id'] ?? bin2hex(random_bytes(18));
@@ -64,8 +79,8 @@ try {
                 'integrity_hash'    => $hash,
             ]);
 
-            // Archive records
-            $archived = $repo->archiveRecords($username, $fromDate, $toDate, $batchId, $now);
+            // Archive the exact locked records
+            $archived = $repo->archiveRecords($username, $fromDate, $toDate, $batchId, $now, $lockedRecordsMap);
 
             // Update batch
             $repo->updateBatch($batch['id'], [
@@ -86,8 +101,17 @@ try {
         }
 
         // ── FIRST-TIME ARCHIVE path ───────────────────────────────────────
-        // Overlap check
-        $existing = $repo->listBatches($username);
+        // 1. Lock existing archive_batches FIRST
+        $existing = $repo->listBatches($username, true);
+
+        // 2. Lock per-user receipt_counters SECOND to serialize concurrent first-time
+        //    archive requests even when archive_batches had 0 rows at Step 1.
+        $cntStmt = $db->prepare('SELECT next_number FROM receipt_counters WHERE username = :u FOR UPDATE');
+        $cntStmt->execute([':u' => $username]);
+        if (empty($existing)) {
+            $existing = $repo->listBatches($username, true);
+        }
+
         foreach ($existing as $b) {
             if ($b['status'] !== 'archived' && $b['status'] !== 'active') continue;
             if ($b['from_date'] <= $toDate && $b['to_date'] >= $fromDate) {
@@ -96,7 +120,11 @@ try {
             }
         }
 
-        // Compute snapshot
+        // 3. Lock all archivable records in [fromDate, toDate] in canonical table & PK order
+        //    BEFORE computing the snapshot so snapshot and archived rows cannot diverge.
+        $lockedRecordsMap = $repo->lockArchivableRecords($username, $fromDate, $toDate);
+
+        // Compute snapshot over the locked period records
         $snapshot = $repo->computeSnapshot($username, $toDate, $fromDate);
 
         $batchUuid = $body['batch_uuid'] ?? bin2hex(random_bytes(18));
@@ -127,8 +155,8 @@ try {
             'integrity_hash'    => $hash,
         ]);
 
-        // Archive records in all 4 tables
-        $archived = $repo->archiveRecords($username, $fromDate, $toDate, $batchUuid, $now);
+        // Archive the exact locked records in all 4 tables
+        $archived = $repo->archiveRecords($username, $fromDate, $toDate, $batchUuid, $now, $lockedRecordsMap);
 
         bumpVersions($db, ['receipts', 'treasury', 'vehicle_ledger', 'main_capital', 'archive_batches']);
         $db->commit();

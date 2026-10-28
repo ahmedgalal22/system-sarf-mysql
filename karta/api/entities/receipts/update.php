@@ -90,6 +90,16 @@ try {
         $effectiveRows = is_array($updated['rows'] ?? null)
             ? $updated['rows']
             : (is_string($updated['rows'] ?? null) ? (json_decode($updated['rows'], true) ?: []) : []);
+        $ledgerRepo->syncOwnerReceiptDueForReceipt(
+            $authUser['username'],
+            strval($id),
+            strval($updated['receipt_number'] ?? $existing['receipt_number'] ?? $id),
+            $updated['receipt_date'] ?? ($existing['receipt_date'] ?? null),
+            intval($updated['net_due'] ?? 0),
+            isset($updated['client_id']) ? strval($updated['client_id']) : (isset($body['client_id']) ? strval($body['client_id']) : (isset($existing['client_id']) ? strval($existing['client_id']) : null)),
+            $updated['client_type'] ?? ($body['client_type'] ?? ($existing['client_type'] ?? 'owner')),
+            $updated['client_name'] ?? ($body['client_name'] ?? ($existing['client_name'] ?? null))
+        );
         $ledgerRepo->syncOfficeDeductionsForReceipt(
             $authUser['username'],
             strval($id),
