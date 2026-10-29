@@ -585,20 +585,65 @@ async function rebuildTreasuryBalance(account_type = null) {
 
 // ─── CLIENT LEDGER & BALANCE ───────────────────────────────────────────────────
 
-async function getClientLedger(client_id, client_type) {
+function _isValidIsoCalendarDate(str) {
+  if (typeof str !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(str)) return false;
+  const [y, m, d] = str.split('-').map(Number);
+  if (m < 1 || m > 12 || d < 1 || d > 31) return false;
+  const dt = new Date(Date.UTC(y, m - 1, d));
+  return (
+    dt.getUTCFullYear() === y &&
+    dt.getUTCMonth() + 1 === m &&
+    dt.getUTCDate() === d
+  );
+}
+
+function _normalizeLedgerDateFilter(dateRange) {
+  if (!dateRange || typeof dateRange !== 'object') return null;
+  const rawFrom = String(dateRange.from ?? dateRange.from_date ?? '').trim();
+  const rawTo = String(dateRange.to ?? dateRange.to_date ?? '').trim();
+  if (!rawFrom && !rawTo) return null;
+
+  if (rawFrom && !_isValidIsoCalendarDate(rawFrom)) {
+    throw new Error('تنسيق تاريخ البداية غير صالح (YYYY-MM-DD)');
+  }
+  if (rawTo && !_isValidIsoCalendarDate(rawTo)) {
+    throw new Error('تنسيق تاريخ النهاية غير صالح (YYYY-MM-DD)');
+  }
+  if (rawFrom && rawTo && rawTo < rawFrom) {
+    throw new Error('تاريخ النهاية لا يمكن أن يكون أقدم من تاريخ البداية');
+  }
+  return { from: rawFrom, to: rawTo };
+}
+
+function _entryMatchesDateFilter(entry, normalizedRange) {
+  if (!normalizedRange) return true;
+  const rawDate = String(entry?.date || entry?.applied_at || entry?.created_at || '').trim();
+  if (!rawDate) return false;
+  const entryDateIso = rawDate.slice(0, 10);
+  if (normalizedRange.from && entryDateIso < normalizedRange.from) return false;
+  if (normalizedRange.to && entryDateIso > normalizedRange.to) return false;
+  return true;
+}
+
+async function getClientLedger(client_id, client_type, dateRange = null) {
   const key = client_id != null ? String(client_id).trim() : '';
   if (!key) throw new Error('[FinancialService:getClientLedger] client_id is required.');
   if (!client_type) throw new Error('[FinancialService:getClientLedger] client_type is required for entity isolation.');
+
+  const normalizedRange = _normalizeLedgerDateFilter(dateRange);
 
   const filters = {
     client_id: key,
     is_reversed: false,
     client_type: client_type,
   };
+  if (normalizedRange?.from) filters.from = normalizedRange.from;
+  if (normalizedRange?.to) filters.to = normalizedRange.to;
 
   const entries = await DBProvider.findByFields(STORE.LEDGER, filters);
 
   return entries
+    .filter((entry) => _entryMatchesDateFilter(entry, normalizedRange))
     .slice()
     .sort((a, b) => {
       const db = new Date(b.date || b.applied_at || b.created_at || 0).getTime();
@@ -608,9 +653,10 @@ async function getClientLedger(client_id, client_type) {
     .map(Money.decimalizeRecord);
 }
 
-async function getClientBalance(client_id, client_type) {
+async function getClientBalance(client_id, client_type, dateRange = null) {
   if (!client_type) throw new Error('[FinancialService:getClientBalance] client_type is required for entity isolation.');
-  const ledger = await getClientLedger(client_id, client_type);
+  const normalizedRange = _normalizeLedgerDateFilter(dateRange);
+  const ledger = await getClientLedger(client_id, client_type, normalizedRange);
   let deposit_total = 0;
   let withdraw_total = 0;
 
@@ -647,14 +693,16 @@ async function getClientBalance(client_id, client_type) {
     if (entry.type === 'withdraw') withdraw_total += cents;
   }
 
-  // Add carry-forward balance from archived periods
+  // Add carry-forward balance from archived periods only when computing all-time balance (no date range filter)
   let archivedCents = 0;
-  try {
-    const session = (typeof window !== 'undefined' && window.__APP_CONTEXT__?.username) || '';
-    if (session) {
-      archivedCents = await ArchiveService.getArchivedClientBalance(session, client_id, client_type);
-    }
-  } catch (_) { /* no archive data — continue with zero */ }
+  if (!normalizedRange) {
+    try {
+      const session = (typeof window !== 'undefined' && window.__APP_CONTEXT__?.username) || '';
+      if (session) {
+        archivedCents = await ArchiveService.getArchivedClientBalance(session, client_id, client_type);
+      }
+    } catch (_) { /* no archive data — continue with zero */ }
+  }
 
   return {
     client_id: String(client_id),

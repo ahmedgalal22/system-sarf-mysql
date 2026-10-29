@@ -20,14 +20,40 @@ if (!isMethod('GET')) jsonMethodNotAllowed('GET');
 try {
     $db = getDB();
 
-    $stmt = $db->prepare(
-        "SELECT id, `rows`
-         FROM receipts
-         WHERE username = :u
-           AND deleted_at IS NULL
-           AND is_archived = 0"
-    );
-    $stmt->execute([':u' => $authUser['username']]);
+    $fromDate = sanitizeString($_GET['from'] ?? ($_GET['from_date'] ?? null));
+    $toDate   = sanitizeString($_GET['to'] ?? ($_GET['to_date'] ?? null));
+    $isValidIsoDate = static function (string $d): bool {
+        if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $d)) return false;
+        [$y, $m, $day] = array_map('intval', explode('-', $d));
+        return checkdate($m, $day, $y);
+    };
+    if ($fromDate !== '' && !$isValidIsoDate($fromDate)) {
+        jsonError('تنسيق تاريخ البداية غير صالح (YYYY-MM-DD)', 400);
+    }
+    if ($toDate !== '' && !$isValidIsoDate($toDate)) {
+        jsonError('تنسيق تاريخ النهاية غير صالح (YYYY-MM-DD)', 400);
+    }
+    if ($fromDate !== '' && $toDate !== '' && $toDate < $fromDate) {
+        jsonError('تاريخ النهاية لا يمكن أن يكون أقدم من تاريخ البداية', 400);
+    }
+
+    $sql = "SELECT id, `rows`
+            FROM receipts
+            WHERE username = :u
+              AND deleted_at IS NULL
+              AND is_archived = 0";
+    $params = [':u' => $authUser['username']];
+    if ($fromDate !== '') {
+        $sql .= ' AND receipt_date >= :from_date';
+        $params[':from_date'] = $fromDate;
+    }
+    if ($toDate !== '') {
+        $sql .= ' AND receipt_date <= :to_date';
+        $params[':to_date'] = $toDate;
+    }
+
+    $stmt = $db->prepare($sql);
+    $stmt->execute($params);
     $receipts = $stmt->fetchAll();
 
     $summary = [];

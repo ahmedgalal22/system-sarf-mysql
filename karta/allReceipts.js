@@ -593,7 +593,14 @@ function sumReceiptSarf(record, rows) {
 }
 
 function summarizeReceipts(records) {
-  return records.reduce((acc, record) => {
+  const seenIds = new Set();
+  return (Array.isArray(records) ? records : []).reduce((acc, record) => {
+    if (!record || typeof record !== 'object') return acc;
+    if (record.id !== undefined && record.id !== null && String(record.id) !== '') {
+      const idKey = String(record.id);
+      if (seenIds.has(idKey)) return acc;
+      seenIds.add(idKey);
+    }
     acc.netDue += toNumber(record.net_due);
     acc.netTotal += toNumber(record.net_total);
     acc.paid += toNumber(record.paid);
@@ -715,7 +722,7 @@ function renderReceiptsControls() {
 }
 
 
-function renderSummaryCards(_preFiltered) {
+function _resolveReceiptSummaryMetrics(_preFiltered) {
   // Summary source: use server meta.summary only when NO client-side filters are active.
   // When status filter, payment status filter, or row-level filters are active, use client-side summarizeReceipts().
   const f = STATE.filters.receipts;
@@ -726,7 +733,7 @@ function renderSummaryCards(_preFiltered) {
   const useServerSummary = (statusFilter === 'all' && paymentStatusFilter === 'all' && !hasRowFilter && STATE.meta?.summary);
   const filtered = _preFiltered || getReceiptCardsFiltered();
   const clientSums = summarizeReceipts(filtered);
-  const sums = useServerSummary
+  return useServerSummary
     ? {
         netDue:  STATE.meta.summary.net_due  ?? 0,
         netTotal: STATE.meta.summary.net_total ?? 0,
@@ -738,10 +745,14 @@ function renderSummaryCards(_preFiltered) {
         sarf:    clientSums.sarf,
       }
     : clientSums;
+}
+
+function renderSummaryCards(_preFiltered) {
+  const sums = _resolveReceiptSummaryMetrics(_preFiltered);
 
   const html = `
     <div class="summary-grid summary-grid--receipts">
-      ${summaryCard('💰 إجمالي الصافي الكلي', centsToMoney(sums.netTotal), 'summary-card--violet')}
+      ${summaryCard('💰 إجمالي المدفوع', centsToMoney(sums.paid), 'summary-card--violet')}
       ${summaryCard('🗂️ عدد الكارتات', String(sums.count), 'summary-card--blue')}
       ${summaryCard('💵 إجمالي الصرف', fmtMoney(sums.sarf), 'summary-card--orange')}
     </div>
@@ -1024,7 +1035,7 @@ function serializeCurrentView() {
   const records = getReceiptCardsFiltered();
   const title   = 'جميع الكارتات';
 
-  const summaryHTML = _buildReceiptsBulkSummary(summarizeReceipts(records));
+  const summaryHTML = _buildReceiptsBulkSummary(_resolveReceiptSummaryMetrics(records));
 
   const body = records.map((record) => buildReceiptPrintBlock(record)).join('');
 
@@ -1039,12 +1050,13 @@ function serializeCurrentView() {
  * _buildReceiptsBulkSummary(sums)
  *
  * Renders a summary bar for the bulk PDF export (تصدير PDF) of receipt cards.
- * Mirrors exactly the 7 summary cards shown on screen above the list.
+ * Mirrors the 3 summary cards shown on screen above the list:
+ *   إجمالي المدفوع | عدد الكارتات | إجمالي الصرف
  *
  * Money units:
- *   netDue, netTotal, paid → CENTS   (from summarizeReceipts which reads record.net_due etc.)
- *   weight, noloon, ohda   → DECIMAL (summed directly from row fields)
- *   count                  → integer
+ *   paid  → CENTS   (from summarizeReceipts / server meta.summary)
+ *   count → integer
+ *   sarf  → DECIMAL (summed directly from visible row fields)
  */
 function _buildReceiptsBulkSummary(sums) {
   const th = (label) => `<th style="background:#fff;color:#000;padding:4px 6px;border:1.5px solid #000;text-align:center;font-size:7pt;font-weight:700;">${esc(label)}</th>`;
@@ -1054,24 +1066,16 @@ function _buildReceiptsBulkSummary(sums) {
     <table style="width:100%;border-collapse:collapse;margin-bottom:16px;page-break-inside:avoid;">
       <thead>
         <tr>
-          ${th('الصافي المستحق')}
-          ${th('الصافي الكلي')}
-          ${th('المدفوع')}
+          ${th('إجمالي المدفوع')}
           ${th('عدد الكارتات')}
-          ${th('إجمالي الوزن')}
-          ${th('إجمالي النولون')}
-          ${th('إجمالي العهدة')}
+          ${th('إجمالي الصرف')}
         </tr>
       </thead>
       <tbody>
         <tr>
-          ${td(centsToMoney(sums.netDue))}
-          ${td(centsToMoney(sums.netTotal))}
           ${td(centsToMoney(sums.paid))}
           ${td(String(sums.count))}
-          ${td(fmtMoney(sums.weight))}
-          ${td(fmtMoney(sums.noloon))}
-          ${td(fmtMoney(sums.ohda))}
+          ${td(fmtMoney(sums.sarf))}
         </tr>
       </tbody>
     </table>`;
@@ -1211,8 +1215,8 @@ const _RECEIPT_PRINT_COLS = Object.freeze([
   { key: 'noloon',       label: 'نولون',         type: 'number', printHide: false, conditional: false },
   { key: 'ohda',         label: 'عهدة',          type: 'number', printHide: false, conditional: false },
   { key: 'officeAmount', label: 'مكتب',          type: 'number', printHide: false, conditional: false },
-  { key: 'add',          label: 'إضافة',         type: 'number', printHide: false, conditional: true  },
   { key: 'sarf',         label: 'الصرف',         type: 'number', printHide: false, conditional: false },
+  { key: 'add',          label: 'إضافة',         type: 'number', printHide: false, conditional: true  },
   { key: 'net',          label: 'الصافي',        type: 'number', printHide: false, conditional: false },
 ]);
 

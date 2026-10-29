@@ -470,47 +470,85 @@ async function deleteHamolaRow(username, office_id, row_id) {
 const _calcWeight = calculateWeightTotal;
 const _calcReceiptNet = calculateRowNet;
 
+function _isValidOfficeIsoDate(str) {
+  if (typeof str !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(str)) return false;
+  const [y, m, d] = str.split('-').map(Number);
+  if (m < 1 || m > 12 || d < 1 || d > 31) return false;
+  const dt = new Date(Date.UTC(y, m - 1, d));
+  return (
+    dt.getUTCFullYear() === y &&
+    dt.getUTCMonth() + 1 === m &&
+    dt.getUTCDate() === d
+  );
+}
+
 function _resolveRange(filters) {
   if (!filters || typeof filters !== 'object') return null;
 
   const now = new Date();
   if (filters.range === 'today') {
-    const start = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+    const startDate = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const todayIso = DateUtils.toLocalDate(startDate);
+    const start = startDate.getTime();
     const end = start + 24 * 60 * 60 * 1000 - 1;
-    return { from: start, to: end };
+    return { from: start, to: end, fromIso: todayIso, toIso: todayIso };
   }
   if (filters.range === 'week') {
     const day = now.getDay();
     const diff = now.getDate() - day;
-    const start = new Date(now.getFullYear(), now.getMonth(), diff).getTime();
+    const startDate = new Date(now.getFullYear(), now.getMonth(), diff);
+    const endDayDate = new Date(now.getFullYear(), now.getMonth(), diff + 6);
+    const start = startDate.getTime();
     const end = start + 7 * 24 * 60 * 60 * 1000 - 1;
-    return { from: start, to: end };
+    return {
+      from: start,
+      to: end,
+      fromIso: DateUtils.toLocalDate(startDate),
+      toIso: DateUtils.toLocalDate(endDayDate),
+    };
   }
   if (filters.range === 'month') {
-    const start = new Date(now.getFullYear(), now.getMonth(), 1).getTime();
+    const startDate = new Date(now.getFullYear(), now.getMonth(), 1);
+    const endDayDate = new Date(now.getFullYear(), now.getMonth() + 1, 0);
+    const start = startDate.getTime();
     const end = new Date(now.getFullYear(), now.getMonth() + 1, 1).getTime() - 1;
-    return { from: start, to: end };
+    return {
+      from: start,
+      to: end,
+      fromIso: DateUtils.toLocalDate(startDate),
+      toIso: DateUtils.toLocalDate(endDayDate),
+    };
   }
 
-  const from = filters.from ? new Date(filters.from).getTime() : null;
-  const to = filters.to
-    ? (/^\d{4}-\d{2}-\d{2}$/.test(String(filters.to).trim())
-        ? new Date(String(filters.to).trim() + 'T23:59:59.999Z').getTime()
-        : new Date(filters.to).getTime())
-    : null;
-  if ((filters.from && Number.isNaN(from)) || (filters.to && Number.isNaN(to))) {
-    throw new Error('[OfficesService] invalid date range.');
+  const rawFrom = String(filters.from ?? filters.from_date ?? '').trim();
+  const rawTo = String(filters.to ?? filters.to_date ?? '').trim();
+  if (!rawFrom && !rawTo) return null;
+
+  if (rawFrom && !_isValidOfficeIsoDate(rawFrom)) {
+    throw new Error('تنسيق تاريخ البداية غير صالح (YYYY-MM-DD)');
   }
-  if (from == null && to == null) return null;
+  if (rawTo && !_isValidOfficeIsoDate(rawTo)) {
+    throw new Error('تنسيق تاريخ النهاية غير صالح (YYYY-MM-DD)');
+  }
+  if (rawFrom && rawTo && rawTo < rawFrom) {
+    throw new Error('تاريخ النهاية لا يمكن أن يكون أقدم من تاريخ البداية');
+  }
+
+  const from = rawFrom ? new Date(rawFrom + 'T00:00:00.000Z').getTime() : null;
+  const to = rawTo ? new Date(rawTo + 'T23:59:59.999Z').getTime() : null;
 
   return {
     from: from ?? 0,
     to: to ?? Date.now(),
+    fromIso: rawFrom,
+    toIso: rawTo,
   };
 }
 
 async function getOfficeFinancialSummary(username, filters = null) {
   _requireUsername(username, 'getOfficeFinancialSummary');
+
+  const range = _resolveRange(filters);
 
   const offices = await getOffices(username);
   const nameMap = new Map(
@@ -524,20 +562,46 @@ async function getOfficeFinancialSummary(username, filters = null) {
       net: 0,
       weight: 0,
       balance: 0,
+      period_balance: 0,
     });
   }
 
-  const range = _resolveRange(filters);
-
-  if (range) {
+  // Server-side aggregation for weight and net (supports optional from/to query params)
+  try {
+    const qsParams = new URLSearchParams();
+    if (range?.fromIso) qsParams.set('from', range.fromIso);
+    if (range?.toIso) qsParams.set('to', range.toIso);
+    const qs = qsParams.toString();
+    const statsRes = await ApiClient.get(`/stats/office-summary.php${qs ? '?' + qs : ''}`);
+    if (statsRes.success && Array.isArray(statsRes.data)) {
+      for (const s of statsRes.data) {
+        const key = String(s.name || '').trim().toLowerCase();
+        const office = nameMap.get(key);
+        if (office) {
+          const item = summary.get(String(office.id));
+          item.weight += Number(s.weight) || 0;
+          item.net += Number(s.net) || 0;
+        }
+      }
+    }
+  } catch (e) {
+    // Fallback: load receipts client-side only if server stats endpoint fails
+    console.warn('[offices] Server stats failed, using client fallback:', e.message);
     const receipts = await OfficeRepository.getReceipts(username);
-    const filtered = receipts.filter((r) => {
-      if (r.deleted_at != null || r.is_archived) return false;
-      const rawDate = r.receipt_date || r.date || r.created_at || 0;
-      const t = new Date(rawDate).getTime();
-      return t >= range.from && t <= range.to;
-    });
-
+    const filtered = range
+      ? receipts.filter((r) => {
+          if (r.deleted_at != null || r.is_archived) return false;
+          const rawDate = r.receipt_date || r.date || r.created_at || 0;
+          const rawDateIso = String(rawDate || '').trim().slice(0, 10);
+          if (/^\d{4}-\d{2}-\d{2}$/.test(rawDateIso) && (range.fromIso || range.toIso)) {
+            if (range.fromIso && rawDateIso < range.fromIso) return false;
+            if (range.toIso && rawDateIso > range.toIso) return false;
+            return true;
+          }
+          const t = new Date(rawDate).getTime();
+          return t >= range.from && t <= range.to;
+        })
+      : receipts;
     for (const receipt of filtered) {
       const rows = Array.isArray(receipt.rows) ? receipt.rows : [];
       for (const row of rows) {
@@ -551,66 +615,55 @@ async function getOfficeFinancialSummary(username, filters = null) {
         item.net += _calcReceiptNet(row);
       }
     }
-  } else {
-    // Server-side aggregation — replaces loading ALL receipts (2MB+) client-side
-    try {
-      const statsRes = await ApiClient.get('/stats/office-summary.php');
-      if (statsRes.success && Array.isArray(statsRes.data)) {
-        for (const s of statsRes.data) {
-          const key = String(s.name || '').trim().toLowerCase();
-          const office = nameMap.get(key);
-          if (office) {
-            const item = summary.get(String(office.id));
-            item.weight += Number(s.weight) || 0;
-            item.net += Number(s.net) || 0;
-          }
-        }
-      }
-    } catch (e) {
-      // Fallback: load receipts client-side (legacy path)
-      console.warn('[offices] Server stats failed, using client fallback:', e.message);
-      const receipts = await OfficeRepository.getReceipts(username);
-      for (const receipt of receipts) {
-        const rows = Array.isArray(receipt.rows) ? receipt.rows : [];
-        for (const row of rows) {
-          if (row?._type === 'separator') continue;
-          const officeName = String(row.office || '').trim();
-          if (!officeName) continue;
-          const office = nameMap.get(officeName.toLowerCase());
-          if (!office) continue;
-          const item = summary.get(String(office.id));
-          item.weight += _calcWeight(row);
-          item.net += _calcReceiptNet(row);
-        }
-      }
-    }
   }
 
   const rows = Array.from(summary.values());
-  const balances = await Promise.all(
+  const allTimeBalances = await Promise.all(
     rows.map((item) => FinancialService.getClientBalance(item.office.id, 'office'))
   );
   rows.forEach((item, idx) => {
-    const snap = balances[idx];
+    const snap = allTimeBalances[idx];
     if (!snap) {
       throw new Error('[OfficesService] balance lookup failed.');
     }
     item.balance = snap.balance;
+    item.period_balance = snap.balance;
   });
+
+  if (range) {
+    const ledgerDateFilter = { from: range.fromIso || '', to: range.toIso || '' };
+    const periodBalances = await Promise.all(
+      rows.map((item) => FinancialService.getClientBalance(item.office.id, 'office', ledgerDateFilter))
+    );
+    rows.forEach((item, idx) => {
+      const snap = periodBalances[idx];
+      if (!snap) {
+        throw new Error('[OfficesService] period balance lookup failed.');
+      }
+      item.period_balance = snap.balance;
+    });
+  }
 
   const totals = rows.reduce(
     (acc, item) => {
       acc.total_net += item.net;
       acc.total_weight += item.weight;
+      acc.all_time_balance_cents += Money.toCents(item.balance || 0);
+      acc.total_balance_cents += Money.toCents(
+        (range ? item.period_balance : item.balance) || 0
+      );
       return acc;
     },
-    { total_net: 0, total_weight: 0 }
+    { total_net: 0, total_weight: 0, total_balance_cents: 0, all_time_balance_cents: 0 }
   );
 
   return {
     total_offices: rows.length,
     total_net: totals.total_net,
     total_weight: totals.total_weight,
+    total_balance: Money.toDecimal(totals.total_balance_cents),
+    all_time_total_balance: Money.toDecimal(totals.all_time_balance_cents),
+    is_period_filtered: Boolean(range),
     rows,
   };
 }
@@ -972,6 +1025,8 @@ const OfficesModule = Object.freeze({
 // ========================================
 
 let _searchQuery = '';
+let _officeDateFrom = '';
+let _officeDateTo = '';
 let _editingOfficeId = null;
 let _editingOfficeDraft = null;
 let _activeDetailsTab = 'balance';
@@ -1019,15 +1074,30 @@ function _renderListShell() {
       </div>
 
       <!-- بطاقات الملخص -->
-      <div class="grid grid-cols-1 md:grid-cols-2 gap-3 mb-6">
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-3 mb-4">
         <div style="background:linear-gradient(135deg,#22c55e,#16a34a);border-radius:12px;padding:16px;color:#fff;">
           <p style="font-size:0.75rem;opacity:0.9;margin:0 0 4px;">عدد المكاتب</p>
           <p style="font-size:1.5rem;font-weight:800;margin:0;" id="officeTotalCount">0</p>
         </div>
         <div style="background:linear-gradient(135deg,#f97316,#ea580c);border-radius:12px;padding:16px;color:#fff;">
-          <p style="font-size:0.75rem;opacity:0.9;margin:0 0 4px;">إجمالي الرصيد</p>
+          <p id="officeTotalBalanceLabel" style="font-size:0.75rem;opacity:0.9;margin:0 0 4px;">إجمالي الرصيد</p>
           <p style="font-size:1.5rem;font-weight:800;margin:0;" id="officeTotalBalance">0.00</p>
         </div>
+      </div>
+
+      <!-- تصفية إجمالي الرصيد بالتاريخ -->
+      <div class="flex flex-wrap gap-3 items-end mb-4 p-3 rounded-xl" style="background:#f8fafc;border:1px solid #e2e8f0;">
+        <div class="form-group mb-0">
+          <label class="label mb-1 text-xs" for="officeDateFrom">من تاريخ</label>
+          <input id="officeDateFrom" type="date" class="input input-sm" value="${_text(_officeDateFrom)}" />
+        </div>
+        <div class="form-group mb-0">
+          <label class="label mb-1 text-xs" for="officeDateTo">إلى تاريخ</label>
+          <input id="officeDateTo" type="date" class="input input-sm" value="${_text(_officeDateTo)}" />
+        </div>
+        <button type="button" data-action="office-apply-date-filter" class="btn btn-primary btn-sm">تطبيق</button>
+        <button type="button" data-action="office-clear-date-filter" class="btn btn-secondary btn-sm">مسح</button>
+        <div id="officeDateFilterMsg" class="field-msg-inline field-msg-inline--error" role="alert" aria-live="polite" style="margin:0;"></div>
       </div>
 
       <!-- شريط البحث -->
@@ -1425,6 +1495,10 @@ async function loadOffices() {
 
   const searchEl = document.getElementById('officeSearch');
   if (searchEl) searchEl.value = _searchQuery || '';
+  const dateFromEl = document.getElementById('officeDateFrom');
+  if (dateFromEl) dateFromEl.value = _officeDateFrom || '';
+  const dateToEl = document.getElementById('officeDateTo');
+  if (dateToEl) dateToEl.value = _officeDateTo || '';
 
   // Show lightweight loading indicator inside existing table
   const tbodyPreview = document.getElementById('officesTableBody');
@@ -1432,12 +1506,26 @@ async function loadOffices() {
     tbodyPreview.innerHTML = '<tr><td colspan="4" class="text-center text-muted p-6">⏳ جاري التحميل...</td></tr>';
   }
 
-  const summary = await OfficesModule.getOfficeSummary();
+  const activeDateFilter = (_officeDateFrom || _officeDateTo)
+    ? { from: _officeDateFrom, to: _officeDateTo }
+    : null;
+  const summary = await OfficesModule.getOfficeSummary(activeDateFilter);
   const totalCountEl = document.getElementById('officeTotalCount');
 
   if (totalCountEl) totalCountEl.textContent = String(summary.total_offices || 0);
+  const totalBalanceLabelEl = document.getElementById('officeTotalBalanceLabel');
+  if (totalBalanceLabelEl) {
+    totalBalanceLabelEl.textContent = activeDateFilter
+      ? 'إجمالي الرصيد خلال الفترة'
+      : 'إجمالي الرصيد';
+  }
   const totalBalanceEl = document.getElementById("officeTotalBalance");
-  if (totalBalanceEl) totalBalanceEl.textContent = _fmt(summary.rows.reduce((s, r) => s + (r.balance || 0), 0));
+  if (totalBalanceEl) {
+    const totalBalance = summary.total_balance != null
+      ? summary.total_balance
+      : Money.toDecimal(summary.rows.reduce((s, r) => s + Money.toCents(r.balance || 0), 0));
+    totalBalanceEl.textContent = _fmt(totalBalance);
+  }
 
   const tbody = document.getElementById('officesTableBody');
   if (!tbody) return;
@@ -1953,6 +2041,54 @@ function attachOfficesPageListeners() {
           msg.classList.add('is-visible');
         }
       }
+      return;
+    }
+
+    if (target.closest('[data-action="office-apply-date-filter"]')) {
+      const fromVal = String(document.getElementById('officeDateFrom')?.value || '').trim();
+      const toVal = String(document.getElementById('officeDateTo')?.value || '').trim();
+      const dateMsgEl = document.getElementById('officeDateFilterMsg');
+      const inlineMsgEl = document.getElementById('officesInlineMsg');
+      if (dateMsgEl) { dateMsgEl.textContent = ''; dateMsgEl.classList.remove('is-visible'); }
+      if (inlineMsgEl) { inlineMsgEl.textContent = ''; inlineMsgEl.classList.remove('is-visible'); }
+
+      if (fromVal && !_isValidOfficeIsoDate(fromVal)) {
+        const errText = 'تنسيق تاريخ البداية غير صالح (YYYY-MM-DD)';
+        if (dateMsgEl) { dateMsgEl.textContent = errText; dateMsgEl.classList.add('is-visible'); }
+        if (inlineMsgEl) { inlineMsgEl.textContent = errText; inlineMsgEl.classList.add('is-visible'); }
+        return;
+      }
+      if (toVal && !_isValidOfficeIsoDate(toVal)) {
+        const errText = 'تنسيق تاريخ النهاية غير صالح (YYYY-MM-DD)';
+        if (dateMsgEl) { dateMsgEl.textContent = errText; dateMsgEl.classList.add('is-visible'); }
+        if (inlineMsgEl) { inlineMsgEl.textContent = errText; inlineMsgEl.classList.add('is-visible'); }
+        return;
+      }
+      if (fromVal && toVal && toVal < fromVal) {
+        const errText = 'تاريخ النهاية لا يمكن أن يكون أقدم من تاريخ البداية';
+        if (dateMsgEl) { dateMsgEl.textContent = errText; dateMsgEl.classList.add('is-visible'); }
+        if (inlineMsgEl) { inlineMsgEl.textContent = errText; inlineMsgEl.classList.add('is-visible'); }
+        return;
+      }
+
+      _officeDateFrom = fromVal;
+      _officeDateTo = toVal;
+      await loadOffices();
+      return;
+    }
+
+    if (target.closest('[data-action="office-clear-date-filter"]')) {
+      _officeDateFrom = '';
+      _officeDateTo = '';
+      const fromEl = document.getElementById('officeDateFrom');
+      const toEl = document.getElementById('officeDateTo');
+      const dateMsgEl = document.getElementById('officeDateFilterMsg');
+      const inlineMsgEl = document.getElementById('officesInlineMsg');
+      if (fromEl) fromEl.value = '';
+      if (toEl) toEl.value = '';
+      if (dateMsgEl) { dateMsgEl.textContent = ''; dateMsgEl.classList.remove('is-visible'); }
+      if (inlineMsgEl) { inlineMsgEl.textContent = ''; inlineMsgEl.classList.remove('is-visible'); }
+      await loadOffices();
       return;
     }
 

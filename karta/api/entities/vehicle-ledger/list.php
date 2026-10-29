@@ -71,6 +71,32 @@ try {
         $sql .= ' AND is_archived = 0';
     }
 
+    // Optional inclusive date range filter (YYYY-MM-DD)
+    $fromDate = sanitizeString($_GET['from'] ?? ($_GET['from_date'] ?? null));
+    $toDate   = sanitizeString($_GET['to'] ?? ($_GET['to_date'] ?? null));
+    $isValidIsoDate = static function (string $d): bool {
+        if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $d)) return false;
+        [$y, $m, $day] = array_map('intval', explode('-', $d));
+        return checkdate($m, $day, $y);
+    };
+    if ($fromDate !== '' && !$isValidIsoDate($fromDate)) {
+        jsonError('تنسيق تاريخ البداية غير صالح (YYYY-MM-DD)', 400);
+    }
+    if ($toDate !== '' && !$isValidIsoDate($toDate)) {
+        jsonError('تنسيق تاريخ النهاية غير صالح (YYYY-MM-DD)', 400);
+    }
+    if ($fromDate !== '' && $toDate !== '' && $toDate < $fromDate) {
+        jsonError('تاريخ النهاية لا يمكن أن يكون أقدم من تاريخ البداية', 400);
+    }
+    if ($fromDate !== '') {
+        $sql .= ' AND `date` >= :from_date';
+        $params[':from_date'] = $fromDate;
+    }
+    if ($toDate !== '') {
+        $sql .= ' AND `date` <= :to_date';
+        $params[':to_date'] = $toDate;
+    }
+
     $sql .= ' ORDER BY date DESC, created_at DESC';
 
     $stmt = $db->prepare($sql);

@@ -568,9 +568,19 @@ const STATE = {
   to: '',
   editingId: null,
   search: { all: '', payouts: '', expenses: '' },
+  typeSearch: { all: '', payouts: '', expenses: '' },
   _salfaClients: [],       // ISSUE-7 FIX: client list stored in state, not on DOM node
   _shellRendered: false,   // ISSUE-1 FIX: idempotent shell rendering
 };
+
+function _normalizeTreasurySearchText(value) {
+  return String(value ?? '')
+    .trim()
+    .toLowerCase()
+    .replace(/[أإآ]/g, 'ا')
+    .replace(/ة/g, 'ه')
+    .replace(/\s+/g, ' ');
+}
 
 // ── Render-cache for data-driven print (ISSUE-2 FIX) ──
 let _lastRenderedEntries = [];
@@ -654,9 +664,13 @@ function _renderShell() {
       </div>
 
       <!-- Search + Print -->
-      <div style="display:flex;gap:10px;align-items:center;margin-bottom:12px;">
-        <input id="treasurySearch" type="text" class="ent-search-input" style="flex:1;padding:10px 16px;border:1.5px solid #d1d5db;border-radius:12px;font-family:inherit;font-size:0.875rem;outline:none;"
+      <div style="display:flex;gap:10px;align-items:center;margin-bottom:12px;flex-wrap:wrap;">
+        <input id="treasurySearch" type="text" class="ent-search-input" style="flex:1;min-width:200px;padding:10px 16px;border:1.5px solid #d1d5db;border-radius:12px;font-family:inherit;font-size:0.875rem;outline:none;"
           placeholder="🔍 ابحث داخل جميع الحركات..."
+          value="">
+        <input id="treasuryTypeSearch" data-filter="treasury-type-search" type="text" class="ent-search-input" style="flex:0 1 240px;min-width:180px;padding:10px 16px;border:1.5px solid #d1d5db;border-radius:12px;font-family:inherit;font-size:0.875rem;outline:none;"
+          placeholder="🔍 بحث بالنوع..."
+          aria-label="بحث بالنوع"
           value="">
         <button type="button" data-action="treasury-print-tab" style="background:linear-gradient(135deg,#7c3aed,#6d28d9);color:#fff;border:none;border-radius:12px;padding:8px 18px;font-weight:700;font-size:0.8125rem;cursor:pointer;font-family:inherit;white-space:nowrap;box-shadow:0 2px 8px rgba(124,58,237,0.3);">🖨️ طباعة</button>
       </div>
@@ -688,14 +702,14 @@ function _renderSummary(summary) {
   const container = document.getElementById('treasurySummaryCards');
   if (!container) return;
 
-  const card = (label, value, bg) => `
-    <div class="flex-1 min-w-[120px] p-3 rounded-lg text-white" style="background:${bg}">
+  const card = (label, value, bg, extraClass = '', extraAttrs = '') => `
+    <div class="flex-1 min-w-[120px] p-3 rounded-lg text-white${extraClass ? ' ' + extraClass : ''}" style="background:${bg}"${extraAttrs ? ' ' + extraAttrs : ''}>
       <p class="text-xs opacity-90 mb-1" style="color:#fff">${_esc(label)}</p>
       <p class="text-xl font-bold" style="color:#fff">${Money.fmt(value)}</p>
     </div>`;
 
   container.innerHTML = `
-    ${card('رصيد الخزنة', summary.balance, 'linear-gradient(135deg,#1e40af,#3b82f6)')}
+    ${card('رصيد الخزنة', summary.balance, 'linear-gradient(135deg,#1e40af,#3b82f6)', 'no-print treasury-balance-col treasury-balance-card', 'data-summary-card="treasury-balance" data-col="treasury-balance"')}
     ${card('إجمالي الداخل', summary.total_in, 'linear-gradient(135deg,#059669,#10b981)')}
     ${card('صرف الكارتات', summary.total_payout, 'linear-gradient(135deg,#7c3aed,#8b5cf6)')}
     ${card('السلفيات', summary.total_salfa, 'linear-gradient(135deg,#0891b2,#06b6d4)')}
@@ -1175,9 +1189,8 @@ function _printTreasuryTab() {
     </tr>`;
   }
 
-  // Build summary cards from raw data
+  // Build summary cards from raw data (رصيد الخزنة is intentionally excluded in print)
   const summaryItems = [
-    { label: 'رصيد الخزنة', value: Money.fmt(summary.balance) },
     { label: 'إجمالي الداخل', value: Money.fmt(summary.total_in) },
     { label: 'صرف الكارتات', value: Money.fmt(summary.total_payout) },
     { label: 'السلفيات', value: Money.fmt(summary.total_salfa) },
@@ -1218,6 +1231,14 @@ function _printTreasuryTab() {
     title: 'طباعة الخزنة — ' + tabTitle,
     body,
     orientation: 'landscape',
+    extraCSS: `
+      .treasury-balance-col,
+      .treasury-balance-card,
+      [data-col="treasury-balance"],
+      [data-summary-card="treasury-balance"] {
+        display: none !important;
+      }
+    `,
   }), { id: 'treasury-print-iframe' });
 }
 
@@ -1275,18 +1296,25 @@ async function _refreshPage() {
   // Stale check: if another refresh started while we were fetching, abort
   if (gen !== _refreshGen) return;
 
-  // Apply search filter
+  // Apply search filters (general search + transaction type search)
   const query = (STATE.search[STATE.tab] || '').trim().toLowerCase();
-  const filteredEntries = query
-    ? allEntries.filter(e => {
-        const hay = [
-          e.note, e.description, e.client_name, e.employee_name,
-          e.receipt_number, _effectLabel(e.effect),
-          String(e.amount), e.date, e.reference_id,
-        ].join(' ').toLowerCase();
-        return hay.includes(query);
-      })
-    : allEntries;
+  const typeQuery = _normalizeTreasurySearchText(STATE.typeSearch[STATE.tab] || '');
+  const filteredEntries = allEntries.filter(e => {
+    if (query) {
+      const hay = [
+        e.note, e.description, e.client_name, e.employee_name,
+        e.receipt_number, _effectLabel(e.effect),
+        String(e.amount), e.date, e.reference_id,
+      ].join(' ').toLowerCase();
+      if (!hay.includes(query)) return false;
+    }
+    if (typeQuery) {
+      const displayedType = `${_typeIcon(e.type)} ${_effectLabel(e.effect)}`;
+      const typeHay = _normalizeTreasurySearchText(displayedType);
+      if (!typeHay.includes(typeQuery)) return false;
+    }
+    return true;
+  });
 
   // Cache for data-driven print (ISSUE-2 FIX)
   _lastRenderedEntries = filteredEntries;
@@ -1318,6 +1346,8 @@ async function _refreshPage() {
   // Sync search input value + placeholder (ISSUE-1 FIX)
   const searchEl = document.getElementById('treasurySearch');
   if (searchEl) searchEl.value = STATE.search[STATE.tab] || '';
+  const typeSearchEl = document.getElementById('treasuryTypeSearch');
+  if (typeSearchEl) typeSearchEl.value = STATE.typeSearch[STATE.tab] || '';
   _syncSearchPlaceholder();
 }
 
@@ -1332,6 +1362,14 @@ function _injectStyles() {
   style.textContent = `
     .treasury-in { color: #059669; }
     .treasury-out { color: #dc2626; }
+    @media print {
+      .treasury-balance-col,
+      .treasury-balance-card,
+      [data-col="treasury-balance"],
+      [data-summary-card="treasury-balance"] {
+        display: none !important;
+      }
+    }
   `;
   document.head.appendChild(style);
 }
@@ -1538,6 +1576,12 @@ function attachTreasuryListeners() {
 
     if (e.target.id === 'treasurySearch') {
       STATE.search[STATE.tab] = e.target.value;
+      _refreshPage();
+      return;
+    }
+
+    if (e.target.id === 'treasuryTypeSearch' || e.target.dataset?.filter === 'treasury-type-search') {
+      STATE.typeSearch[STATE.tab] = e.target.value;
       _refreshPage();
     }
   });
