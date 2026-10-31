@@ -26,35 +26,16 @@ try {
     $ledgerRepo = new VehicleLedgerRepository($db);
     $receiptRepo = new ReceiptRepository($db);
 
-    // Pre-read treasury row outside transaction so any linked receipt can be locked
-    // BEFORE treasury (preserving canonical lock hierarchy: receipts -> treasury -> vehicle_ledger).
-    $preExisting = $treasuryRepo->getById($id);
-    if (!$preExisting) jsonError('السجل غير موجود', 404);
-    if (($preExisting['username'] ?? '') !== $username) jsonError('غير مسموح', 403);
-    $preReceiptId = !empty($preExisting['receipt_number']) && ctype_digit((string)$preExisting['receipt_number'])
-        ? intval($preExisting['receipt_number'])
-        : 0;
-
     $db->beginTransaction();
     try {
-        // 1. Lock linked receipt FIRST (if present)
-        $lockedTargetReceipt = null;
-        if ($preReceiptId > 0) {
-            $recLockStmt = $db->prepare('SELECT * FROM receipts WHERE id = :rid AND username = :u FOR UPDATE');
-            $recLockStmt->execute([':rid' => $preReceiptId, ':u' => $username]);
-            $lockedTargetReceipt = $recLockStmt->fetch() ?: null;
-        }
-
-        // 2. Lock treasury entry SECOND
-        $lockStmt = $db->prepare('SELECT * FROM treasury WHERE id = :id AND deleted_at IS NULL FOR UPDATE');
+        // Row lock: prevent concurrent deletes/edits on the same treasury entry
+        $lockStmt = $db->prepare('SELECT id FROM treasury WHERE id = :id AND deleted_at IS NULL FOR UPDATE');
         $lockStmt->execute([':id' => $id]);
-        $existing = $lockStmt->fetch();
+        if (!$lockStmt->fetch()) { $db->rollBack(); jsonError('السجل غير موجود', 404); }
+
+        $existing = $treasuryRepo->getById($id);
         if (!$existing) { $db->rollBack(); jsonError('السجل غير موجود', 404); }
         if ($existing['username'] !== $username) { $db->rollBack(); jsonError('غير مسموح', 403); }
-        if (!empty($existing['is_reversed'])) {
-            $db->rollBack();
-            jsonError('لا يمكن حذف حركة خزنة معكوسة مسبقاً', 409);
-        }
         if (!empty($existing['is_archived'])) {
             $db->rollBack();
             jsonError('لا يمكن حذف حركة خزنة مؤرشفة', 409);
@@ -66,58 +47,38 @@ try {
             jsonError('لا يمكن حذف حركة خزنة مرتبطة بحالة صرف أو دفع إيصال من شاشة الخزنة مباشرة', 409);
         }
 
-        $isSalfaWithClient = ($existing['effect'] ?? '') === 'salfa' && !empty($existing['reference_id']) && !empty($existing['client_id']);
-
-        // 3. Validate & restore advance allocation on receipts FIRST (before mutating treasury/vehicle_ledger)
-        $advanceReceipt = null;
-        if ($isSalfaWithClient) {
-            $targetReceiptId = $existing['receipt_number'] ?? null;
-            if ($targetReceiptId !== null && trim((string)$targetReceiptId) !== '') {
-                $targetIdInt = ctype_digit(trim((string)$targetReceiptId)) ? intval($targetReceiptId) : 0;
-                if ($targetIdInt <= 0) {
-                    $db->rollBack();
-                    jsonError('مرجع الإيصال المرتبط بالسلفة غير صالح', 409);
-                }
-                $target = ($targetIdInt === $preReceiptId) ? $lockedTargetReceipt : null;
-                if (!$target || $target['deleted_at'] !== null) {
-                    $db->rollBack();
-                    jsonError('لا يمكن حذف السلفة لأن الإيصال المرتبط بها غير موجود أو محذوف', 409);
-                }
-                if (!empty($target['is_archived'])) {
-                    $db->rollBack();
-                    jsonError('لا يمكن حذف السلفة لأن الإيصال المرتبط بها مؤرشف', 409);
-                }
-                $salfaStatus = ReceiptRepository::inspectReceiptSalfaStatus($target);
-                if (!$salfaStatus['eligible']) {
-                    $db->rollBack();
-                    jsonError($salfaStatus['message'] ?? 'لا يمكن حذف السلفة بعد دفع الإيصال المرتبط بها', 409);
-                }
-
-                $advanceAmount = intval($existing['amount'] ?? 0);
-                $currentPaid = intval($target['paid'] ?? 0);
-                $netTotal = intval($target['net_total'] ?? 0);
-                $newPaid = min($netTotal, $currentPaid + $advanceAmount);
-                $updRecRes = $receiptRepo->updateReceipt($targetIdInt, [
-                    'paid' => $newPaid,
-                ], $username);
-                if (($updRecRes['code'] ?? '') !== ReceiptRepository::RESULT_OK) {
-                    $db->rollBack();
-                    jsonError('فشل تحديث الإيصال المرتبط بالسلفة', 409);
-                }
-                $advanceReceipt = ['id' => $targetIdInt, 'old_paid' => $currentPaid, 'new_paid' => $newPaid];
-            }
-        }
-
-        // 4. Reverse the treasury entry SECOND (preserving receipt_number audit link)
+        // Reverse the treasury entry
         $treasuryRepo->update($id, [
             'is_reversed' => 1,
             'reversed_at' => nowEgypt(),
             'reversed_by' => $username,
         ], $username);
 
-        // 5. Reverse linked vehicle_ledger entries THIRD (scoped to user)
+        // Reverse linked ledger entries
+        $isSalfaWithClient = ($existing['effect'] ?? '') === 'salfa' && !empty($existing['reference_id']) && !empty($existing['client_id']);
         if ($isSalfaWithClient) {
-            $ledgerRepo->reverseByReferenceForUser($username, (string)$existing['reference_id'], (string)($existing['reference_type'] ?? 'salfa'));
+            $ledgerRepo->reverseByReference($existing['reference_id'], $existing['reference_type'] ?? 'salfa', $username);
+        }
+
+        // Reverse advance allocation: restore 'paid' on the ORIGINAL receipt
+        // that was affected when this salfa was created (stored in receipt_number).
+        $advanceReceipt = null;
+        if ($isSalfaWithClient) {
+            $targetReceiptId = $existing['receipt_number'] ?? null;
+            if ($targetReceiptId) {
+                $target = $receiptRepo->findById(intval($targetReceiptId));
+                if ($target && $target['deleted_at'] === null && ($target['payout_status'] ?? '') !== 'paid') {
+                    $advanceAmount = intval($existing['amount'] ?? 0);
+                    $currentPaid = intval($target['paid'] ?? 0);
+                    $netTotal = intval($target['net_total'] ?? 0);
+                    // Restore: add back the advance, but never exceed net_total
+                    $newPaid = min($netTotal, $currentPaid + $advanceAmount);
+                    $receiptRepo->updateReceipt(intval($target['id']), [
+                        'paid' => $newPaid,
+                    ], $username);
+                    $advanceReceipt = ['id' => $target['id'], 'old_paid' => $currentPaid, 'new_paid' => $newPaid];
+                }
+            }
         }
 
         $bumps = ['treasury'];

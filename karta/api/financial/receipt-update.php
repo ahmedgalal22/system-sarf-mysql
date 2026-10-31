@@ -55,12 +55,55 @@ try {
 
         $existing = $result['previous'] ?? $result['data'];
         $updated = $result['data'];
-        $isPaid = ReceiptRepository::getReceiptPaymentStatus($existing) === 'paid';
+        $isPaid = ($existing['payout_status'] ?? 'unpaid') === 'paid';
 
-        // Stage custom treasury_ops and ledger_ops before status reconciliation
-        $stagedTreasuryOps = [];
-        $stagedLedgerOps = [];
+        // 2. Reconcile status-linked movements (row disbursements and receipt-level payment)
+        $reconcileRes = $receiptRepo->reconcileStatusMovementsOnReceiptUpdate(
+            $existing,
+            $updated,
+            $username,
+            $treasuryRepo,
+            $ledgerRepo,
+            $officeRepo,
+            $ownerRepo
+        );
+        if ($reconcileRes['code'] !== ReceiptRepository::RESULT_OK) {
+            $db->rollBack();
+            if ($reconcileRes['code'] === ReceiptRepository::RESULT_INCONSISTENT_LEDGER) {
+                jsonError($reconcileRes['message'] ?? 'تعارض في القيود المالية للإيصال', 409);
+            }
+            jsonError($reconcileRes['message'] ?? 'فشل تحديث القيود المالية للإيصال', 400);
+        }
+
+        // 3. Reverse old receipt-creation entries — ONLY if legacy payout_status is unpaid
         if (!$isPaid) {
+            $treasuryRepo->reverseByReference(strval($receiptId), 'receipt', $username);
+            $ledgerRepo->reverseByReference(strval($receiptId), 'receipt', $username);
+        }
+
+        // 4. Apply new receipt-creation entries — ONLY if legacy payout_status is unpaid
+        $ledgerResults = [];
+        $treasuryResults = [];
+        if (!$isPaid) {
+            if (!empty($body['ledger_ops']) && is_array($body['ledger_ops'])) {
+                foreach ($body['ledger_ops'] as $op) {
+                    if (!is_array($op)) continue;
+                    $opType = $op['type'] ?? '';
+                    $opEffect = $op['effect'] ?? '';
+                    $opRefType = $op['reference_type'] ?? '';
+                    if ($opType === 'OFFICE_WITHDRAW_AUTO') continue;
+                    if (in_array($opRefType, [ReceiptRepository::REF_TYPE_ROW_DISBURSEMENT, ReceiptRepository::REF_TYPE_RECEIPT_PAYMENT], true)
+                        || in_array($opType, ['row_disbursement', 'receipt_payment', 'OFFICE_DEPOSIT'], true)
+                        || in_array($opEffect, ['row_disbursement', 'receipt_payout'], true)
+                    ) {
+                        throw new InvalidArgumentException('لا يمكن تمرير حركات حالة الصرف أو الدفع ضمن عمليات تعديل الإيصال');
+                    }
+                    $op['username'] = $username;
+                    $op['reference_type'] = 'receipt';
+                    $op['reference_id'] = strval($receiptId);
+                    $ledgerResults[] = $ledgerRepo->create($op);
+                }
+            }
             if (!empty($body['treasury_ops']) && is_array($body['treasury_ops'])) {
                 foreach ($body['treasury_ops'] as $op) {
                     if (!is_array($op)) continue;
@@ -71,86 +114,11 @@ try {
                     ) {
                         throw new InvalidArgumentException('لا يمكن تمرير حركات خزنة مرتبطة بحالة الصرف أو الدفع ضمن عمليات تعديل الإيصال');
                     }
-                    if (array_key_exists('amount', $op) && $op['amount'] !== null && $op['amount'] !== '') {
-                        $op['amount'] = ReceiptRepository::validateFiniteIntCents($op['amount'], 'قيمة حركة الخزنة (amount)', false);
-                    }
                     $op['username'] = $username;
                     $op['reference_type'] = 'receipt';
                     $op['reference_id'] = strval($receiptId);
-                    $stagedTreasuryOps[] = $op;
+                    $treasuryResults[] = $treasuryRepo->create($op);
                 }
-            }
-
-            if (!empty($body['ledger_ops']) && is_array($body['ledger_ops'])) {
-                foreach ($body['ledger_ops'] as $op) {
-                    if (!is_array($op)) continue;
-                    $opType = $op['type'] ?? '';
-                    $opEffect = $op['effect'] ?? '';
-                    $opRefType = $op['reference_type'] ?? '';
-                    // Skip system-synchronized ledger types (handled by syncOwnerReceiptDueForReceipt & syncOfficeDeductionsForReceipt)
-                    if ($opType === 'OFFICE_WITHDRAW_AUTO' || $opType === 'receipt_due' || $opEffect === 'receipt_total') continue;
-                    if (in_array($opRefType, [ReceiptRepository::REF_TYPE_ROW_DISBURSEMENT, ReceiptRepository::REF_TYPE_RECEIPT_PAYMENT], true)
-                        || in_array($opType, ['row_disbursement', 'receipt_payment', 'OFFICE_DEPOSIT'], true)
-                        || in_array($opEffect, ['row_disbursement', 'receipt_payout'], true)
-                    ) {
-                        throw new InvalidArgumentException('لا يمكن تمرير حركات حالة الصرف أو الدفع ضمن عمليات تعديل الإيصال');
-                    }
-                    if (array_key_exists('amount', $op) && $op['amount'] !== null && $op['amount'] !== '') {
-                        $op['amount'] = ReceiptRepository::validateFiniteIntCents($op['amount'], 'قيمة حركة الدفتر (amount)', true);
-                    }
-                    $op['username'] = $username;
-                    $op['reference_type'] = 'receipt';
-                    $op['reference_id'] = strval($receiptId);
-                    $stagedLedgerOps[] = $op;
-                }
-            }
-        }
-
-        // 2. Reconcile status-linked movements AND execute receipt-creation treasury ops
-        //    inside the treasury phase BEFORE any vehicle_ledger mutations run.
-        $reconcileRes = $receiptRepo->reconcileStatusMovementsOnReceiptUpdate(
-            $existing,
-            $updated,
-            $username,
-            $treasuryRepo,
-            $ledgerRepo,
-            $officeRepo,
-            $ownerRepo,
-            !$isPaid,
-            $stagedTreasuryOps
-        );
-        if ($reconcileRes['code'] !== ReceiptRepository::RESULT_OK) {
-            $db->rollBack();
-            if ($reconcileRes['code'] === ReceiptRepository::RESULT_INCONSISTENT_LEDGER) {
-                jsonError($reconcileRes['message'] ?? 'تعارض في القيود المالية للإيصال', 409);
-            }
-            jsonError($reconcileRes['message'] ?? 'فشل تحديث القيود المالية للإيصال', 400);
-        }
-
-        $treasuryResults = $reconcileRes['treasury_ops_results'] ?? [];
-
-        // 3. Synchronize authoritative owner `receipt_due` entry from server-calculated net_due,
-        //    and reverse/re-apply any custom non-system ledger_ops when unpaid.
-        $ledgerResults = [];
-        if (!$isPaid) {
-            $ledgerRepo->reverseCustomReceiptEntriesForUser($username, strval($receiptId));
-        }
-        $ownerDueEntry = $ledgerRepo->syncOwnerReceiptDueForReceipt(
-            $username,
-            strval($receiptId),
-            strval($updated['receipt_number'] ?? $existing['receipt_number'] ?? $receiptId),
-            $updated['receipt_date'] ?? $existing['receipt_date'] ?? null,
-            intval($updated['net_due'] ?? 0),
-            isset($updated['client_id']) ? strval($updated['client_id']) : (isset($body['client_id']) ? strval($body['client_id']) : (isset($existing['client_id']) ? strval($existing['client_id']) : null)),
-            $updated['client_type'] ?? ($body['client_type'] ?? ($existing['client_type'] ?? 'owner')),
-            $updated['client_name'] ?? ($body['client_name'] ?? ($existing['client_name'] ?? null))
-        );
-        if ($ownerDueEntry !== null) {
-            $ledgerResults[] = $ownerDueEntry;
-        }
-        if (!$isPaid) {
-            foreach ($stagedLedgerOps as $op) {
-                $ledgerResults[] = $ledgerRepo->create($op);
             }
         }
 

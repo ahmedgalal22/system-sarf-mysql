@@ -12,11 +12,10 @@ try {
     if (!$existing) jsonError('السجل غير موجود', 404);
     if ($existing['username'] !== $authUser['username']) jsonError('غير مسموح', 403);
     if (!empty($existing['is_archived'])) jsonError('لا يمكن تعديل حركة خزنة مؤرشفة', 409);
-    if (in_array($existing['reference_type'] ?? '', ['receipt_row_disbursement', 'receipt_payment_status', 'salfa'], true)
-        || in_array($existing['effect'] ?? '', ['row_disbursement', 'receipt_payout', 'salfa'], true)
-        || (($body['effect'] ?? '') === 'salfa')
+    if (in_array($existing['reference_type'] ?? '', ['receipt_row_disbursement', 'receipt_payment_status'], true)
+        || in_array($existing['effect'] ?? '', ['row_disbursement', 'receipt_payout'], true)
     ) {
-        jsonError('لا يمكن تعديل حركة سلفة أو حركة مرتبطة بحالة صرف أو دفع إيصال من هذا المسار مباشرة', 409);
+        jsonError('لا يمكن تعديل حركة خزنة مرتبطة بحالة صرف أو دفع إيصال مباشرة', 409);
     }
     $patch = [];
     foreach (['type','effect','account_type','amount','date','description','note','is_reversed','reversed_at','reversed_by','client_id','client_type','client_name'] as $f) {

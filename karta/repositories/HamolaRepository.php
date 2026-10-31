@@ -62,7 +62,7 @@ class HamolaRepository {
         $typeKey = $this->normalizeCargoKey($itemType);
         if ($loadKey === '' || $destKey === '') return null;
 
-        $sql = 'SELECT * FROM hamola_details WHERE office_id = :oid AND username = :u AND deleted_at IS NULL ORDER BY created_at ASC, id ASC';
+        $sql = 'SELECT * FROM hamola_details WHERE office_id = :oid AND username = :u AND deleted_at IS NULL ORDER BY created_at ASC';
         if ($this->db->inTransaction()) {
             $sql .= ' FOR UPDATE';
         }
@@ -103,7 +103,7 @@ class HamolaRepository {
         }
         if (empty($officeIdByName)) return [];
 
-        $sql = 'SELECT * FROM hamola_details WHERE username = :u AND deleted_at IS NULL ORDER BY office_id ASC, created_at ASC, id ASC';
+        $sql = 'SELECT * FROM hamola_details WHERE username = :u AND deleted_at IS NULL ORDER BY office_id, created_at ASC';
         if ($this->db->inTransaction()) {
             $sql .= ' FOR UPDATE';
         }

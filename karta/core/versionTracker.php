@@ -46,29 +46,11 @@ function bumpVersion(PDO $db, string $entityName): void {
 /**
  * Bump version for multiple entities at once.
  *
- * Deduplicates and sorts entity names lexicographically so row locks on
- * `data_versions` (PRIMARY KEY `entity_name`) are always acquired in a
- * single deterministic order across all concurrent transactions.
- *
  * @param PDO   $db       The active database connection
  * @param array $entities Array of entity names
  */
 function bumpVersions(PDO $db, array $entities): void {
-    $unique = [];
     foreach ($entities as $entity) {
-        if (is_string($entity)) {
-            $trimmed = trim($entity);
-            if ($trimmed !== '') {
-                $unique[$trimmed] = $trimmed;
-            }
-        }
-    }
-    if (empty($unique)) {
-        return;
-    }
-    $sorted = array_values($unique);
-    sort($sorted, SORT_STRING);
-    foreach ($sorted as $entity) {
         bumpVersion($db, $entity);
     }
 }

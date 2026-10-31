@@ -25,7 +25,7 @@ try {
 
     $db->beginTransaction();
     try {
-        $batch = $repo->getBatchByUuid($batchId, true);
+        $batch = $repo->getBatchByUuid($batchId);
         if (!$batch) { $db->rollBack(); jsonError('الأرشيف غير موجود', 404); }
         if ($batch['username'] !== $username) { $db->rollBack(); jsonError('غير مسموح', 403); }
         if ($batch['status'] !== 'archived' && $batch['status'] !== 'active') {
@@ -48,8 +48,8 @@ try {
             }
         }
 
-        // Restore records (remove archive flags scoped to $username)
-        $restored = $repo->restoreRecords($batchId, $username);
+        // Restore records (remove archive flags)
+        $restored = $repo->restoreRecords($batchId);
 
         // Update batch status
         $now = nowEgypt();

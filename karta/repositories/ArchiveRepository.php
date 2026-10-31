@@ -54,12 +54,8 @@ class ArchiveRepository {
         return $this->getBatchByUuid($uuid);
     }
 
-    public function getBatchByUuid(string $uuid, bool $forUpdate = false): ?array {
-        $sql = 'SELECT * FROM archive_batches WHERE uuid = :uuid AND deleted_at IS NULL LIMIT 1';
-        if ($forUpdate) {
-            $sql .= ' FOR UPDATE';
-        }
-        $stmt = $this->db->prepare($sql);
+    public function getBatchByUuid(string $uuid): ?array {
+        $stmt = $this->db->prepare('SELECT * FROM archive_batches WHERE uuid = :uuid AND deleted_at IS NULL LIMIT 1');
         $stmt->execute([':uuid' => $uuid]);
         $r = $stmt->fetch(); return $r ?: null;
     }
@@ -70,10 +66,9 @@ class ArchiveRepository {
         $r = $stmt->fetch(); return $r ?: null;
     }
 
-    public function listBatches(string $username, bool $forUpdate = false): array {
-        $order = $forUpdate ? 'ORDER BY id ASC FOR UPDATE' : 'ORDER BY created_at DESC, id DESC';
+    public function listBatches(string $username): array {
         $stmt = $this->db->prepare(
-            "SELECT * FROM archive_batches WHERE username = :u AND deleted_at IS NULL {$order}"
+            'SELECT * FROM archive_batches WHERE username = :u AND deleted_at IS NULL ORDER BY created_at DESC'
         );
         $stmt->execute([':u' => $username]);
         return $stmt->fetchAll();
@@ -81,7 +76,7 @@ class ArchiveRepository {
 
     public function updateBatch(int $id, array $patch, string $username): array {
         $fields = [];
-        $params = [':id' => $id, ':u' => $username];
+        $params = [':id' => $id];
         foreach (['status','archive_version','snapshot_id','restored_at','last_rearchived_at','notes'] as $f) {
             if (array_key_exists($f, $patch)) {
                 $fields[] = "$f = :$f";
@@ -89,7 +84,7 @@ class ArchiveRepository {
             }
         }
         if (empty($fields)) return $this->getBatchById($id);
-        $sql = 'UPDATE archive_batches SET ' . implode(', ', $fields) . ', updated_at = NOW(3) WHERE id = :id AND username = :u AND deleted_at IS NULL';
+        $sql = 'UPDATE archive_batches SET ' . implode(', ', $fields) . ', updated_at = NOW(3) WHERE id = :id AND deleted_at IS NULL';
         $this->db->prepare($sql)->execute($params);
         return $this->getBatchById($id);
     }
@@ -151,106 +146,11 @@ class ArchiveRepository {
     // ── Archive / Restore records ──────────────────────────────────────────
 
     /**
-     * Lock all active, non-archived records within [fromDate, toDate] across
-     * ARCHIVABLE_TABLES in canonical table order (receipts -> treasury ->
-     * vehicle_ledger -> main_capital_treasury) and ascending primary-key (`id ASC`) order.
-     *
-     * Calling this before `computeSnapshot()` and `archiveRecords()` guarantees
-     * that the financial snapshot and the archived record set are 100% consistent.
-     *
-     * @return array<string, int[]> Map of table name => sorted locked primary-key IDs
-     */
-    public function lockArchivableRecords(string $username, string $fromDate, string $toDate): array {
-        $lockedByTable = [];
-        foreach (self::ARCHIVABLE_TABLES as $table) {
-            $dateCol = self::DATE_FIELD[$table];
-            $idStmt = $this->db->prepare(
-                "SELECT id FROM {$table}
-                 WHERE username = :u
-                   AND deleted_at IS NULL
-                   AND is_archived = 0
-                   AND {$dateCol} >= :from_date
-                   AND {$dateCol} <= :to_date
-                 ORDER BY id ASC"
-            );
-            $idStmt->execute([
-                ':u'         => $username,
-                ':from_date' => $fromDate,
-                ':to_date'   => $toDate,
-            ]);
-            $ids = array_values(array_unique(array_filter(array_map('intval', $idStmt->fetchAll(PDO::FETCH_COLUMN)), fn($v) => $v > 0)));
-            if (empty($ids)) {
-                $lockedByTable[$table] = [];
-                continue;
-            }
-            sort($ids, SORT_NUMERIC);
-
-            $placeholders = [];
-            $bind = [':u' => $username];
-            foreach ($ids as $i => $cid) {
-                $ph = ':id_' . $i;
-                $placeholders[] = $ph;
-                $bind[$ph] = $cid;
-            }
-            $inClause = implode(', ', $placeholders);
-            $lockStmt = $this->db->prepare(
-                "SELECT id FROM {$table}
-                 WHERE id IN ({$inClause})
-                   AND username = :u
-                   AND deleted_at IS NULL
-                   AND is_archived = 0
-                 ORDER BY id ASC FOR UPDATE"
-            );
-            $lockStmt->execute($bind);
-            $lockedByTable[$table] = array_values(array_map('intval', $lockStmt->fetchAll(PDO::FETCH_COLUMN)));
-        }
-        return $lockedByTable;
-    }
-
-    /**
      * Set is_archived = 1 on all matching records within the date range.
-     * When $prelockedIdsByTable is provided from lockArchivableRecords(), updates
-     * only the exact locked primary keys so snapshot and archived rows cannot diverge.
      */
-    public function archiveRecords(
-        string $username,
-        string $fromDate,
-        string $toDate,
-        string $batchUuid,
-        string $now,
-        ?array $prelockedIdsByTable = null
-    ): int {
+    public function archiveRecords(string $username, string $fromDate, string $toDate, string $batchUuid, string $now): int {
         $total = 0;
         foreach (self::ARCHIVABLE_TABLES as $table) {
-            if ($prelockedIdsByTable !== null && array_key_exists($table, $prelockedIdsByTable)) {
-                $ids = $prelockedIdsByTable[$table];
-                if (empty($ids)) {
-                    continue;
-                }
-                $placeholders = [];
-                $bind = [
-                    ':batch' => $batchUuid,
-                    ':now'   => $now,
-                    ':u'     => $username,
-                ];
-                foreach (array_values($ids) as $i => $cid) {
-                    $ph = ':id_' . $i;
-                    $placeholders[] = $ph;
-                    $bind[$ph] = intval($cid);
-                }
-                $inClause = implode(', ', $placeholders);
-                $sql = "UPDATE {$table}
-                        SET is_archived = 1, archive_batch_id = :batch, archived_at = :now
-                        WHERE id IN ({$inClause})
-                          AND username = :u
-                          AND deleted_at IS NULL
-                          AND is_archived = 0";
-                $stmt = $this->db->prepare($sql);
-                $stmt->execute($bind);
-                $total += $stmt->rowCount();
-                continue;
-            }
-
             $dateCol = self::DATE_FIELD[$table];
             $sql = "UPDATE $table
                     SET is_archived = 1, archive_batch_id = :batch, archived_at = :now
@@ -274,25 +174,15 @@ class ArchiveRepository {
 
     /**
      * Remove archive flags from all records belonging to a specific batch.
-     * Executes in ARCHIVABLE_TABLES order (receipts -> treasury -> vehicle_ledger -> main_capital_treasury).
      */
-    public function restoreRecords(string $batchUuid, ?string $username = null): int {
+    public function restoreRecords(string $batchUuid): int {
         $total = 0;
-        $hasUser = $username !== null && trim($username) !== '';
         foreach (self::ARCHIVABLE_TABLES as $table) {
-            if ($hasUser) {
-                $sql = "UPDATE $table
-                        SET is_archived = 0, archive_batch_id = NULL, archived_at = NULL
-                        WHERE username = :u AND archive_batch_id = :batch AND is_archived = 1";
-                $stmt = $this->db->prepare($sql);
-                $stmt->execute([':u' => $username, ':batch' => $batchUuid]);
-            } else {
-                $sql = "UPDATE $table
-                        SET is_archived = 0, archive_batch_id = NULL, archived_at = NULL
-                        WHERE archive_batch_id = :batch AND is_archived = 1";
-                $stmt = $this->db->prepare($sql);
-                $stmt->execute([':batch' => $batchUuid]);
-            }
+            $sql = "UPDATE $table
+                    SET is_archived = 0, archive_batch_id = NULL, archived_at = NULL
+                    WHERE archive_batch_id = :batch AND is_archived = 1";
+            $stmt = $this->db->prepare($sql);
+            $stmt->execute([':batch' => $batchUuid]);
             $total += $stmt->rowCount();
         }
         return $total;

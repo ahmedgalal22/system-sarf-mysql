@@ -185,315 +185,6 @@ class ReceiptRepository {
     }
 
     /**
-     * Inspect a receipt's payment and legacy payout statuses for salfa eligibility
-     * and salfa edit/delete safety.
-     *
-     * Rules:
-     *   - Keeps `payment_status`, legacy receipt-level `payout_status`, and row-level
-     *     `disbursement_status` strictly distinct (never infers receipt eligibility from
-     *     row-level `disbursement_status`, `row_status`, `row.payout_status`, or `rowPayment`).
-     *   - Detects corrupted/invalid `payment_status` or `payout_status` values and
-     *     conflicting legacy row-level `row.payment_status` values, returning
-     *     `status => 'inconsistent'` and `eligible => false`.
-     *   - Treats a legacy receipt with `payment_status IS NULL` (and no legacy row-level
-     *     `payment_status`) and `payout_status = 'unpaid'` as eligible (`'unpaid'`).
-     *   - Treats any receipt with resolved `payment_status === 'paid'` or legacy
-     *     `payout_status !== 'unpaid'` ('paid', 'partial', 'cancelled') as ineligible.
-     *
-     * @return array{eligible:bool, status:string, message:?string}
-     */
-    public static function inspectReceiptSalfaStatus(array $receipt): array {
-        $rawReceiptStatus = $receipt['payment_status'] ?? null;
-        $hasExplicitReceiptPayment = is_string($rawReceiptStatus) && trim($rawReceiptStatus) !== '';
-        $resolvedPayment = 'unpaid';
-
-        if ($hasExplicitReceiptPayment) {
-            $validated = self::validateReceiptPaymentStatus($rawReceiptStatus);
-            if ($validated === null) {
-                return [
-                    'eligible' => false,
-                    'status'   => 'inconsistent',
-                    'message'  => 'حالة الدفع المحفوظة للإيصال غير صالحة',
-                ];
-            }
-            $resolvedPayment = $validated;
-        } elseif ($rawReceiptStatus !== null && $rawReceiptStatus !== '') {
-            return [
-                'eligible' => false,
-                'status'   => 'inconsistent',
-                'message'  => 'حالة الدفع المحفوظة للإيصال غير صالحة',
-            ];
-        } else {
-            $rows = $receipt['rows'] ?? [];
-            if (is_string($rows)) {
-                $rows = json_decode($rows, true) ?? [];
-            }
-            if (is_array($rows)) {
-                $dataRows = array_values(array_filter($rows, function ($r) {
-                    return is_array($r) && (($r['_type'] ?? '') !== 'separator');
-                }));
-                if (!empty($dataRows)) {
-                    $rowsWithLegacyPayment = 0;
-                    $commonStatus = null;
-                    $hasInvalidOrConflict = false;
-
-                    foreach ($dataRows as $row) {
-                        $rawRowPay = $row['payment_status'] ?? null;
-                        if ($rawRowPay === null || (is_string($rawRowPay) && trim($rawRowPay) === '')) {
-                            continue;
-                        }
-                        $rowsWithLegacyPayment++;
-                        $rowPay = self::validateReceiptPaymentStatus($rawRowPay);
-                        if ($rowPay === null) {
-                            $hasInvalidOrConflict = true;
-                            break;
-                        }
-                        if ($commonStatus === null) {
-                            $commonStatus = $rowPay;
-                        } elseif ($commonStatus !== $rowPay) {
-                            $hasInvalidOrConflict = true;
-                            break;
-                        }
-                    }
-
-                    if ($hasInvalidOrConflict || ($rowsWithLegacyPayment > 0 && $rowsWithLegacyPayment !== count($dataRows))) {
-                        return [
-                            'eligible' => false,
-                            'status'   => 'inconsistent',
-                            'message'  => 'تعارض في حالة الدفع التاريخية لصفوف الإيصال',
-                        ];
-                    }
-                    if ($rowsWithLegacyPayment === count($dataRows) && $commonStatus !== null) {
-                        $resolvedPayment = $commonStatus;
-                    }
-                }
-            }
-        }
-
-        $rawPayoutVal = $receipt['payout_status'] ?? null;
-        if ($rawPayoutVal === null || (is_string($rawPayoutVal) && trim($rawPayoutVal) === '')) {
-            $rawPayout = 'unpaid';
-        } elseif (is_string($rawPayoutVal)) {
-            $rawPayout = strtolower(trim($rawPayoutVal));
-        } else {
-            return [
-                'eligible' => false,
-                'status'   => 'inconsistent',
-                'message'  => 'حالة الصرف القديمة للإيصال غير صالحة',
-            ];
-        }
-
-        if (!in_array($rawPayout, ['unpaid', 'paid', 'partial', 'cancelled'], true)) {
-            return [
-                'eligible' => false,
-                'status'   => 'inconsistent',
-                'message'  => 'حالة الصرف القديمة للإيصال غير صالحة',
-            ];
-        }
-
-        if ($rawPayout !== 'unpaid' && $hasExplicitReceiptPayment && $resolvedPayment === 'unpaid') {
-            return [
-                'eligible' => false,
-                'status'   => 'inconsistent',
-                'message'  => 'تعارض بين حالة الدفع وحالة الصرف للإيصال',
-            ];
-        }
-
-        if ($resolvedPayment === 'paid') {
-            return [
-                'eligible' => false,
-                'status'   => 'paid',
-                'message'  => 'لا يمكن تعديل مبلغ السلفة أو حذفها بعد دفع الإيصال المرتبط بها',
-            ];
-        }
-
-        if ($rawPayout !== 'unpaid') {
-            return [
-                'eligible' => false,
-                'status'   => $rawPayout,
-                'message'  => 'لا يمكن تعديل مبلغ السلفة أو حذفها لأن الإيصال المرتبط مدفوع أو غير قابل للتعديل',
-            ];
-        }
-
-        return [
-            'eligible' => true,
-            'status'   => 'unpaid',
-            'message'  => null,
-        ];
-    }
-
-    /**
-     * Unified salfa eligibility predicate: returns true iff the receipt has
-     * consistent statuses and is unpaid under both `payment_status` and legacy `payout_status`.
-     */
-    public static function isReceiptUnpaidForSalfa(array $receipt): bool {
-        $check = self::inspectReceiptSalfaStatus($receipt);
-        return $check['eligible'] === true;
-    }
-
-    /**
-     * Validate a numeric value as a finite float within safe bounds.
-     * Rejects booleans, arrays, objects, NaN, INF, non-numeric strings, and negative values when disallowed.
-     */
-    public static function validateFiniteNumber(
-        $value,
-        string $fieldLabel,
-        bool $allowNegative = true,
-        float $maxAbs = 100000000000.0
-    ): float {
-        if (is_bool($value) || is_array($value) || is_object($value) || $value === null) {
-            throw new InvalidArgumentException("قيمة غير صالحة للحقل: {$fieldLabel}");
-        }
-        if (is_string($value)) {
-            $trimmed = trim($value);
-            if ($trimmed === '' || !is_numeric($trimmed)) {
-                throw new InvalidArgumentException("قيمة غير رقمية للحقل: {$fieldLabel}");
-            }
-            $num = (float)$trimmed;
-        } elseif (is_int($value) || is_float($value)) {
-            $num = (float)$value;
-        } else {
-            throw new InvalidArgumentException("قيمة غير صالحة للحقل: {$fieldLabel}");
-        }
-
-        if (is_nan($num) || is_infinite($num) || abs($num) > $maxAbs) {
-            throw new InvalidArgumentException("قيمة خارج النطاق المسموح للحقل: {$fieldLabel}");
-        }
-        if (!$allowNegative && $num < 0) {
-            throw new InvalidArgumentException("لا يُسمح بقيمة سالبة للحقل: {$fieldLabel}");
-        }
-        return $num;
-    }
-
-    /**
-     * Validate a monetary minor-unit (cents) value as a finite integer within safe bounds.
-     */
-    public static function validateFiniteIntCents(
-        $value,
-        string $fieldLabel,
-        bool $allowNegative = true,
-        int $maxAbs = 10000000000000
-    ): int {
-        $num = self::validateFiniteNumber($value, $fieldLabel, $allowNegative, (float)$maxAbs);
-        if (abs($num - round($num)) > 1e-6) {
-            throw new InvalidArgumentException("يجب أن تكون القيمة بالوحدات الصحيحة (قروش) للحقل: {$fieldLabel}");
-        }
-        $intVal = (int)round($num);
-        if (abs($intVal) > $maxAbs) {
-            throw new InvalidArgumentException("قيمة خارج النطاق المسموح للحقل: {$fieldLabel}");
-        }
-        if (!$allowNegative && $intVal < 0) {
-            throw new InvalidArgumentException("لا يُسمح بقيمة سالبة للحقل: {$fieldLabel}");
-        }
-        return $intVal;
-    }
-
-    /**
-     * Validate all 8 numeric formula keys on a non-separator receipt data row,
-     * recompute `row.net` (decimal EGP) when complete primary formula inputs are present,
-     * reject incomplete formula inputs, and enforce `net + sarf >= 0` while preserving
-     * legitimate negative `row.net`.
-     *
-     * When `$existingRow` is provided (partial update of an existing row), omitted
-     * formula inputs are preserved from `$existingRow` when `$existingRow` carries
-     * trusted formula data.
-     */
-    public static function validateAndNormalizeDataRowFinancials(array $row, ?array $existingRow = null): array {
-        if ($existingRow !== null) {
-            $oldHasWeight = array_key_exists('weight', $existingRow) && $existingRow['weight'] !== null && $existingRow['weight'] !== '';
-            $oldHasNoloon = array_key_exists('noloon', $existingRow) && $existingRow['noloon'] !== null && $existingRow['noloon'] !== '';
-            if ($oldHasWeight && $oldHasNoloon) {
-                foreach (['weight', 'deficit', 'noloon', 'ohda', 'officeAmount', 'office_amount', 'sarf', 'add'] as $fk) {
-                    if ((!array_key_exists($fk, $row) || $row[$fk] === null)
-                        && array_key_exists($fk, $existingRow)
-                        && $existingRow[$fk] !== null
-                        && $existingRow[$fk] !== ''
-                    ) {
-                        $row[$fk] = $existingRow[$fk];
-                    }
-                }
-            } else {
-                foreach (['net', 'sarf'] as $fk) {
-                    if ((!array_key_exists($fk, $row) || $row[$fk] === null)
-                        && array_key_exists($fk, $existingRow)
-                        && $existingRow[$fk] !== null
-                        && $existingRow[$fk] !== ''
-                    ) {
-                        $row[$fk] = $existingRow[$fk];
-                    }
-                }
-            }
-        }
-
-        $nonNegativeKeys = [
-            'weight'        => 'الوزن (weight)',
-            'deficit'       => 'العجز (deficit)',
-            'noloon'        => 'النولون (noloon)',
-            'ohda'          => 'العهدة (ohda)',
-            'officeAmount'  => 'المكتب (officeAmount)',
-            'office_amount' => 'المكتب (office_amount)',
-            'add'           => 'الإضافة (add)',
-            'sarf'          => 'الصرف (sarf)',
-        ];
-
-        foreach ($nonNegativeKeys as $key => $label) {
-            if (array_key_exists($key, $row) && $row[$key] !== null && $row[$key] !== '') {
-                self::validateFiniteNumber($row[$key], $label, false);
-            }
-        }
-
-        if (array_key_exists('net', $row) && $row['net'] !== null && $row['net'] !== '') {
-            self::validateFiniteNumber($row['net'], 'الصافي (net)', true);
-        }
-
-        $hasWeight = array_key_exists('weight', $row) && $row['weight'] !== null && $row['weight'] !== '';
-        $hasNoloon = array_key_exists('noloon', $row) && $row['noloon'] !== null && $row['noloon'] !== '';
-        $hasExplicitNet = array_key_exists('net', $row) && $row['net'] !== null && $row['net'] !== '';
-
-        $hasNonZeroAuxFormulaInput = false;
-        foreach (['deficit', 'ohda', 'officeAmount', 'office_amount', 'add'] as $fk) {
-            if (array_key_exists($fk, $row) && $row[$fk] !== null && $row[$fk] !== '') {
-                if (abs((float)$row[$fk]) > 1e-9) {
-                    $hasNonZeroAuxFormulaInput = true;
-                    break;
-                }
-            }
-        }
-
-        if ($hasWeight !== $hasNoloon) {
-            throw new InvalidArgumentException('بيانات معادلة الصف غير مكتملة: يجب تحديد كل من الوزن (weight) والنولون (noloon) معاً لحساب الصافي');
-        }
-
-        if (!$hasWeight && !$hasNoloon && $hasNonZeroAuxFormulaInput) {
-            throw new InvalidArgumentException('بيانات معادلة الصف غير مكتملة: لا يمكن تطبيق خصومات أو إضافات المعادلة بدون الوزن والنولون');
-        }
-
-        if ($hasWeight && $hasNoloon) {
-            $w   = (float)$row['weight'];
-            $def = (isset($row['deficit']) && $row['deficit'] !== '' ? (float)$row['deficit'] : 0.0) / 1000.0;
-            $nol = (float)$row['noloon'];
-            $ohd = isset($row['ohda']) && $row['ohda'] !== '' ? (float)$row['ohda'] : 0.0;
-            $ofcRaw = $row['officeAmount'] ?? ($row['office_amount'] ?? 0);
-            $ofc = ($ofcRaw !== null && $ofcRaw !== '') ? (float)$ofcRaw : 0.0;
-            $srf = isset($row['sarf']) && $row['sarf'] !== '' ? (float)$row['sarf'] : 0.0;
-            $add = isset($row['add']) && $row['add'] !== '' ? (float)$row['add'] : 0.0;
-            $row['net'] = round((($w - $def) * $nol) - ($ohd + $ofc + $srf) + $add, 2);
-        } elseif ($hasExplicitNet) {
-            $row['net'] = round((float)$row['net'], 2);
-        } else {
-            $srf = isset($row['sarf']) && $row['sarf'] !== '' ? (float)$row['sarf'] : 0.0;
-            $row['net'] = round(0.0 - $srf, 2);
-        }
-
-        $calc = VehicleLedgerRepository::calculateRowNetAndSarfCents($row);
-        if ($calc['total_cents'] < 0) {
-            throw new InvalidArgumentException('لا يمكن حفظ صف بقيمة سالبة (الصافي + الصرف أقل من صفر)');
-        }
-
-        return $row;
-    }
-
-    /**
      * Generate a unique non-positional row identifier for newly created rows.
      */
     public static function generateUniqueRowId(): string {
@@ -582,7 +273,6 @@ class ReceiptRepository {
             }
             $seenIds[$rowId] = true;
             unset($row['payment_status'], $row['payment_status_updated_at']);
-            $row = self::validateAndNormalizeDataRowFinancials($row);
             $row['row_id']              = $rowId;
             $row['_rowId']              = $rowId;
             $row['disbursement_status'] = 'unpaid';
@@ -677,8 +367,6 @@ class ReceiptRepository {
             }
 
             unset($row['payment_status'], $row['payment_status_updated_at']);
-            $matchedOldRow = $oldById[$rowId] ?? null;
-            $row = self::validateAndNormalizeDataRowFinancials($row, $matchedOldRow);
             $row['row_id']              = $rowId;
             $row['_rowId']              = $rowId;
             $row['disbursement_status'] = $effectiveStatus;
@@ -1346,29 +1034,23 @@ class ReceiptRepository {
             'INSERT IGNORE INTO receipt_counters (username, next_number) VALUES (:u, 0)'
         )->execute([':u' => $username]);
 
-        // 2. Self-heal: read max receipt_number via a non-locking snapshot SELECT
-        //    (includes soft-deleted & archived receipts so numbers are never reused
-        //    and no shared next-key locks are placed on `receipts` during an UPDATE).
-        $maxStmt = $this->db->prepare(
-            'SELECT COALESCE(MAX(CAST(receipt_number AS UNSIGNED)), 0)
-             FROM receipts
-             WHERE username = :u'
-        );
-        $maxStmt->execute([':u' => $username]);
-        $maxUsed = (int) $maxStmt->fetchColumn();
-
-        if ($maxUsed > 0) {
-            $this->db->prepare(
-                'UPDATE receipt_counters
-                    SET next_number = :max_used
-                  WHERE username = :u
-                    AND next_number < :max_used_check'
-            )->execute([
-                ':max_used'       => $maxUsed,
-                ':u'              => $username,
-                ':max_used_check' => $maxUsed,
-            ]);
-        }
+        // 2. Self-heal: ensure counter >= max receipt_number actually used.
+        //    This fixes counter drift from old schema or manual edits.
+        //    Only updates if counter is BEHIND the actual data — never decreases.
+        $this->db->prepare(
+            'UPDATE receipt_counters rc
+               SET rc.next_number = (
+                 SELECT COALESCE(MAX(CAST(r.receipt_number AS UNSIGNED)), 0)
+                 FROM receipts r
+                 WHERE r.username = rc.username
+               )
+             WHERE rc.username = :u
+               AND rc.next_number < (
+                 SELECT COALESCE(MAX(CAST(r2.receipt_number AS UNSIGNED)), 0)
+                 FROM receipts r2
+                 WHERE r2.username = rc.username
+               )'
+        )->execute([':u' => $username]);
     }
 
     /**
@@ -1419,36 +1101,6 @@ class ReceiptRepository {
         $paymentStatus = 'unpaid';
         $cleanRows = self::prepareRowsForCreate($data['rows'] ?? []);
         $cleanRows = $this->attachOfficeIdsToRows($cleanRows, (string)($data['username'] ?? ''));
-
-        $generalAddCents = self::validateFiniteIntCents($data['general_add'] ?? 0, 'الإضافة العامة (general_add)', false);
-        $previousBalanceCents = self::validateFiniteIntCents($data['previous_balance'] ?? 0, 'الحساب السابق (previous_balance)', true);
-        $paidCents = self::validateFiniteIntCents($data['paid'] ?? 0, 'المدفوع (paid)', false);
-        $suppliedTotalCents = (array_key_exists('total', $data) && $data['total'] !== null && $data['total'] !== '')
-            ? self::validateFiniteIntCents($data['total'], 'الإجمالي (total)', true)
-            : 0;
-        if (array_key_exists('net_due', $data) && $data['net_due'] !== null && $data['net_due'] !== '') {
-            self::validateFiniteIntCents($data['net_due'], 'الصافي المستحق (net_due)', true);
-        }
-        if (array_key_exists('net_total', $data) && $data['net_total'] !== null && $data['net_total'] !== '') {
-            self::validateFiniteIntCents($data['net_total'], 'إجمالي الصافي (net_total)', true);
-        }
-
-        $dataRows = array_values(array_filter($cleanRows, function ($r) {
-            return is_array($r) && (($r['_type'] ?? '') !== 'separator');
-        }));
-
-        if (!empty($dataRows)) {
-            $totalCents = 0;
-            foreach ($dataRows as $dr) {
-                $calc = VehicleLedgerRepository::calculateRowNetAndSarfCents($dr);
-                $totalCents += $calc['net_cents'];
-            }
-        } else {
-            $totalCents = $suppliedTotalCents;
-        }
-        $netDueCents = $totalCents + $generalAddCents;
-        $netTotalCents = $netDueCents + $previousBalanceCents;
-
         $hasPayCol = $this->ensurePaymentStatusColumn();
 
         if ($hasPayCol) {
@@ -1504,12 +1156,12 @@ class ReceiptRepository {
             ':payout_status'    => $data['payout_status'] ?? 'unpaid',
             ':paid_at'          => $data['paid_at'] ?? null,
             ':account_type'     => $data['account_type'] ?? null,
-            ':total'            => $totalCents,
-            ':net_due'          => $netDueCents,
-            ':net_total'        => $netTotalCents,
-            ':paid'             => $paidCents,
-            ':previous_balance' => $previousBalanceCents,
-            ':general_add'      => $generalAddCents,
+            ':total'            => $data['total'] ?? 0,
+            ':net_due'          => $data['net_due'] ?? 0,
+            ':net_total'        => $data['net_total'] ?? 0,
+            ':paid'             => $data['paid'] ?? 0,
+            ':previous_balance' => $data['previous_balance'] ?? 0,
+            ':general_add'      => $data['general_add'] ?? 0,
             ':rows'             => json_encode($cleanRows, JSON_UNESCAPED_UNICODE),
             ':notes'            => $data['notes'] ?? null,
             ':shipping_number'  => $data['shipping_number'] ?? null,
@@ -1578,104 +1230,6 @@ class ReceiptRepository {
             }
         }
 
-        if (array_key_exists('paid', $patch)) {
-            $patch['paid'] = self::validateFiniteIntCents($patch['paid'], 'المدفوع (paid)', false);
-        }
-        if (array_key_exists('general_add', $patch)) {
-            $patch['general_add'] = self::validateFiniteIntCents($patch['general_add'], 'الإضافة العامة (general_add)', false);
-        }
-        if (array_key_exists('previous_balance', $patch)) {
-            $patch['previous_balance'] = self::validateFiniteIntCents($patch['previous_balance'], 'الحساب السابق (previous_balance)', true);
-        }
-        if (array_key_exists('total', $patch)) {
-            $patch['total'] = self::validateFiniteIntCents($patch['total'], 'الإجمالي (total)', true);
-        }
-        if (array_key_exists('net_due', $patch)) {
-            $patch['net_due'] = self::validateFiniteIntCents($patch['net_due'], 'الصافي المستحق (net_due)', true);
-        }
-        if (array_key_exists('net_total', $patch)) {
-            $patch['net_total'] = self::validateFiniteIntCents($patch['net_total'], 'إجمالي الصافي (net_total)', true);
-        }
-
-        $existingRowsDecoded = is_string($current['rows'] ?? null)
-            ? (json_decode($current['rows'], true) ?: [])
-            : ($current['rows'] ?? []);
-        $normalizedRows = null;
-
-        if (array_key_exists('rows', $patch)) {
-            $normalizedRows = self::prepareRowsForUpdate($patch['rows'], $existingRowsDecoded, $id);
-            $normalizedRows = $this->attachOfficeIdsToRows($normalizedRows, $username);
-        }
-
-        $existingDataRows = array_values(array_filter(is_array($existingRowsDecoded) ? $existingRowsDecoded : [], function ($r) {
-            return is_array($r) && (($r['_type'] ?? '') !== 'separator');
-        }));
-
-        $shouldRecalculateTotals = array_key_exists('rows', $patch)
-            || array_key_exists('general_add', $patch)
-            || array_key_exists('previous_balance', $patch)
-            || (empty($existingDataRows) && array_key_exists('total', $patch));
-
-        if ($shouldRecalculateTotals) {
-            $effectiveRows = $normalizedRows !== null ? $normalizedRows : $existingRowsDecoded;
-            $dataRows = array_values(array_filter(is_array($effectiveRows) ? $effectiveRows : [], function ($r) {
-                return is_array($r) && (($r['_type'] ?? '') !== 'separator');
-            }));
-
-            $generalAddCents = array_key_exists('general_add', $patch)
-                ? $patch['general_add']
-                : intval($current['general_add'] ?? 0);
-            $previousBalanceCents = array_key_exists('previous_balance', $patch)
-                ? $patch['previous_balance']
-                : intval($current['previous_balance'] ?? 0);
-
-            if (!empty($dataRows)) {
-                $rowsHaveCalculableNet = array_key_exists('rows', $patch);
-                if (!$rowsHaveCalculableNet) {
-                    foreach ($dataRows as $dr) {
-                        $hasW = array_key_exists('weight', $dr) && $dr['weight'] !== null && $dr['weight'] !== '';
-                        $hasN = array_key_exists('noloon', $dr) && $dr['noloon'] !== null && $dr['noloon'] !== '';
-                        $hasNet = array_key_exists('net', $dr) && $dr['net'] !== null && $dr['net'] !== '';
-                        if (($hasW && $hasN) || $hasNet) {
-                            $rowsHaveCalculableNet = true;
-                            break;
-                        }
-                    }
-                }
-
-                if ($rowsHaveCalculableNet) {
-                    $totalCents = 0;
-                    foreach ($dataRows as $dr) {
-                        $calc = VehicleLedgerRepository::calculateRowNetAndSarfCents($dr);
-                        $totalCents += $calc['net_cents'];
-                    }
-                } else {
-                    $totalCents = array_key_exists('total', $patch)
-                        ? $patch['total']
-                        : intval($current['total'] ?? 0);
-                }
-            } elseif (array_key_exists('rows', $patch)) {
-                if (!empty($existingDataRows) || !array_key_exists('total', $patch)) {
-                    $totalCents = 0;
-                } else {
-                    $totalCents = $patch['total'];
-                }
-            } else {
-                $totalCents = array_key_exists('total', $patch)
-                    ? $patch['total']
-                    : intval($current['total'] ?? 0);
-            }
-
-            $netDueCents = $totalCents + $generalAddCents;
-            $netTotalCents = $netDueCents + $previousBalanceCents;
-
-            $patch['total'] = $totalCents;
-            $patch['general_add'] = $generalAddCents;
-            $patch['previous_balance'] = $previousBalanceCents;
-            $patch['net_due'] = $netDueCents;
-            $patch['net_total'] = $netTotalCents;
-        }
-
         // Build patch (status columns are managed exclusively by transition methods)
         $allowed = [
             'receipt_date', 'client_id', 'client_type', 'client_name',
@@ -1691,7 +1245,9 @@ class ReceiptRepository {
             if (array_key_exists($field, $patch)) {
                 $value = $patch[$field];
                 if ($field === 'rows') {
-                    $value = json_encode($normalizedRows ?? [], JSON_UNESCAPED_UNICODE);
+                    $normalizedRows = self::prepareRowsForUpdate($value, is_string($current['rows'] ?? null) ? (json_decode($current['rows'], true) ?: []) : ($current['rows'] ?? []), $id);
+                    $normalizedRows = $this->attachOfficeIdsToRows($normalizedRows, $username);
+                    $value = json_encode($normalizedRows, JSON_UNESCAPED_UNICODE);
                 }
                 $fields[] = "`{$field}` = :{$field}";
                 $params[":{$field}"] = $value;
@@ -1972,16 +1528,10 @@ class ReceiptRepository {
         int $expectedCents,
         string $expectedOfficeId,
         TreasuryRepo $treasuryRepo,
-        VehicleLedgerRepository $ledgerRepo,
-        ?array $prelockedTreasuryRows = null,
-        ?array $prelockedLedgerRows = null
+        VehicleLedgerRepository $ledgerRepo
     ): array {
-        $tRows = $prelockedTreasuryRows !== null
-            ? $prelockedTreasuryRows
-            : $treasuryRepo->getActiveByReferenceForUser($username, $rowRefId, self::REF_TYPE_ROW_DISBURSEMENT, true);
-        $lRows = $prelockedLedgerRows !== null
-            ? $prelockedLedgerRows
-            : $ledgerRepo->getActiveByReferenceForUser($username, $rowRefId, self::REF_TYPE_ROW_DISBURSEMENT, true);
+        $tRows = $treasuryRepo->getActiveByReferenceForUser($username, $rowRefId, self::REF_TYPE_ROW_DISBURSEMENT, true);
+        $lRows = $ledgerRepo->getActiveByReferenceForUser($username, $rowRefId, self::REF_TYPE_ROW_DISBURSEMENT, true);
 
         if ($expectedState === 'unpaid' || $expectedCents === 0) {
             if (count($tRows) !== 0 || count($lRows) !== 0) {
@@ -2049,16 +1599,10 @@ class ReceiptRepository {
         int $expectedPaidCents,
         string $expectedOwnerId,
         TreasuryRepo $treasuryRepo,
-        VehicleLedgerRepository $ledgerRepo,
-        ?array $prelockedTreasuryRows = null,
-        ?array $prelockedLedgerRows = null
+        VehicleLedgerRepository $ledgerRepo
     ): array {
-        $tRows = $prelockedTreasuryRows !== null
-            ? $prelockedTreasuryRows
-            : $treasuryRepo->getActiveByReferenceForUser($username, $receiptRefId, self::REF_TYPE_RECEIPT_PAYMENT, true);
-        $lRows = $prelockedLedgerRows !== null
-            ? $prelockedLedgerRows
-            : $ledgerRepo->getActiveByReferenceForUser($username, $receiptRefId, self::REF_TYPE_RECEIPT_PAYMENT, true);
+        $tRows = $treasuryRepo->getActiveByReferenceForUser($username, $receiptRefId, self::REF_TYPE_RECEIPT_PAYMENT, true);
+        $lRows = $ledgerRepo->getActiveByReferenceForUser($username, $receiptRefId, self::REF_TYPE_RECEIPT_PAYMENT, true);
 
         if ($expectedState === 'unpaid') {
             if (count($tRows) !== 0 || count($lRows) !== 0) {
@@ -2628,9 +2172,7 @@ class ReceiptRepository {
         TreasuryRepo $treasuryRepo,
         VehicleLedgerRepository $ledgerRepo,
         OfficeRepository $officeRepo,
-        VehicleOwnerRepository $ownerRepo,
-        bool $reverseReceiptCreationTreasury = false,
-        array $stagedReceiptCreationTreasuryOps = []
+        VehicleOwnerRepository $ownerRepo
     ): array {
         $receiptId = (int)($updatedReceipt['id'] ?? $previousReceipt['id'] ?? 0);
         $oldRows = self::normalizeReceiptRows($previousReceipt['rows'] ?? [], $receiptId);
@@ -2652,43 +2194,26 @@ class ReceiptRepository {
             $newById[$sid] = $r;
         }
 
-        // Two-phase lock acquisition: lock ALL active treasury rows for this receipt
-        // in ascending PK order BEFORE locking any vehicle_ledger rows.
-        $lockedTreasury = $treasuryRepo->lockActiveForReceipt($username, $receiptId, true);
-        $lockedLedger   = $ledgerRepo->lockActiveForReceipt($username, $receiptId, true);
-
-        // Index pre-locked rows by reference_id so pair validation never issues
-        // a new SELECT ... FOR UPDATE on treasury after vehicle_ledger is locked.
-        $prelockedTreasuryByRowRef = [];
-        foreach ($lockedTreasury['row_level'] as $ot) {
+        // Check for any orphaned active row-disbursement entries with this receiptId prefix
+        $prefix = $receiptId . ':%';
+        $orphanTStmt = $this->db->prepare(
+            'SELECT reference_id FROM treasury WHERE username = :u AND reference_type = :rt AND reference_id LIKE :pfx AND is_reversed = 0 AND deleted_at IS NULL FOR UPDATE'
+        );
+        $orphanTStmt->execute([':u' => $username, ':rt' => self::REF_TYPE_ROW_DISBURSEMENT, ':pfx' => $prefix]);
+        foreach ($orphanTStmt->fetchAll() as $ot) {
             if (!isset($knownRefIds[$ot['reference_id']])) {
                 return ['code' => self::RESULT_INCONSISTENT_LEDGER, 'message' => 'توجد حركات خزنة نشطة لصف غير معروف في هذا الإيصال'];
             }
-            $prelockedTreasuryByRowRef[$ot['reference_id']][] = $ot;
         }
-        $prelockedLedgerByRowRef = [];
-        foreach ($lockedLedger['row_level'] as $ol) {
+        $orphanLStmt = $this->db->prepare(
+            'SELECT reference_id FROM vehicle_ledger WHERE username = :u AND reference_type = :rt AND reference_id LIKE :pfx AND is_reversed = 0 AND deleted_at IS NULL FOR UPDATE'
+        );
+        $orphanLStmt->execute([':u' => $username, ':rt' => self::REF_TYPE_ROW_DISBURSEMENT, ':pfx' => $prefix]);
+        foreach ($orphanLStmt->fetchAll() as $ol) {
             if (!isset($knownRefIds[$ol['reference_id']])) {
                 return ['code' => self::RESULT_INCONSISTENT_LEDGER, 'message' => 'توجد حركات دفتر نشطة لصف غير معروف في هذا الإيصال'];
             }
-            $prelockedLedgerByRowRef[$ol['reference_id']][] = $ol;
         }
-
-        $receiptRefId = strval($receiptId);
-        $prelockedTreasuryReceiptPay = array_values(array_filter(
-            $lockedTreasury['receipt_level'],
-            function ($r) use ($receiptRefId) {
-                return ($r['reference_id'] ?? '') === $receiptRefId
-                    && ($r['reference_type'] ?? '') === self::REF_TYPE_RECEIPT_PAYMENT;
-            }
-        ));
-        $prelockedLedgerReceiptPay = array_values(array_filter(
-            $lockedLedger['receipt_level'],
-            function ($r) use ($receiptRefId) {
-                return ($r['reference_id'] ?? '') === $receiptRefId
-                    && ($r['reference_type'] ?? '') === self::REF_TYPE_RECEIPT_PAYMENT;
-            }
-        ));
 
         $allOffices = $officeRepo->getAllByUsername($username);
         $now = (new DateTime('now', new DateTimeZone('Africa/Cairo')))->format('Y-m-d H:i:s.v');
@@ -2698,12 +2223,7 @@ class ReceiptRepository {
             : (!empty($previousReceipt['receipt_date']) ? $previousReceipt['receipt_date'] : $today);
         $receiptNumStr = strval($updatedReceipt['receipt_number'] ?? $previousReceipt['receipt_number'] ?? $receiptId);
 
-        $treasuryReversals = [];
-        $ledgerReversals   = [];
-        $treasuryCreates   = [];
-        $ledgerCreates     = [];
-
-        // 1. Validate & stage row-level disbursement movements
+        // 1. Reconcile row-level disbursement movements
         foreach ($oldById as $rowId => $oldRow) {
             $oldStatus = self::getRowDisbursementStatus($oldRow);
             $rowRefId = self::buildRowDisbursementRefId($receiptId, $rowId);
@@ -2723,9 +2243,7 @@ class ReceiptRepository {
                 max(0, $oldCents),
                 $oldOfficeId,
                 $treasuryRepo,
-                $ledgerRepo,
-                $prelockedTreasuryByRowRef[$rowRefId] ?? [],
-                $prelockedLedgerByRowRef[$rowRefId] ?? []
+                $ledgerRepo
             );
             if (!$pairCheck['valid']) {
                 return ['code' => self::RESULT_INCONSISTENT_LEDGER, 'message' => $pairCheck['message']];
@@ -2739,11 +2257,14 @@ class ReceiptRepository {
             $oldPostedOfficeId = !empty($pairCheck['treasury']) ? strval($pairCheck['treasury'][0]['client_id'] ?? '') : $oldOfficeId;
             $oldPostedDate = !empty($pairCheck['treasury']) ? strval($pairCheck['treasury'][0]['date'] ?? '') : '';
 
-            // Row was deleted during edit -> stage reversal of its disbursement pair
+            // Row was deleted during edit -> reverse its disbursement pair
             if (!isset($newById[$rowId])) {
                 if ($oldPostedCents > 0) {
-                    $treasuryReversals[] = ['ref_id' => $rowRefId, 'ref_type' => self::REF_TYPE_ROW_DISBURSEMENT, 'err' => 'فشل عكس حركة الصف المحذوف'];
-                    $ledgerReversals[]   = ['ref_id' => $rowRefId, 'ref_type' => self::REF_TYPE_ROW_DISBURSEMENT, 'err' => 'فشل عكس حركة الصف المحذوف'];
+                    $revT = $treasuryRepo->reverseByReferenceForUser($username, $rowRefId, self::REF_TYPE_ROW_DISBURSEMENT);
+                    $revL = $ledgerRepo->reverseByReferenceForUser($username, $rowRefId, self::REF_TYPE_ROW_DISBURSEMENT);
+                    if ($revT !== 1 || $revL !== 1) {
+                        return ['code' => self::RESULT_INCONSISTENT_LEDGER, 'message' => 'فشل عكس حركة الصف المحذوف'];
+                    }
                 }
                 continue;
             }
@@ -2772,8 +2293,11 @@ class ReceiptRepository {
                 || ($oldPostedCents > 0 && $effectiveDate !== $oldPostedDate)
             ) {
                 if ($oldPostedCents > 0) {
-                    $treasuryReversals[] = ['ref_id' => $rowRefId, 'ref_type' => self::REF_TYPE_ROW_DISBURSEMENT, 'err' => 'فشل عكس حركة الصف المعدل'];
-                    $ledgerReversals[]   = ['ref_id' => $rowRefId, 'ref_type' => self::REF_TYPE_ROW_DISBURSEMENT, 'err' => 'فشل عكس حركة الصف المعدل'];
+                    $revT = $treasuryRepo->reverseByReferenceForUser($username, $rowRefId, self::REF_TYPE_ROW_DISBURSEMENT);
+                    $revL = $ledgerRepo->reverseByReferenceForUser($username, $rowRefId, self::REF_TYPE_ROW_DISBURSEMENT);
+                    if ($revT !== 1 || $revL !== 1) {
+                        return ['code' => self::RESULT_INCONSISTENT_LEDGER, 'message' => 'فشل عكس حركة الصف المعدل'];
+                    }
                 }
                 if ($newCents > 0 && $newOffice) {
                     $officeName = preg_replace('/\s+/u', ' ', trim((string)($newOffice['name'] ?? '')));
@@ -2781,7 +2305,7 @@ class ReceiptRepository {
                     $ownerName = preg_replace('/\s+/u', ' ', trim((string)($newRow['owner_name'] ?? ($updatedReceipt['client_name'] ?? '')))) ?: null;
                     $desc = 'صرف كارتة - ' . $officeName;
 
-                    $treasuryCreates[] = [
+                    $treasuryRepo->create([
                         'username'       => $username,
                         'type'           => 'deposit',
                         'effect'         => 'row_disbursement',
@@ -2798,9 +2322,9 @@ class ReceiptRepository {
                         'description'    => $desc,
                         'note'           => $desc,
                         'is_reversed'    => 0,
-                    ];
+                    ]);
 
-                    $ledgerCreates[] = [
+                    $ledgerRepo->create([
                         'username'           => $username,
                         'vehicle_owner_id'   => $ownerId,
                         'vehicle_owner_name' => $ownerName,
@@ -2817,12 +2341,12 @@ class ReceiptRepository {
                         'applied_at'         => $now,
                         'note'               => $desc,
                         'is_reversed'        => 0,
-                    ];
+                    ]);
                 }
             }
         }
 
-        // 2. Validate & stage receipt-level payment movements
+        // 2. Reconcile receipt-level payment movements
         $payStatus = self::getReceiptPaymentStatus($previousReceipt);
         $oldPaidCents = intval($previousReceipt['paid'] ?? 0);
         $oldOwnerId = trim((string)($previousReceipt['client_id'] ?? ''));
@@ -2839,9 +2363,7 @@ class ReceiptRepository {
             max(0, $oldPaidCents),
             $oldOwnerId,
             $treasuryRepo,
-            $ledgerRepo,
-            $prelockedTreasuryReceiptPay,
-            $prelockedLedgerReceiptPay
+            $ledgerRepo
         );
         if (!$payPairCheck['valid']) {
             return ['code' => self::RESULT_INCONSISTENT_LEDGER, 'message' => $payPairCheck['message']];
@@ -2872,21 +2394,21 @@ class ReceiptRepository {
                 || ($newPaidCents > 0 && $newOwnerId !== $oldPostedOwnerId)
                 || ($oldPostedPaidCents > 0 && $effectiveDate !== $oldPostedDate)
             ) {
+                if ($oldPostedPaidCents > 0) {
+                    $revT = $treasuryRepo->reverseByReferenceForUser($username, $receiptRefId, self::REF_TYPE_RECEIPT_PAYMENT);
+                    $revL = $ledgerRepo->reverseByReferenceForUser($username, $receiptRefId, self::REF_TYPE_RECEIPT_PAYMENT);
+                    if ($revT !== 1 || $revL !== 1) {
+                        return ['code' => self::RESULT_INCONSISTENT_LEDGER, 'message' => 'فشل عكس حركة دفع الإيصال المعدل'];
+                    }
+                }
                 if ($newPaidCents > 0 && $newOwnerInfo) {
                     $ownerName = $newOwnerInfo['name'];
                     if ($ownerName === '') {
                         return ['code' => self::RESULT_INVALID, 'message' => 'اسم صاحب المركبة مطلوب لتسجيل حركة الخزنة'];
                     }
-                }
-                if ($oldPostedPaidCents > 0) {
-                    $treasuryReversals[] = ['ref_id' => $receiptRefId, 'ref_type' => self::REF_TYPE_RECEIPT_PAYMENT, 'err' => 'فشل عكس حركة دفع الإيصال المعدل'];
-                    $ledgerReversals[]   = ['ref_id' => $receiptRefId, 'ref_type' => self::REF_TYPE_RECEIPT_PAYMENT, 'err' => 'فشل عكس حركة دفع الإيصال المعدل'];
-                }
-                if ($newPaidCents > 0 && $newOwnerInfo) {
-                    $ownerName = $newOwnerInfo['name'];
                     $exactDesc = 'صرف كارتة - ' . $ownerName;
 
-                    $treasuryCreates[] = [
+                    $treasuryRepo->create([
                         'username'       => $username,
                         'type'           => 'withdraw',
                         'effect'         => 'receipt_payout',
@@ -2903,9 +2425,9 @@ class ReceiptRepository {
                         'description'    => $exactDesc,
                         'note'           => $exactDesc,
                         'is_reversed'    => 0,
-                    ];
+                    ]);
 
-                    $ledgerCreates[] = [
+                    $ledgerRepo->create([
                         'username'       => $username,
                         'client_id'      => $newOwnerId,
                         'client_type'    => 'owner',
@@ -2920,41 +2442,12 @@ class ReceiptRepository {
                         'applied_at'     => $now,
                         'note'           => $exactDesc,
                         'is_reversed'    => 0,
-                    ];
+                    ]);
                 }
             }
         }
 
-        // 3. Execute all treasury mutations first, then all vehicle_ledger mutations second
-        foreach ($treasuryReversals as $tr) {
-            $revT = $treasuryRepo->reverseByReferenceForUser($username, $tr['ref_id'], $tr['ref_type']);
-            if ($revT !== 1) {
-                return ['code' => self::RESULT_INCONSISTENT_LEDGER, 'message' => $tr['err']];
-            }
-        }
-        foreach ($treasuryCreates as $tc) {
-            $treasuryRepo->create($tc);
-        }
-
-        $treasuryOpsResults = [];
-        if ($reverseReceiptCreationTreasury) {
-            $treasuryRepo->reverseByReferenceForUser($username, $receiptRefId, 'receipt');
-            foreach ($stagedReceiptCreationTreasuryOps as $tOp) {
-                $treasuryOpsResults[] = $treasuryRepo->create($tOp);
-            }
-        }
-
-        foreach ($ledgerReversals as $lr) {
-            $revL = $ledgerRepo->reverseByReferenceForUser($username, $lr['ref_id'], $lr['ref_type']);
-            if ($revL !== 1) {
-                return ['code' => self::RESULT_INCONSISTENT_LEDGER, 'message' => $lr['err']];
-            }
-        }
-        foreach ($ledgerCreates as $lc) {
-            $ledgerRepo->create($lc);
-        }
-
-        return ['code' => self::RESULT_OK, 'treasury_ops_results' => $treasuryOpsResults];
+        return ['code' => self::RESULT_OK];
     }
 
     /**
@@ -2968,8 +2461,7 @@ class ReceiptRepository {
         string $username,
         TreasuryRepo $treasuryRepo,
         VehicleLedgerRepository $ledgerRepo,
-        OfficeRepository $officeRepo,
-        bool $reverseReceiptCreationTreasury = false
+        OfficeRepository $officeRepo
     ): array {
         $lockStmt = $this->db->prepare(
             'SELECT * FROM receipts WHERE id = :id AND deleted_at IS NULL FOR UPDATE'
@@ -2987,39 +2479,9 @@ class ReceiptRepository {
             return ['code' => self::RESULT_ARCHIVED, 'message' => 'الإيصال مؤرشف'];
         }
 
-        // Two-phase lock acquisition: lock ALL active treasury rows for this receipt
-        // in ascending PK order BEFORE locking any vehicle_ledger rows.
-        $lockedTreasury = $treasuryRepo->lockActiveForReceipt($username, $receiptId, true);
-        $lockedLedger   = $ledgerRepo->lockActiveForReceipt($username, $receiptId, true);
-
-        $prelockedTreasuryByRowRef = [];
-        foreach ($lockedTreasury['row_level'] as $ot) {
-            $prelockedTreasuryByRowRef[$ot['reference_id']][] = $ot;
-        }
-        $prelockedLedgerByRowRef = [];
-        foreach ($lockedLedger['row_level'] as $ol) {
-            $prelockedLedgerByRowRef[$ol['reference_id']][] = $ol;
-        }
-        $receiptRefId = strval($receiptId);
-        $prelockedTreasuryReceiptPay = array_values(array_filter(
-            $lockedTreasury['receipt_level'],
-            function ($r) use ($receiptRefId) {
-                return ($r['reference_id'] ?? '') === $receiptRefId
-                    && ($r['reference_type'] ?? '') === self::REF_TYPE_RECEIPT_PAYMENT;
-            }
-        ));
-        $prelockedLedgerReceiptPay = array_values(array_filter(
-            $lockedLedger['receipt_level'],
-            function ($r) use ($receiptRefId) {
-                return ($r['reference_id'] ?? '') === $receiptRefId
-                    && ($r['reference_type'] ?? '') === self::REF_TYPE_RECEIPT_PAYMENT;
-            }
-        ));
-
         $rows = self::normalizeReceiptRows($current['rows'] ?? [], $receiptId);
         $allOffices = $officeRepo->getAllByUsername($username);
         $knownRefIds = [];
-        $rowRefIdsToReverse = [];
 
         foreach ($rows as $idx => $row) {
             if (!is_array($row) || ($row['_type'] ?? '') === 'separator') continue;
@@ -3040,35 +2502,43 @@ class ReceiptRepository {
                 max(0, $rowCents),
                 $officeIdStr,
                 $treasuryRepo,
-                $ledgerRepo,
-                $prelockedTreasuryByRowRef[$rowRefId] ?? [],
-                $prelockedLedgerByRowRef[$rowRefId] ?? []
+                $ledgerRepo
             );
             if (!$pairCheck['valid']) {
                 return ['code' => self::RESULT_INCONSISTENT_LEDGER, 'message' => $pairCheck['message']];
             }
 
             if (!empty($pairCheck['treasury'])) {
-                $rowRefIdsToReverse[] = $rowRefId;
+                $revT = $treasuryRepo->reverseByReferenceForUser($username, $rowRefId, self::REF_TYPE_ROW_DISBURSEMENT);
+                $revL = $ledgerRepo->reverseByReferenceForUser($username, $rowRefId, self::REF_TYPE_ROW_DISBURSEMENT);
+                if ($revT !== 1 || $revL !== 1) {
+                    return ['code' => self::RESULT_INCONSISTENT_LEDGER, 'message' => 'فشل عكس حركة صرف الصف عند حذف الإيصال'];
+                }
             }
         }
 
         // Check for any unexpected active row-disbursement entries under this receiptId prefix
-        foreach ($lockedTreasury['row_level'] as $ot) {
-            if (!isset($knownRefIds[$ot['reference_id']])) {
-                return ['code' => self::RESULT_INCONSISTENT_LEDGER, 'message' => 'توجد حركات خزنة نشطة غير متطابقة لصفوف هذا الإيصال'];
-            }
+        $prefix = $receiptId . ':%';
+        $orphanTStmt = $this->db->prepare(
+            'SELECT reference_id FROM treasury WHERE username = :u AND reference_type = :rt AND reference_id LIKE :pfx AND is_reversed = 0 AND deleted_at IS NULL FOR UPDATE'
+        );
+        $orphanTStmt->execute([':u' => $username, ':rt' => self::REF_TYPE_ROW_DISBURSEMENT, ':pfx' => $prefix]);
+        if ($orphanTStmt->fetch()) {
+            return ['code' => self::RESULT_INCONSISTENT_LEDGER, 'message' => 'توجد حركات خزنة نشطة غير متطابقة لصفوف هذا الإيصال'];
         }
-        foreach ($lockedLedger['row_level'] as $ol) {
-            if (!isset($knownRefIds[$ol['reference_id']])) {
-                return ['code' => self::RESULT_INCONSISTENT_LEDGER, 'message' => 'توجد حركات دفتر نشطة غير متطابقة لصفوف هذا الإيصال'];
-            }
+        $orphanLStmt = $this->db->prepare(
+            'SELECT reference_id FROM vehicle_ledger WHERE username = :u AND reference_type = :rt AND reference_id LIKE :pfx AND is_reversed = 0 AND deleted_at IS NULL FOR UPDATE'
+        );
+        $orphanLStmt->execute([':u' => $username, ':rt' => self::REF_TYPE_ROW_DISBURSEMENT, ':pfx' => $prefix]);
+        if ($orphanLStmt->fetch()) {
+            return ['code' => self::RESULT_INCONSISTENT_LEDGER, 'message' => 'توجد حركات دفتر نشطة غير متطابقة لصفوف هذا الإيصال'];
         }
 
-        // Validate receipt-level payment movement before mutating any row
+        // Validate and reverse receipt-level payment movement
         $payStatus = self::getReceiptPaymentStatus($current);
         $paidCents = intval($current['paid'] ?? 0);
         $ownerIdStr = trim((string)($current['client_id'] ?? ''));
+        $receiptRefId = strval($receiptId);
 
         $payPairCheck = self::validateReceiptPaymentPair(
             $username,
@@ -3077,42 +2547,16 @@ class ReceiptRepository {
             max(0, $paidCents),
             $ownerIdStr,
             $treasuryRepo,
-            $ledgerRepo,
-            $prelockedTreasuryReceiptPay,
-            $prelockedLedgerReceiptPay
+            $ledgerRepo
         );
         if (!$payPairCheck['valid']) {
             return ['code' => self::RESULT_INCONSISTENT_LEDGER, 'message' => $payPairCheck['message']];
         }
 
-        $reverseReceiptPayment = !empty($payPairCheck['treasury']);
-
-        // Execute all treasury reversals first, then all vehicle_ledger reversals second
-        foreach ($rowRefIdsToReverse as $rowRefId) {
-            $revT = $treasuryRepo->reverseByReferenceForUser($username, $rowRefId, self::REF_TYPE_ROW_DISBURSEMENT);
-            if ($revT !== 1) {
-                return ['code' => self::RESULT_INCONSISTENT_LEDGER, 'message' => 'فشل عكس حركة صرف الصف عند حذف الإيصال'];
-            }
-        }
-        if ($reverseReceiptPayment) {
+        if (!empty($payPairCheck['treasury'])) {
             $revT = $treasuryRepo->reverseByReferenceForUser($username, $receiptRefId, self::REF_TYPE_RECEIPT_PAYMENT);
-            if ($revT !== 1) {
-                return ['code' => self::RESULT_INCONSISTENT_LEDGER, 'message' => 'فشل عكس حركة دفع الإيصال عند الحذف'];
-            }
-        }
-        if ($reverseReceiptCreationTreasury) {
-            $treasuryRepo->reverseByReferenceForUser($username, $receiptRefId, 'receipt');
-        }
-
-        foreach ($rowRefIdsToReverse as $rowRefId) {
-            $revL = $ledgerRepo->reverseByReferenceForUser($username, $rowRefId, self::REF_TYPE_ROW_DISBURSEMENT);
-            if ($revL !== 1) {
-                return ['code' => self::RESULT_INCONSISTENT_LEDGER, 'message' => 'فشل عكس حركة صرف الصف عند حذف الإيصال'];
-            }
-        }
-        if ($reverseReceiptPayment) {
             $revL = $ledgerRepo->reverseByReferenceForUser($username, $receiptRefId, self::REF_TYPE_RECEIPT_PAYMENT);
-            if ($revL !== 1) {
+            if ($revT !== 1 || $revL !== 1) {
                 return ['code' => self::RESULT_INCONSISTENT_LEDGER, 'message' => 'فشل عكس حركة دفع الإيصال عند الحذف'];
             }
         }
