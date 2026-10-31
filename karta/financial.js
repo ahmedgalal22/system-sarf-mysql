@@ -617,12 +617,162 @@ function _normalizeLedgerDateFilter(dateRange) {
 
 function _entryMatchesDateFilter(entry, normalizedRange) {
   if (!normalizedRange) return true;
-  const rawDate = String(entry?.date || entry?.applied_at || entry?.created_at || '').trim();
-  if (!rawDate) return false;
-  const entryDateIso = rawDate.slice(0, 10);
+  const entryDateIso = extractLedgerEntryDateIso(entry);
+  if (!entryDateIso) return false;
   if (normalizedRange.from && entryDateIso < normalizedRange.from) return false;
   if (normalizedRange.to && entryDateIso > normalizedRange.to) return false;
   return true;
+}
+
+const _AR_TIME_FORMATTER = (() => {
+  try {
+    return new Intl.DateTimeFormat('ar-EG', {
+      hour: '2-digit',
+      minute: '2-digit',
+      timeZone: 'UTC',
+    });
+  } catch {
+    return null;
+  }
+})();
+
+const _CAIRO_PARTS_FORMATTER = (() => {
+  try {
+    return new Intl.DateTimeFormat('en-US', {
+      timeZone: 'Africa/Cairo',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      hour12: false,
+    });
+  } catch {
+    return null;
+  }
+})();
+
+function _parseWallClockOrZoneTime(rawVal) {
+  if (typeof rawVal !== 'string') return null;
+  const trimmed = rawVal.trim();
+  if (!trimmed || /^\d{4}-\d{2}-\d{2}$/.test(trimmed)) return null;
+
+  const match = trimmed.match(
+    /^(\d{4}-\d{2}-\d{2})[T\s](\d{2}):(\d{2})(?::(\d{2})(?:\.(\d+))?)?(?:\s*(Z|[+-]\d{2}:?\d{2}))?$/i
+  );
+  if (!match) return null;
+
+  const datePart = match[1];
+  if (datePart === '0000-00-00') return null;
+
+  const tzSuffix = match[6] || '';
+  if (!tzSuffix) {
+    const hour = Number(match[2]);
+    const minute = Number(match[3]);
+    const second = Number(match[4] ?? 0);
+    if (
+      !Number.isInteger(hour) || hour < 0 || hour > 23 ||
+      !Number.isInteger(minute) || minute < 0 || minute > 59 ||
+      !Number.isInteger(second) || second < 0 || second > 59
+    ) {
+      return null;
+    }
+    const fracStr = String(match[5] || '').slice(0, 3).padEnd(3, '0');
+    const millis = Number(fracStr) || 0;
+    const msOfDay = (((hour * 60 + minute) * 60) + second) * 1000 + millis;
+    return { hour, minute, second, millis, msOfDay };
+  }
+
+  const parsed = new Date(trimmed);
+  if (Number.isNaN(parsed.getTime())) return null;
+
+  let hour = parsed.getUTCHours();
+  let minute = parsed.getUTCMinutes();
+  let second = parsed.getUTCSeconds();
+  if (_CAIRO_PARTS_FORMATTER) {
+    const parts = {};
+    for (const p of _CAIRO_PARTS_FORMATTER.formatToParts(parsed)) {
+      if (p.type === 'hour') parts.hour = p.value === '24' ? 0 : Number(p.value);
+      if (p.type === 'minute') parts.minute = Number(p.value);
+      if (p.type === 'second') parts.second = Number(p.value);
+    }
+    if (Number.isInteger(parts.hour)) hour = parts.hour;
+    if (Number.isInteger(parts.minute)) minute = parts.minute;
+    if (Number.isInteger(parts.second)) second = parts.second;
+  }
+  const millis = parsed.getUTCMilliseconds();
+  const msOfDay = (((hour * 60 + minute) * 60) + second) * 1000 + millis;
+  return { hour, minute, second, millis, msOfDay };
+}
+
+export function extractLedgerEntryDateIso(entry) {
+  if (!entry || typeof entry !== 'object') return '';
+  const candidates = [entry.date, entry.applied_at, entry.created_at];
+  for (const c of candidates) {
+    if (typeof c !== 'string') continue;
+    const prefix = c.trim().slice(0, 10);
+    if (/^\d{4}-\d{2}-\d{2}$/.test(prefix) && prefix !== '0000-00-00') {
+      return prefix;
+    }
+  }
+  return '';
+}
+
+export function extractLedgerEntryTimeParts(entry) {
+  if (!entry || typeof entry !== 'object') return null;
+  const fromApplied = _parseWallClockOrZoneTime(entry.applied_at);
+  if (fromApplied) {
+    return { ...fromApplied, source: 'applied_at' };
+  }
+  const fromCreated = _parseWallClockOrZoneTime(entry.created_at);
+  if (fromCreated) {
+    return { ...fromCreated, source: 'created_at' };
+  }
+  return null;
+}
+
+export function formatLedgerEntryTime(entry) {
+  const parts = extractLedgerEntryTimeParts(entry);
+  if (!parts) return '—';
+  const refUtcDate = new Date(Date.UTC(2000, 0, 1, parts.hour, parts.minute, parts.second, parts.millis));
+  if (_AR_TIME_FORMATTER) {
+    return _AR_TIME_FORMATTER.format(refUtcDate);
+  }
+  const hh = String(parts.hour).padStart(2, '0');
+  const mm = String(parts.minute).padStart(2, '0');
+  return `${hh}:${mm}`;
+}
+
+export function compareLedgerEntriesChronologicalAsc(a, b) {
+  const dateA = extractLedgerEntryDateIso(a);
+  const dateB = extractLedgerEntryDateIso(b);
+  if (dateA !== dateB) {
+    return dateA < dateB ? -1 : 1;
+  }
+
+  const timeA = extractLedgerEntryTimeParts(a)?.msOfDay ?? -1;
+  const timeB = extractLedgerEntryTimeParts(b)?.msOfDay ?? -1;
+  if (timeA !== timeB) {
+    return timeA < timeB ? -1 : 1;
+  }
+
+  const rawIdA = a?.id;
+  const rawIdB = b?.id;
+  const numA = rawIdA !== null && rawIdA !== undefined && String(rawIdA).trim() !== '' ? Number(rawIdA) : NaN;
+  const numB = rawIdB !== null && rawIdB !== undefined && String(rawIdB).trim() !== '' ? Number(rawIdB) : NaN;
+  if (Number.isFinite(numA) && Number.isFinite(numB) && numA !== numB) {
+    return numA < numB ? -1 : 1;
+  }
+
+  const strA = String(a?.id ?? a?.uuid ?? '');
+  const strB = String(b?.id ?? b?.uuid ?? '');
+  if (strA !== strB) {
+    return strA < strB ? -1 : 1;
+  }
+  return 0;
+}
+
+export function compareLedgerEntriesChronologicalDesc(a, b) {
+  const cmp = compareLedgerEntriesChronologicalAsc(a, b);
+  return cmp === 0 ? 0 : -cmp;
 }
 
 async function getClientLedger(client_id, client_type, dateRange = null) {
@@ -645,11 +795,7 @@ async function getClientLedger(client_id, client_type, dateRange = null) {
   return entries
     .filter((entry) => _entryMatchesDateFilter(entry, normalizedRange))
     .slice()
-    .sort((a, b) => {
-      const db = new Date(b.date || b.applied_at || b.created_at || 0).getTime();
-      const da = new Date(a.date || a.applied_at || a.created_at || 0).getTime();
-      return db - da;
-    })
+    .sort(compareLedgerEntriesChronologicalDesc)
     .map(Money.decimalizeRecord);
 }
 
@@ -818,4 +964,9 @@ export const FinancialService = Object.freeze({
   updateReceiptStatus,
   updateReceiptRowStatus,
   updateReceiptPaymentStatus,
+  extractLedgerEntryDateIso,
+  extractLedgerEntryTimeParts,
+  formatLedgerEntryTime,
+  compareLedgerEntriesChronologicalAsc,
+  compareLedgerEntriesChronologicalDesc,
 });

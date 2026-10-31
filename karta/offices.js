@@ -3,7 +3,12 @@
  * Internal structure: Constants → State → Services → Helpers → Rendering → Events → Public API → Boot
  */
 
-import { FinancialService } from './financial.js';
+import {
+  FinancialService,
+  extractLedgerEntryDateIso,
+  formatLedgerEntryTime,
+  compareLedgerEntriesChronologicalAsc,
+} from './financial.js';
 import { AuthModule } from './auth.js';
 import { Money } from './money.js';
 import { DateUtils } from './dateUtils.js';
@@ -1312,7 +1317,7 @@ function _renderOfficeDepositModal() {
 
 function _renderOfficeBalance(entries) {
   function entryDate(entry) {
-    return entry.date || entry.applied_at || entry.created_at || '';
+    return extractLedgerEntryDateIso(entry) || entry.date || entry.applied_at || entry.created_at || '';
   }
 
   function entryTypeLabel(entry) {
@@ -1328,15 +1333,7 @@ function _renderOfficeBalance(entries) {
     return amount;
   }
 
-  const sorted = entries.slice().sort((a, b) => {
-    const da = new Date(entryDate(a) || 0).getTime();
-    const db = new Date(entryDate(b) || 0).getTime();
-    if (da !== db) return da - db;
-    const ta = new Date(a.applied_at || a.created_at || 0).getTime();
-    const tb = new Date(b.applied_at || b.created_at || 0).getTime();
-    if (ta !== tb) return ta - tb;
-    return (Number(a.id) || 0) - (Number(b.id) || 0);
-  });
+  const sorted = entries.slice().sort(compareLedgerEntriesChronologicalAsc);
 
   let running = 0;
   const withBalance = sorted.map((entry) => {
@@ -1355,13 +1352,14 @@ function _renderOfficeBalance(entries) {
     ? displayRows.map(({ entry, delta, balance }) => `
       <tr>
         <td>${_text(entryDate(entry))}</td>
+        <td>${_text(formatLedgerEntryTime(entry))}</td>
         <td>${entryTypeLabel(entry)}</td>
         <td>${delta < 0 ? '-' : ''}${_fmt(Math.abs(delta))}</td>
         <td>${_fmt(balance)}</td>
         <td>${_text(formatMovementReference(entry))}</td>
       </tr>
     `).join('')
-    : `<tr><td colspan="5" class="text-center text-muted p-4">لا توجد حركات</td></tr>`;
+    : `<tr><td colspan="6" class="text-center text-muted p-4">لا توجد حركات</td></tr>`;
 
   return `
     <div style="display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:12px;margin-bottom:16px;">
@@ -1379,6 +1377,7 @@ function _renderOfficeBalance(entries) {
         <thead style="background:linear-gradient(135deg,#1e3a8a,#2563eb);">
           <tr>
             <th style="color:#fff;">التاريخ</th>
+            <th style="color:#fff;">الوقت</th>
             <th style="color:#fff;">النوع</th>
             <th style="color:#fff;">المبلغ</th>
             <th style="color:#fff;">الرصيد بعد العملية</th>

@@ -3,7 +3,11 @@
  * Internal structure: Constants → State → Services → Helpers → Rendering → Events → Public API → Boot
  */
 
-import { FinancialService } from './financial.js';
+import {
+  FinancialService,
+  formatLedgerEntryTime,
+  compareLedgerEntriesChronologicalDesc,
+} from './financial.js';
 import { AuthModule } from './auth.js';
 import { Money } from './money.js';
 import { printHTML } from './printEngine.js';
@@ -740,9 +744,10 @@ async function _getClient(type, id) {
 }
 
 async function _renderLedger(client, preloadedLedger = null) {
-  const ledger = Array.isArray(preloadedLedger)
+  const rawLedger = Array.isArray(preloadedLedger)
     ? preloadedLedger
     : await OwnersModule.getClientLedger(client.id, client.type);
+  const ledger = rawLedger.slice().sort(compareLedgerEntriesChronologicalDesc);
   return `
     <section class="ent-tab-section">
       <div class="ent-section-header">
@@ -773,6 +778,7 @@ async function _renderLedger(client, preloadedLedger = null) {
           <thead>
             <tr>
               <th>التاريخ</th>
+              <th>الوقت</th>
               <th>المبلغ</th>
               <th>ملاحظة</th>
             </tr>
@@ -781,12 +787,13 @@ async function _renderLedger(client, preloadedLedger = null) {
             ${ledger.length ? ledger.map(e => `
               <tr>
                 <td>${_dateLabel(e.date || e.applied_at)}</td>
+                <td>${formatLedgerEntryTime(e)}</td>
                 <td class="font-semibold">${_fmt(e.amount)}</td>
                 <td>${_ledgerNote(e)}</td>
               </tr>
             `).join('') : `
               <tr>
-                <td colspan="3" class="text-muted text-center">لا توجد حركات</td>
+                <td colspan="4" class="text-muted text-center">لا توجد حركات</td>
               </tr>
             `}
           </tbody>
@@ -1388,19 +1395,22 @@ function attachOwnersPageListeners() {
       const body = document.getElementById('clientLedgerBody');
       if (!body) return;
       const ledger = await OwnersModule.getClientLedger(String(id), ctype);
-      const filtered = ledger.filter(e1 => {
-        const d = _dateLabel(e1.date || e1.applied_at);
-        if (from && d < from) return false;
-        if (to && d > to) return false;
-        return true;
-      });
+      const filtered = ledger
+        .filter(e1 => {
+          const d = _dateLabel(e1.date || e1.applied_at);
+          if (from && d < from) return false;
+          if (to && d > to) return false;
+          return true;
+        })
+        .sort(compareLedgerEntriesChronologicalDesc);
       body.innerHTML = filtered.length ? filtered.map(e1 => `
         <tr>
           <td class="p-2 text-right">${_dateLabel(e1.date || e1.applied_at)}</td>
+          <td class="p-2 text-right">${formatLedgerEntryTime(e1)}</td>
           <td class="p-2 text-right font-semibold">${_fmt(e1.amount)}</td>
           <td class="p-2 text-right">${_ledgerNote(e1)}</td>
         </tr>
-      `).join('') : `<tr><td colspan="3" class="text-center text-muted p-4">لا توجد حركات</td></tr>`;
+      `).join('') : `<tr><td colspan="4" class="text-center text-muted p-4">لا توجد حركات</td></tr>`;
       return;
     }
 
@@ -1414,14 +1424,16 @@ function attachOwnersPageListeners() {
       const ctype = clientClearBtn.dataset.type || _selectedClient?.type || 'owner';
       const body = document.getElementById('clientLedgerBody');
       if (!body) return;
-      const ledger = await OwnersModule.getClientLedger(String(id), ctype);
+      const rawLedger = await OwnersModule.getClientLedger(String(id), ctype);
+      const ledger = rawLedger.slice().sort(compareLedgerEntriesChronologicalDesc);
       body.innerHTML = ledger.length ? ledger.map(e1 => `
         <tr>
           <td class="p-2 text-right">${_dateLabel(e1.date || e1.applied_at)}</td>
+          <td class="p-2 text-right">${formatLedgerEntryTime(e1)}</td>
           <td class="p-2 text-right font-semibold">${_fmt(e1.amount)}</td>
           <td class="p-2 text-right">${_ledgerNote(e1)}</td>
         </tr>
-      `).join('') : `<tr><td colspan="3" class="text-center text-muted p-4">لا توجد حركات</td></tr>`;
+      `).join('') : `<tr><td colspan="4" class="text-center text-muted p-4">لا توجد حركات</td></tr>`;
       return;
     }
   });

@@ -307,7 +307,14 @@ await AuthModule.login('admin', 'admin');
 
 const { initTreasuryPage } = await import('../treasury.js');
 const { initOfficesPage, loadOffices, attachOfficesPageListeners, OfficesModule } = await import('../offices.js');
-const { FinancialService } = await import('../financial.js');
+const {
+  FinancialService,
+  extractLedgerEntryDateIso,
+  extractLedgerEntryTimeParts,
+  formatLedgerEntryTime,
+  compareLedgerEntriesChronologicalAsc,
+  compareLedgerEntriesChronologicalDesc,
+} = await import('../financial.js');
 const { summarizeReceipts, initAllReceiptsPage, refreshAllReceiptsPage, printSingleReceipt } = await import('../allReceipts.js');
 const { renderReceiptSnapshotTableHead, renderReceiptSnapshotRowsHtml } = await import('../receipts.js');
 const { calculateRowNet } = await import('../services/financialCalculator.js');
@@ -808,3 +815,229 @@ test('4. Disbursement Form Page (نموذج الصرف) — Column order مكت�
   const computedNet = calculateRowNet(sampleRow);
   assert.equal(computedNet, 950, 'calculateRowNet formula must remain (10*100) - (50+111+222) + 333 = 950');
 });
+
+test('5. Disbursement Form & All Disbursement Forms — Show اسم المكتب in print, rename وزن وش to الوزن, and always print الوزن even when zero or empty', async () => {
+  // 5A. Verify receipts.js COL_DEFS sets printConditional: false on weight (الوزن) and printHide: false on office (اسم المكتب)
+  const receiptsSrc = fs.readFileSync(path.join(KARTA_DIR, 'receipts.js'), 'utf8');
+  assert.ok(
+    /key:\s*'weight'[^\n]*label:\s*'الوزن'[^\n]*printHide:\s*false\s*,\s*printConditional:\s*false/.test(receiptsSrc),
+    'receipts.js COL_DEFS must configure weight (الوزن) with printHide: false, printConditional: false'
+  );
+  assert.ok(
+    /key:\s*'office'[^\n]*label:\s*'اسم المكتب'[^\n]*printHide:\s*false/.test(receiptsSrc),
+    'receipts.js COL_DEFS must configure office (اسم المكتب) with printHide: false'
+  );
+
+  // 5B. Verify single-receipt print in allReceipts.js includes الوزن and اسم المكتب even when weight is 0 or empty
+  printedDocuments.length = 0;
+  printSingleReceipt({
+    id: 'rec-zero-weight',
+    receipt_number: '7001',
+    receipt_date: '2026-10-31',
+    client_name: 'عميل صفر وزن',
+    total: 50000,
+    general_add: 0,
+    net_due: 50000,
+    previous_balance: 0,
+    net_total: 50000,
+    paid: 50000,
+    rows: [
+      {
+        _rowId: 'rz-1',
+        kartano: '7001',
+        date: '2026-10-31',
+        data: 'سائق أ',
+        car: 'س ص ع 456',
+        weight: 0,
+        deficit: 0,
+        office: 'مكتب الصفا',
+        loading: 'طنطا',
+        taktik: 'الإسكندرية',
+        type: 'ذرة',
+        noloon: 500,
+        ohda: 0,
+        officeAmount: 0,
+        sarf: 0,
+        add: 0,
+        net: 500,
+      },
+    ],
+  });
+
+  assert.equal(printedDocuments.length, 1, 'printSingleReceipt must emit 1 print document');
+  const singlePrintHtml = printedDocuments[0];
+  assert.ok(singlePrintHtml.includes('>الوزن<'), 'Single receipt print must display header الوزن even when weight is 0');
+  assert.ok(!singlePrintHtml.includes('وزن وش'), 'Single receipt print must NOT display legacy header وزن وش');
+  assert.ok(singlePrintHtml.includes('>اسم المكتب<'), 'Single receipt print must display header اسم المكتب');
+  assert.ok(singlePrintHtml.includes('>مكتب الصفا<'), 'Single receipt print must render row.office value (مكتب الصفا)');
+
+  // 5C. Verify bulk print (print-filtered) in allReceipts.js includes الوزن and اسم المكتب when all rows have weight: 0
+  mockReceipts = [
+    {
+      id: 'rec-bulk-zero',
+      receipt_number: '7002',
+      receipt_date: '2026-10-31',
+      client_name: 'عميل مجمع',
+      total: 50000,
+      general_add: 0,
+      net_due: 50000,
+      previous_balance: 0,
+      net_total: 50000,
+      paid: 50000,
+      sarf: 0,
+      rows: [
+        {
+          _rowId: 'rz-2',
+          kartano: '7002',
+          date: '2026-10-31',
+          data: 'سائق ب',
+          car: 'أ ب ج 999',
+          weight: '',
+          deficit: 0,
+          office: 'مكتب المروة',
+          noloon: 500,
+          ohda: 0,
+          officeAmount: 0,
+          sarf: 0,
+          add: 0,
+          net: 500,
+        },
+      ],
+    },
+  ];
+  await refreshAllReceiptsPage('list');
+  printedDocuments.length = 0;
+  const allReceiptsPageEl = elementsById.get('allReceiptsPage');
+  await allReceiptsPageEl.trigger('click', {
+    target: {
+      closest(sel) {
+        if (sel === '[data-action]') return { dataset: { action: 'print-filtered', tab: 'receipts' } };
+        return null;
+      },
+    },
+  });
+  assert.equal(printedDocuments.length, 1, 'Bulk print must emit 1 document');
+  const bulkPrintHtml = printedDocuments[0];
+  assert.ok(bulkPrintHtml.includes('>الوزن<'), 'Bulk print must always include الوزن header even when weight is empty');
+  assert.ok(!bulkPrintHtml.includes('وزن وش'), 'Bulk print must NOT include legacy وزن وش header');
+  assert.ok(bulkPrintHtml.includes('>اسم المكتب<'), 'Bulk print must include اسم المكتب header');
+  assert.ok(bulkPrintHtml.includes('>مكتب المروة<'), 'Bulk print must render row.office value (مكتب المروة)');
+
+  // 5D. Verify excelService.js headers use الوزن while preserving legacyHeader: 'وزن وش' for import compatibility
+  const excelSrc = fs.readFileSync(path.join(KARTA_DIR, 'excelService.js'), 'utf8');
+  assert.ok(
+    /key:\s*'weight'\s*,\s*header:\s*'الوزن'\s*,\s*legacyHeader:\s*'وزن وش'/.test(excelSrc),
+    'excelService.js _RECEIPT_COLS must use header: الوزن and preserve legacyHeader: وزن وش'
+  );
+  const allReceiptsColsSection = excelSrc.slice(
+    excelSrc.indexOf('const _ALL_RECEIPTS_COLS ='),
+    excelSrc.indexOf('function _allReceiptsNum')
+  );
+  assert.ok(allReceiptsColsSection.includes("header: 'الوزن'"), '_ALL_RECEIPTS_COLS must use header: الوزن');
+  assert.ok(!allReceiptsColsSection.includes("header: 'وزن وش'"), '_ALL_RECEIPTS_COLS must not use legacy header: وزن وش');
+});
+
+test('6. Vehicle Owner Details & Office Details — الوقت column after التاريخ, Africa/Cairo wall-clock time formatting & fallback, and exact-inverse chronological sorting', async () => {
+  // 6A. Primary source (applied_at) vs fallback (created_at) vs missing ('—')
+  const withAppliedIso = {
+    id: 10,
+    date: '2026-10-31',
+    applied_at: '2026-10-31T14:25:30',
+    created_at: '2026-10-31 10:00:00.000',
+  };
+  const partsApplied = extractLedgerEntryTimeParts(withAppliedIso);
+  assert.equal(partsApplied.source, 'applied_at');
+  assert.equal(partsApplied.hour, 14);
+  assert.equal(partsApplied.minute, 25);
+  assert.equal(partsApplied.second, 30);
+
+  const expectedAr1425 = new Intl.DateTimeFormat('ar-EG', {
+    hour: '2-digit',
+    minute: '2-digit',
+    timeZone: 'UTC',
+  }).format(new Date(Date.UTC(2000, 0, 1, 14, 25, 30)));
+  assert.equal(formatLedgerEntryTime(withAppliedIso), expectedAr1425, 'formatLedgerEntryTime must format applied_at in ar-EG without timezone shift');
+
+  // Fallback to created_at when applied_at is date-only or empty
+  const withDateOnlyApplied = {
+    id: 11,
+    date: '2026-10-31',
+    applied_at: '2026-10-31',
+    created_at: '2026-10-31 09:05:12.450',
+  };
+  const partsCreated = extractLedgerEntryTimeParts(withDateOnlyApplied);
+  assert.equal(partsCreated.source, 'created_at', 'Date-only applied_at must fall back to created_at');
+  assert.equal(partsCreated.hour, 9);
+  assert.equal(partsCreated.minute, 5);
+  assert.equal(partsCreated.second, 12);
+  assert.equal(partsCreated.millis, 450);
+
+  // Missing time in both applied_at and created_at -> '—'
+  const withoutTime = {
+    id: 12,
+    date: '2026-10-31',
+    applied_at: '2026-10-31',
+    created_at: '',
+  };
+  assert.equal(extractLedgerEntryTimeParts(withoutTime), null);
+  assert.equal(formatLedgerEntryTime(withoutTime), '—', 'Entries without any time component must display —');
+
+  // 6B. Verify compareLedgerEntriesChronologicalAsc and compareLedgerEntriesChronologicalDesc are exact inverses
+  const sampleEntries = [
+    { id: 1, date: '2026-10-29', applied_at: '2026-10-29T18:00:00', amount: 10000 },
+    { id: 2, date: '2026-10-30', applied_at: '', created_at: '', amount: 20000 },
+    { id: 3, date: '2026-10-30', applied_at: '2026-10-30T08:15:00', amount: 30000 },
+    { id: 4, date: '2026-10-30', applied_at: '2026-10-30', created_at: '2026-10-30 11:45:00.000', amount: 40000 },
+    { id: 5, date: '2026-10-30', applied_at: '2026-10-30T11:45:00', amount: 50000 },
+    { id: 6, date: '2026-10-31', applied_at: '2026-10-31T07:00:00', amount: 60000 },
+  ];
+
+  for (const a of sampleEntries) {
+    for (const b of sampleEntries) {
+      const asc = compareLedgerEntriesChronologicalAsc(a, b);
+      const desc = compareLedgerEntriesChronologicalDesc(a, b);
+      assert.equal(desc, asc === 0 ? 0 : -asc, `Asc and Desc comparators must be exact inverses for ids (${a.id}, ${b.id})`);
+    }
+  }
+
+  const ascIds = sampleEntries.slice().sort(compareLedgerEntriesChronologicalAsc).map((e) => e.id);
+  const descIds = sampleEntries.slice().sort(compareLedgerEntriesChronologicalDesc).map((e) => e.id);
+  assert.deepEqual(ascIds, [1, 2, 3, 4, 5, 6], 'Ascending chronological order must sort by date -> time (missing first) -> id');
+  assert.deepEqual(descIds, [6, 5, 4, 3, 2, 1], 'Descending chronological order must be the exact reverse of ascending order');
+
+  // 6C. Verify FinancialService.getClientLedger returns newest-first using compareLedgerEntriesChronologicalDesc
+  mockOfficeLedgerEntries = [
+    { id: 201, client_id: '77', client_type: 'owner', type: 'deposit', amount: 10000, date: '2026-10-30', applied_at: '2026-10-30T09:00:00', is_reversed: 0 },
+    { id: 202, client_id: '77', client_type: 'owner', type: 'withdraw', amount: 5000, date: '2026-10-30', applied_at: '2026-10-30T15:30:00', is_reversed: 0 },
+    { id: 203, client_id: '77', client_type: 'owner', type: 'deposit', amount: 20000, date: '2026-10-30', applied_at: '2026-10-30T15:30:00', is_reversed: 0 },
+    { id: 204, client_id: '77', client_type: 'owner', type: 'deposit', amount: 30000, date: '2026-10-29', applied_at: '2026-10-29T22:00:00', is_reversed: 0 },
+  ];
+  const ownerLedger = await FinancialService.getClientLedger('77', 'owner');
+  assert.deepEqual(
+    ownerLedger.map((e) => e.id),
+    [203, 202, 201, 204],
+    'FinancialService.getClientLedger must sort newest-first by date, time-of-day, and ID tie-breaker'
+  );
+
+  // 6D. Verify entities.js and offices.js table headers, time cells, and empty-state colspans
+  const entitiesSrc = fs.readFileSync(path.join(KARTA_DIR, 'entities.js'), 'utf8');
+  assert.ok(
+    entitiesSrc.includes('<th>التاريخ</th>\n              <th>الوقت</th>\n              <th>المبلغ</th>\n              <th>ملاحظة</th>'),
+    'entities.js _renderLedger must include <th>الوقت</th> immediately after <th>التاريخ</th>'
+  );
+  assert.ok(
+    entitiesSrc.includes('<td colspan="4" class="text-muted text-center">لا توجد حركات</td>'),
+    'entities.js _renderLedger empty state must use colspan="4"'
+  );
+
+  const officesSrc = fs.readFileSync(path.join(KARTA_DIR, 'offices.js'), 'utf8');
+  assert.ok(
+    officesSrc.includes('<th style="color:#fff;">التاريخ</th>\n            <th style="color:#fff;">الوقت</th>\n            <th style="color:#fff;">النوع</th>'),
+    'offices.js _renderOfficeBalance must include <th>الوقت</th> immediately after <th>التاريخ</th>'
+  );
+  assert.ok(
+    officesSrc.includes('<td colspan="6" class="text-center text-muted p-4">لا توجد حركات</td>'),
+    'offices.js _renderOfficeBalance empty state must use colspan="6"'
+  );
+});
+

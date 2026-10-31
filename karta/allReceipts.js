@@ -1207,8 +1207,9 @@ const _RECEIPT_PRINT_COLS = Object.freeze([
   { key: 'date',         label: 'التاريخ',       type: 'text',   printHide: false, conditional: false },
   { key: 'data',         label: 'اسم السائق',    type: 'text',   printHide: false, conditional: false },
   { key: 'car',          label: 'رقم المركبة',   type: 'text',   printHide: false, conditional: false },
-  { key: 'weight',       label: 'وزن وش',        type: 'number', printHide: false, conditional: true  },
+  { key: 'weight',       label: 'الوزن',         type: 'number', printHide: false, conditional: false },
   { key: 'deficit',      label: 'عجز',           type: 'number', printHide: false, conditional: false },
+  { key: 'office',       label: 'اسم المكتب',    type: 'text',   printHide: false, conditional: false },
   { key: 'loading',      label: 'التحميل',       type: 'text',   printHide: false, conditional: false },
   { key: 'taktik',       label: 'الجهة',         type: 'text',   printHide: false, conditional: false },
   { key: 'type',         label: 'النوع',         type: 'text',   printHide: false, conditional: false },
@@ -1250,6 +1251,8 @@ function _receiptPrintGetCellValue(row, colKey) {
       return row.weight ?? '';
     case 'deficit':
       return row.deficit ?? '';
+    case 'office':
+      return row.office ?? '';
     case 'loading':
       return row.loading ?? '';
     case 'taktik':

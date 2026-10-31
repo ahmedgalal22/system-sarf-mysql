@@ -577,11 +577,11 @@ const COL_DEFS = [
   // index: 3 (owner column removed — owner comes from clientInput)
   { key: 'car',          label: 'رقم المركبة',        cls: 'receipt-car',          type: 'text',   minW: '80px',  printHide: false },
   // index: 4
-  { key: 'weight',       label: 'الوزن',              cls: 'receipt-weight',       type: 'number', minW: '55px',  printHide: false, printConditional: true },
+  { key: 'weight',       label: 'الوزن',              cls: 'receipt-weight',       type: 'number', minW: '55px',  printHide: false, printConditional: false },
   // index: 5
   { key: 'deficit',      label: 'عجز',                cls: 'receipt-deficit',      type: 'number', minW: '45px',  printHide: false },
-  // index: 6  ← اسم المكتب (office) — مخفي في الطباعة (Feature 4)
-  { key: 'office',       label: 'اسم المكتب',         cls: 'receipt-office',       type: 'text',   minW: '90px',  printHide: true  },
+  // index: 6  ← اسم المكتب (office)
+  { key: 'office',       label: 'اسم المكتب',         cls: 'receipt-office',       type: 'text',   minW: '90px',  printHide: false },
   // index: 7
   { key: 'loading',      label: 'التحميل',             cls: 'receipt-loading',      type: 'text',   minW: '85px',  printHide: false },
   // index: 8
