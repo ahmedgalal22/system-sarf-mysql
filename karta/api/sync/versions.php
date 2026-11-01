@@ -10,6 +10,8 @@
 require_once __DIR__ . '/../../core/bootstrap.php';
 require_once __DIR__ . '/../../api/middleware/auth.php';
 
+releasePassiveSessionLock(false);
+
 if (!isMethod('GET')) jsonMethodNotAllowed('GET');
 
 try {

@@ -29,8 +29,8 @@ async function verifyServerReady() {
   const errors = [];
 
   try {
-    // 1. Health check — PHP running + MySQL connected
-    const health = await ApiClient.get('/health/ping.php');
+    // 1. Health check — PHP running + MySQL connected (passive startup probe)
+    const health = await ApiClient.get('/health/ping.php', { passive: true });
     results.health = health.success;
     results.mysql = health.data?.mysql === 'connected';
 
@@ -41,13 +41,13 @@ async function verifyServerReady() {
       return { ready: false, results, errors };
     }
 
-    // 2. Session system works
-    const session = await ApiClient.get('/auth/session.php');
+    // 2. Session system works (passive startup probe)
+    const session = await ApiClient.get('/auth/session.php', { passive: true });
     results.session = session.success && session.type === 'ok';
     if (!results.session) errors.push('Session system not working');
 
-    // 3. Vehicles API reachable (401 = exists but not logged in = OK)
-    const vehicles = await ApiClient.get('/entities/vehicles/list.php');
+    // 3. Vehicles API reachable (401 = exists but not logged in = OK; passive startup probe)
+    const vehicles = await ApiClient.get('/entities/vehicles/list.php', { passive: true });
     results.vehiclesApi = vehicles.success || vehicles.status === 401;
     if (!results.vehiclesApi) errors.push('Vehicles API not reachable');
 
@@ -76,7 +76,7 @@ async function verifyServerReady() {
  */
 async function isServerReachable() {
   try {
-    const res = await ApiClient.get('/health/ping.php');
+    const res = await ApiClient.get('/health/ping.php', { passive: true });
     return res.success && res.data?.mysql === 'connected';
   } catch {
     return false;

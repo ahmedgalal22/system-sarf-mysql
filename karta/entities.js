@@ -131,8 +131,8 @@ async function createOwner(username, payload) {
   return record;
 }
 
-async function getAllOwners() {
-  return ClientRepository.getAllOwners();
+async function getAllOwners(options = {}) {
+  return ClientRepository.getAllOwners(options);
 }
 
 async function updateOwner(username, id, patch) {
@@ -172,45 +172,45 @@ async function deleteOwner(username, id) {
   return deleted;
 }
 
-async function getOwnerById(id) {
+async function getOwnerById(id, options = {}) {
   if (!id) return null;
-  const owner = await ClientRepository.getOwnerById(id);
+  const owner = await ClientRepository.getOwnerById(id, options);
   if (!owner || owner.deleted_at !== null) return null;
   return owner;
 }
 
 
 
-async function getClientsByTab(_tab) {
-  const owners = await ClientRepository.getAllOwners();
+async function getClientsByTab(_tab, options = {}) {
+  const owners = await ClientRepository.getAllOwners(options);
   return owners
     .filter(o => o.deleted_at === null && o.owner_type !== 'broker')
     .map(o => ({ id: String(o.id), type: 'owner', name: o.name || '', phone: o.phone || null }))
     .filter(x => x.name);
 }
 
-async function getClientByType(_type, id) {
-  const owner = await ClientRepository.getOwnerById(String(id));
+async function getClientByType(_type, id, options = {}) {
+  const owner = await ClientRepository.getOwnerById(String(id), options);
   if (!owner || owner.deleted_at !== null || owner.owner_type === 'broker') return null;
   return { id: String(owner.id), type: 'owner', name: owner.name || '', phone: owner.phone || null };
 }
 
-async function getClientBalance(client_id, client_type) {
+async function getClientBalance(client_id, client_type, options = {}) {
   if (!client_type) throw new Error('[OwnersModule:getClientBalance] client_type is required.');
-  return FinancialService.getClientBalance(client_id, 'owner');
+  return FinancialService.getClientBalance(client_id, 'owner', null, options);
 }
 
-async function getClientLedger(client_id, client_type) {
+async function getClientLedger(client_id, client_type, options = {}) {
   if (!client_type) throw new Error('[OwnersModule:getClientLedger] client_type is required.');
-  return FinancialService.getClientLedger(client_id, 'owner');
+  return FinancialService.getClientLedger(client_id, 'owner', null, options);
 }
 
 async function createClientBalanceEntry(username, payload) {
   return FinancialService.createClientBalanceEntry(username, payload);
 }
 
-async function getOwnerVehicles(owner_id) {
-  const vehicles = await ClientRepository.getAllVehicles();
+async function getOwnerVehicles(owner_id, options = {}) {
+  const vehicles = await ClientRepository.getAllVehicles(options);
   return vehicles.filter(v => String(v.owner_id || '') === String(owner_id));
 }
 
@@ -331,8 +331,8 @@ function _currentUsername() {
 
 
 
-async function _clientSnapshot(client) {
-  const balance = await OwnersModule.getClientBalance(client.id, client.type);
+async function _clientSnapshot(client, options = {}) {
+  const balance = await OwnersModule.getClientBalance(client.id, client.type, options);
   // last_activity = most recent of: entity update OR financial transaction
   const entityTime = Number(client.updated_at || client.created_at || 0);
   const txTime = balance.last_transaction_date
@@ -636,13 +636,13 @@ function _sortByPriority(list) {
 let _kartaCountsCache = null;
 let _kartaCountsPromise = null; // dedup concurrent calls
 
-async function _loadKartaCounts() {
+async function _loadKartaCounts(options = {}) {
   if (_kartaCountsCache) return _kartaCountsCache;
   // If a request is already in flight, reuse it (prevents N parallel duplicates)
   if (_kartaCountsPromise) return _kartaCountsPromise;
   _kartaCountsPromise = (async () => {
     try {
-      const res = await ApiClient.get('/stats/client-karta-counts.php');
+      const res = await ApiClient.get('/stats/client-karta-counts.php', options);
       _kartaCountsCache = (res.success && res.data) ? res.data : {};
     } catch {
       _kartaCountsCache = {};
@@ -668,8 +668,8 @@ function notifyReceiptStatusChanged() {
   _invalidateKartaCounts();
 }
 
-async function _getUnpaidKartaCount(clientId, clientType = 'owner') {
-  const counts = await _loadKartaCounts();
+async function _getUnpaidKartaCount(clientId, clientType = 'owner', options = {}) {
+  const counts = await _loadKartaCounts(options);
   const key = clientType + ':' + String(clientId);
   return counts[key] || 0;
 }
@@ -690,7 +690,7 @@ function _buildClientRow(client, kartaCount, _kind = 'owner') {
     </tr>`;
 }
 
-async function loadOwners() {
+async function loadOwners(options = {}) {
   if (!document.getElementById('ownersTableBody')) {
     _renderShell();
   }
@@ -704,12 +704,12 @@ async function loadOwners() {
   }
 
   // Owners (exclude brokers)
-  const owners = await ClientRepository.getAllOwners();
+  const owners = await ClientRepository.getAllOwners(options);
   const ownerList = owners.filter(o => o.deleted_at === null && o.name && o.owner_type !== 'broker').map(o => ({
     id: String(o.id), type: 'owner', name: o.name || '', phone: o.phone || null
   }));
-  const ownerSnaps = await Promise.all(ownerList.map(_clientSnapshot));
-  const ownerKartas = await Promise.all(ownerList.map(o => _getUnpaidKartaCount(o.id, 'owner')));
+  const ownerSnaps = await Promise.all(ownerList.map(o => _clientSnapshot(o, options)));
+  const ownerKartas = await Promise.all(ownerList.map(o => _getUnpaidKartaCount(o.id, 'owner', options)));
 
   const sortedOwners = _sortByPriority(ownerSnaps);
   if (sortedOwners.length === 0) {
@@ -739,8 +739,8 @@ async function loadOwners() {
   }
 }
 
-async function _getClient(type, id) {
-  return OwnersModule.getClientByType(type, id);
+async function _getClient(type, id, options = {}) {
+  return OwnersModule.getClientByType(type, id, options);
 }
 
 async function _renderLedger(client, preloadedLedger = null) {
@@ -920,8 +920,8 @@ function _switchOwnerDetailsTab(tabName) {
   });
 }
 
-async function showOwnerDetails(id, type = 'owner') {
-  const client = await _getClient(type, id);
+async function showOwnerDetails(id, type = 'owner', options = {}) {
+  const client = await _getClient(type, id, options);
   if (!client) return;
   if (String(_lastOwnerDetailsClientId) !== String(client.id)) {
     _activeOwnerDetailsTab = 'movements';
@@ -935,9 +935,9 @@ async function showOwnerDetails(id, type = 'owner') {
     ownerType: type,
   }));
 
-  const balance = await OwnersModule.getClientBalance(client.id, client.type);
-  const ledger = await OwnersModule.getClientLedger(client.id, client.type);
-  const owned = await OwnersModule.getOwnerVehicles(client.id);
+  const balance = await OwnersModule.getClientBalance(client.id, client.type, options);
+  const ledger = await OwnersModule.getClientLedger(client.id, client.type, options);
+  const owned = await OwnersModule.getOwnerVehicles(client.id, options);
   const ledgerHtml = await _renderLedger(client, ledger);
   const relatedHtml = await _renderOwnerVehicles(client, owned);
   const activeTab = _activeOwnerDetailsTab === 'vehicles' ? 'vehicles' : 'movements';
@@ -1464,13 +1464,14 @@ function attachOwnersPageListeners() {
   });
 }
 
-window.addEventListener('owners:changed', () => {
+window.addEventListener('owners:changed', (event) => {
+  const options = event?.detail?.passive === true ? { passive: true } : {};
   _invalidateKartaCounts();
   const detailsPage = document.getElementById('ownerDetailsPage');
   if (detailsPage && !detailsPage.classList.contains('hidden') && _selectedClient?.type === 'owner') {
-    showOwnerDetails(_selectedClient.id, 'owner');
+    showOwnerDetails(_selectedClient.id, 'owner', options);
   }
-  loadOwners();
+  loadOwners(options);
 });
 
 window.addEventListener('receipts:changed', () => {

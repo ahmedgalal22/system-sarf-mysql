@@ -46,7 +46,7 @@ async function getCurrentUser() {
  * Lightweight session check — no DB query on server.
  */
 async function checkSession() {
-  const res = await ApiClient.get('/auth/session.php');
+  const res = await ApiClient.get('/auth/session.php', { passive: true });
   if (res.success && res.data?.logged_in) {
     return {
       loggedIn: true,

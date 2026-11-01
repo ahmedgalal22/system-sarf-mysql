@@ -13,6 +13,7 @@ if (!isMethod('GET')) {
 }
 
 $user = getSessionUser();
+releasePassiveSessionLock(false);
 
 if ($user !== null) {
     jsonSuccess([

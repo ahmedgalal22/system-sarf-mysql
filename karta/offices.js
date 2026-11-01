@@ -239,18 +239,18 @@ async function deleteOffice(username, id) {
   return deleted;
 }
 
-async function getOffices(username) {
+async function getOffices(username, options = {}) {
   _requireUsername(username, 'getOffices');
-  const offices = await OfficeRepository.getAll(username);
+  const offices = await OfficeRepository.getAll(username, options);
   const normalized = offices.map(_normalizeOffice);
   normalized.forEach((o) => _cacheHamola(username, o.id, o.hamolaRows || []));
   return normalized;
 }
 
-async function getOfficeById(id, username) {
+async function getOfficeById(id, username, options = {}) {
   _requireUsername(username, 'getOfficeById');
   if (!id) throw new Error('[OfficesService:getOfficeById] id is required.');
-  const office = await OfficeRepository.getById(String(id));
+  const office = await OfficeRepository.getById(String(id), options);
   if (!office || office.deleted_at !== null) return null;
   if (office.username !== username) {
     throw new Error('[OfficesService] cross-user access is forbidden.');
@@ -550,12 +550,12 @@ function _resolveRange(filters) {
   };
 }
 
-async function getOfficeFinancialSummary(username, filters = null) {
+async function getOfficeFinancialSummary(username, filters = null, options = {}) {
   _requireUsername(username, 'getOfficeFinancialSummary');
 
   const range = _resolveRange(filters);
 
-  const offices = await getOffices(username);
+  const offices = await getOffices(username, options);
   const nameMap = new Map(
     offices.map((o) => [String(o.name || '').trim().toLowerCase(), o])
   );
@@ -577,7 +577,7 @@ async function getOfficeFinancialSummary(username, filters = null) {
     if (range?.fromIso) qsParams.set('from', range.fromIso);
     if (range?.toIso) qsParams.set('to', range.toIso);
     const qs = qsParams.toString();
-    const statsRes = await ApiClient.get(`/stats/office-summary.php${qs ? '?' + qs : ''}`);
+    const statsRes = await ApiClient.get(`/stats/office-summary.php${qs ? '?' + qs : ''}`, options);
     if (statsRes.success && Array.isArray(statsRes.data)) {
       for (const s of statsRes.data) {
         const key = String(s.name || '').trim().toLowerCase();
@@ -592,7 +592,7 @@ async function getOfficeFinancialSummary(username, filters = null) {
   } catch (e) {
     // Fallback: load receipts client-side only if server stats endpoint fails
     console.warn('[offices] Server stats failed, using client fallback:', e.message);
-    const receipts = await OfficeRepository.getReceipts(username);
+    const receipts = await OfficeRepository.getReceipts(username, options);
     const filtered = range
       ? receipts.filter((r) => {
           if (r.deleted_at != null || r.is_archived) return false;
@@ -624,7 +624,7 @@ async function getOfficeFinancialSummary(username, filters = null) {
 
   const rows = Array.from(summary.values());
   const allTimeBalances = await Promise.all(
-    rows.map((item) => FinancialService.getClientBalance(item.office.id, 'office'))
+    rows.map((item) => FinancialService.getClientBalance(item.office.id, 'office', null, options))
   );
   rows.forEach((item, idx) => {
     const snap = allTimeBalances[idx];
@@ -638,7 +638,7 @@ async function getOfficeFinancialSummary(username, filters = null) {
   if (range) {
     const ledgerDateFilter = { from: range.fromIso || '', to: range.toIso || '' };
     const periodBalances = await Promise.all(
-      rows.map((item) => FinancialService.getClientBalance(item.office.id, 'office', ledgerDateFilter))
+      rows.map((item) => FinancialService.getClientBalance(item.office.id, 'office', ledgerDateFilter, options))
     );
     rows.forEach((item, idx) => {
       const snap = periodBalances[idx];
@@ -868,12 +868,12 @@ export function formatMovementReference(entry) {
   return 'حركة مالية';
 }
 
-async function getOfficeLedger(username, office_id) {
+async function getOfficeLedger(username, office_id, options = {}) {
   _requireUsername(username, 'getOfficeLedger');
   if (!office_id) throw new Error('[OfficesService:getOfficeLedger] office_id is required.');
-  const office = await getOfficeById(office_id, username);
+  const office = await getOfficeById(office_id, username, options);
   if (!office) throw new Error('[OfficesService] office not found.');
-  const ledger = await FinancialService.getClientLedger(String(office_id), 'office');
+  const ledger = await FinancialService.getClientLedger(String(office_id), 'office', null, options);
 
   const receiptIds = [...new Set(
     ledger
@@ -884,7 +884,7 @@ async function getOfficeLedger(username, office_id) {
   const receiptMap = new Map();
   const officeKey = normalizeCargoKey(office.name);
   for (const id of receiptIds) {
-    const receipt = await OfficeRepository.getReceiptById(id);
+    const receipt = await OfficeRepository.getReceiptById(id, options);
     if (receipt) {
       const rRows = Array.isArray(receipt.rows) ? receipt.rows : [];
       const matchingRow = rRows.find(
@@ -1001,12 +1001,12 @@ function _moduleSessionUsername() {
 }
 
 const OfficesModule = Object.freeze({
-  getOffices: () => OfficesService.getOffices(_moduleSessionUsername()),
+  getOffices: (options = {}) => OfficesService.getOffices(_moduleSessionUsername(), options),
   createOffices: (rows) => OfficesService.createOffices(_moduleSessionUsername(), rows),
   updateOffice: (id, patch) => OfficesService.updateOffice(_moduleSessionUsername(), id, patch),
   deleteOffice: (id) => OfficesService.deleteOffice(_moduleSessionUsername(), id),
-  getOfficeDetails: (id) => OfficesService.getOfficeById(id, _moduleSessionUsername()),
-  getOfficeLedger: (office_id) => OfficesService.getOfficeLedger(_moduleSessionUsername(), office_id),
+  getOfficeDetails: (id, options = {}) => OfficesService.getOfficeById(id, _moduleSessionUsername(), options),
+  getOfficeLedger: (office_id, options = {}) => OfficesService.getOfficeLedger(_moduleSessionUsername(), office_id, options),
   adjustOfficeBalance: (office_id, payload) =>
     OfficesService.adjustOfficeBalance(_moduleSessionUsername(), office_id, payload),
   depositToOffice: (office_id, payload) =>
@@ -1019,8 +1019,8 @@ const OfficesModule = Object.freeze({
     OfficesService.deleteHamolaRow(_moduleSessionUsername(), office_id, row_id),
   syncHamolaFromReceiptRows: (rows, serverSyncedHamola = null) =>
     OfficesService.syncHamolaFromReceiptRows(_moduleSessionUsername(), rows, serverSyncedHamola),
-  getOfficeSummary: (filters = null) =>
-    OfficesService.getOfficeFinancialSummary(_moduleSessionUsername(), filters),
+  getOfficeSummary: (filters = null, options = {}) =>
+    OfficesService.getOfficeFinancialSummary(_moduleSessionUsername(), filters, options),
 });
 
 
@@ -1483,7 +1483,7 @@ function _renderHamolaTable(rows) {
   `;
 }
 
-async function loadOffices() {
+async function loadOffices(options = {}) {
   const session = _requireSession();
   if (!session) return;
 
@@ -1508,7 +1508,7 @@ async function loadOffices() {
   const activeDateFilter = (_officeDateFrom || _officeDateTo)
     ? { from: _officeDateFrom, to: _officeDateTo }
     : null;
-  const summary = await OfficesModule.getOfficeSummary(activeDateFilter);
+  const summary = await OfficesModule.getOfficeSummary(activeDateFilter, options);
   const totalCountEl = document.getElementById('officeTotalCount');
 
   if (totalCountEl) totalCountEl.textContent = String(summary.total_offices || 0);
@@ -1616,10 +1616,10 @@ async function showOfficeDetails(id) {
  *   JOIN receipts r ON rr.receipt_id = r.id
  *   WHERE rr.office = ?
  */
-async function _getOfficeCards(office) {
+async function _getOfficeCards(office, options = {}) {
   const username = _moduleSessionUsername();
   const officeName = String(office.name || '').trim().toLowerCase();
-  const allReceipts = await OfficeRepository.getReceipts(username);
+  const allReceipts = await OfficeRepository.getReceipts(username, options);
 
   const cards = [];
   for (const receipt of allReceipts) {
@@ -1756,12 +1756,12 @@ function _renderOfficeCards(allCards) {
     </div>`;
 }
 
-async function _renderDetailsContent(office) {
+async function _renderDetailsContent(office, options = {}) {
   const content = document.getElementById('officeDetailsContent');
   if (!content) return;
 
   if (_activeDetailsTab === 'balance') {
-    const ledger = await OfficesModule.getOfficeLedger(office.id);
+    const ledger = await OfficesModule.getOfficeLedger(office.id, options);
     content.innerHTML = _renderOfficeBalance(ledger || []);
     return;
   }
@@ -1772,7 +1772,7 @@ async function _renderDetailsContent(office) {
 
   if (_activeDetailsTab === 'cards') {
     content.innerHTML = '<div style="text-align:center;padding:24px;color:#9ca3af;">جاري التحميل...</div>';
-    const cardsData = await _getOfficeCards(office);
+    const cardsData = await _getOfficeCards(office, options);
     _officeCardsCache = cardsData;
     content.innerHTML = _renderOfficeCards(cardsData);
   }
@@ -2278,12 +2278,13 @@ function attachOfficesPageListeners() {
   });
 
 
-  const refreshOfficesAndDetails = async () => {
-    await loadOffices();
+  const refreshOfficesAndDetails = async (event = null) => {
+    const options = event?.detail?.passive === true ? { passive: true } : {};
+    await loadOffices(options);
     // Refresh details panel if open (balance tab / hamola tab / cards tab)
     if (_detailsOfficeId) {
-      const office = await OfficesModule.getOfficeDetails(_detailsOfficeId);
-      if (office) await _renderDetailsContent(office);
+      const office = await OfficesModule.getOfficeDetails(_detailsOfficeId, options);
+      if (office) await _renderDetailsContent(office, options);
     }
   };
 

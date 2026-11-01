@@ -8,5 +8,10 @@
 
 $authUser = getSessionUser();
 if ($authUser === null) {
+    releasePassiveSessionLock(false);
     jsonError('غير مصرح — يرجى تسجيل الدخول', 401);
+}
+
+if (isPassiveSessionRequest()) {
+    releasePassiveSessionLock(false);
 }

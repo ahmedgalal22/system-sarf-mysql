@@ -79,13 +79,18 @@ async function request(method, endpoint, body = null, options = {}) {
   // Retry ONLY on safe GET requests
   const maxRetries = isGet ? (options.retries ?? API_CONFIG.RETRY_COUNT) : 0;
 
+  const headers = {
+    'Content-Type': 'application/json',
+    'Accept': 'application/json',
+  };
+  if (options && (options.passive === true || options.background === true)) {
+    headers['X-Background-Poll'] = '1';
+  }
+
   const fetchOptions = {
     method: method.toUpperCase(),
     credentials: 'include',
-    headers: {
-      'Content-Type': 'application/json',
-      'Accept': 'application/json',
-    },
+    headers,
   };
 
   if (body !== null && !isGet) {

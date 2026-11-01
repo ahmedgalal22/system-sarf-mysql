@@ -458,10 +458,10 @@ async function deleteEntry(username, entryId) {
 /**
  * Get treasury summary (إجماليات الخزنة)
  */
-async function getSummary(username, filters = null) {
+async function getSummary(username, filters = null, options = {}) {
   if (!username) throw new Error('[Treasury] username required');
 
-  const all = await TreasuryRepository.getAll(username);
+  const all = await TreasuryRepository.getAll(username, options);
   let entries = all.filter(e => !dbBool(e.is_reversed));
 
   // Date filter
@@ -502,7 +502,7 @@ async function getSummary(username, filters = null) {
   }
 
   // Add carry-forward balance from archived periods
-  const archivedBalance = await ArchiveService.getArchivedTreasuryBalance(username);
+  const archivedBalance = await ArchiveService.getArchivedTreasuryBalance(username, options);
 
   return {
     balance: Money.toDecimal(balance_in - balance_out + archivedBalance),
@@ -516,10 +516,10 @@ async function getSummary(username, filters = null) {
 /**
  * Get filtered entries for display
  */
-async function getEntries(username, filters = null) {
+async function getEntries(username, filters = null, options = {}) {
   if (!username) throw new Error('[Treasury] username required');
 
-  const all = await TreasuryRepository.getAll(username);
+  const all = await TreasuryRepository.getAll(username, options);
   let entries = all.filter(e => !dbBool(e.is_reversed));
 
   if (filters?.from || filters?.to) {
@@ -1286,12 +1286,12 @@ function _computeFilteredSummary(entries) {
  * This also updates the search placeholder (ISSUE-1 FIX) so tab switches
  * update it without re-rendering the shell.
  */
-async function _refreshPage() {
+async function _refreshPage(options = {}) {
   const gen = ++_refreshGen;
   const username = _currentUsername();
   const filters = { from: STATE.from, to: STATE.to, tab: STATE.tab };
 
-  const allEntries = await TreasuryService.getEntries(username, filters);
+  const allEntries = await TreasuryService.getEntries(username, filters, options);
 
   // Stale check: if another refresh started while we were fetching, abort
   if (gen !== _refreshGen) return;
@@ -1324,7 +1324,7 @@ async function _refreshPage() {
 
   // Add carry-forward balance from archived periods to the UI summary
   try {
-    const archivedBal = await ArchiveService.getArchivedTreasuryBalance(username);
+    const archivedBal = await ArchiveService.getArchivedTreasuryBalance(username, options);
     if (archivedBal) {
       filteredSummary.balance = Money.toDecimal(Money.toCents(filteredSummary.balance) + archivedBal);
     }
@@ -1589,17 +1589,19 @@ function attachTreasuryListeners() {
   // Listen for external changes
   // External change listener — skipped when a UI handler will refresh explicitly.
   // This prevents double DB queries when the treasury page itself triggers the event.
-  window.addEventListener(DOMAIN_EVENT.TREASURY_CHANGED, () => {
+  window.addEventListener(DOMAIN_EVENT.TREASURY_CHANGED, (event) => {
     if (_suppressEventRefresh) return;
     const page = document.getElementById('treasuryPage');
     if (page && !page.classList.contains('hidden')) {
-      _refreshPage();
+      const options = event?.detail?.passive === true ? { passive: true } : {};
+      _refreshPage(options);
     }
   });
-  window.addEventListener(DOMAIN_EVENT.RECEIPTS_CHANGED, () => {
+  window.addEventListener(DOMAIN_EVENT.RECEIPTS_CHANGED, (event) => {
     const page = document.getElementById('treasuryPage');
     if (page && !page.classList.contains('hidden')) {
-      _refreshPage();
+      const options = event?.detail?.passive === true ? { passive: true } : {};
+      _refreshPage(options);
     }
   });
 }

@@ -324,8 +324,8 @@ async function _calculateTotalCollectedFromCompanies(username, activeReceipts, o
 
 // ─── PRIMARY CAPITAL TREASURY STORAGE LAYER ──────────────────────────────────
 
-async function _getCapitalTransactions(username) {
-  return DashboardRepository.getCapitalTransactions(username);
+async function _getCapitalTransactions(username, options = {}) {
+  return DashboardRepository.getCapitalTransactions(username, options);
 }
 
 async function _addCapitalTransaction(username, type, amount, note, date) {
@@ -1120,13 +1120,13 @@ function _renderShell() {
   }
 }
 
-async function _refreshDashboard() {
+async function _refreshDashboard(options = {}) {
   const username = _currentUsername();
 
   // 1. Read raw tables via repositories
-  const allReceipts = await ReceiptRepository.getAll(username);
-  const allTreasury = await TreasuryRepository.getAll(username);
-  const offices = await DBProvider.getAll(STORE_OFFICES, { username });
+  const allReceipts = await ReceiptRepository.getAll(username, options);
+  const allTreasury = await TreasuryRepository.getAll(username, options);
+  const offices = await DBProvider.getAll(STORE_OFFICES, { username }, options);
 
   // 2. Filter datasets based on selected dates with defense & deduplication guards
   const seenReceiptIds = new Set();
@@ -1189,7 +1189,7 @@ async function _refreshDashboard() {
   );
 
   // Card 5: "المبالغ المعلقة" — Sum of ABS(balance) for all customers with negative current balance (period-independent)
-  const pendingBalancesVal = await calculatePendingCustomerBalances(username);
+  const pendingBalancesVal = await calculatePendingCustomerBalances(username, options);
 
   // ─── RENDER STATISTICS CARDS ────────────────────────────────────────────────
 
@@ -1197,7 +1197,7 @@ async function _refreshDashboard() {
 
   // ─── RENDER CAPITAL TREASURY ────────────────────────────────────────────────
 
-  await _renderCapitalTreasury(username);
+  await _renderCapitalTreasury(username, options);
 }
 
 /**
@@ -1266,8 +1266,8 @@ export function calculateDashboardNetProfit(activeReceipts, activeTreasury) {
  *   SUM(ABS(balance)) for all active customers (vehicle owners) where final current balance < 0.
  *   Independent of the dashboard's selected date filter.
  */
-export async function calculatePendingCustomerBalances(_username) {
-  const allOwners = await ClientRepository.getAllOwners();
+export async function calculatePendingCustomerBalances(_username, options = {}) {
+  const allOwners = await ClientRepository.getAllOwners(options);
   const seenCustomerIds = new Set();
   const uniqueCustomers = [];
 
@@ -1283,7 +1283,7 @@ export async function calculatePendingCustomerBalances(_username) {
 
   const balances = await Promise.all(
     uniqueCustomers.map(async (cust) => {
-      const snap = await FinancialService.getClientBalance(cust.id, 'owner');
+      const snap = await FinancialService.getClientBalance(cust.id, 'owner', null, options);
       const finalBalance = (snap && (snap.entry_count > 0 || snap.balance !== 0))
         ? Number(snap.balance) || 0
         : (cust.rawBalance !== undefined && cust.rawBalance !== null
@@ -1328,12 +1328,12 @@ function _renderSummaryCards(totalReceiptsVal, totalExpenseVal, totalCollectedFr
   `;
 }
 
-async function _renderCapitalTreasury(username) {
+async function _renderCapitalTreasury(username, options = {}) {
   const tableBody = document.getElementById('capitalTableBody');
   const balanceValEl = document.getElementById('capitalBalanceVal');
   if (!tableBody || !balanceValEl) return;
 
-  const transactions = await _getCapitalTransactions(username);
+  const transactions = await _getCapitalTransactions(username, options);
 
   // Calculate Running Balance
   let totalBalanceCents = 0;
@@ -1701,40 +1701,19 @@ function _attachListeners() {
   });
 
   // External sync events - these are window events but guarded by visibility checks inside
-  window.addEventListener('capital:changed', async () => {
+  const refreshDashboardIfVisible = async (event = null) => {
     const page = document.getElementById('dashboardPage');
     if (page && !page.classList.contains('hidden')) {
-      await _refreshDashboard();
+      const options = event?.detail?.passive === true ? { passive: true } : {};
+      await _refreshDashboard(options);
     }
-  });
+  };
 
-  window.addEventListener(DOMAIN_EVENT.RECEIPTS_CHANGED, async () => {
-    const page = document.getElementById('dashboardPage');
-    if (page && !page.classList.contains('hidden')) {
-      await _refreshDashboard();
-    }
-  });
-
-  window.addEventListener(DOMAIN_EVENT.TREASURY_CHANGED, async () => {
-    const page = document.getElementById('dashboardPage');
-    if (page && !page.classList.contains('hidden')) {
-      await _refreshDashboard();
-    }
-  });
-
-  window.addEventListener(DOMAIN_EVENT.OFFICES_CHANGED, async () => {
-    const page = document.getElementById('dashboardPage');
-    if (page && !page.classList.contains('hidden')) {
-      await _refreshDashboard();
-    }
-  });
-
-  window.addEventListener(DOMAIN_EVENT.OWNERS_CHANGED, async () => {
-    const page = document.getElementById('dashboardPage');
-    if (page && !page.classList.contains('hidden')) {
-      await _refreshDashboard();
-    }
-  });
+  window.addEventListener('capital:changed', refreshDashboardIfVisible);
+  window.addEventListener(DOMAIN_EVENT.RECEIPTS_CHANGED, refreshDashboardIfVisible);
+  window.addEventListener(DOMAIN_EVENT.TREASURY_CHANGED, refreshDashboardIfVisible);
+  window.addEventListener(DOMAIN_EVENT.OFFICES_CHANGED, refreshDashboardIfVisible);
+  window.addEventListener(DOMAIN_EVENT.OWNERS_CHANGED, refreshDashboardIfVisible);
 }
 
 // ─── INITIALIZATION ───────────────────────────────────────────────────────────

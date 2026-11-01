@@ -62,10 +62,13 @@ let _running = false;
  */
 async function _poll() {
   try {
-    const res = await ApiClient.get(ENDPOINT, { retries: 0, timeout: 8000 });
+    const res = await ApiClient.get(ENDPOINT, { retries: 0, timeout: 8000, passive: true });
 
     if (!res.success || !res.data) {
-      // API failed — do nothing, retry next cycle
+      if (res.status === 401 || res.type === 'auth') {
+        stop();
+      }
+      // API failed — do nothing, retry next cycle (unless stopped due to expired auth)
       return;
     }
 
@@ -91,9 +94,11 @@ async function _poll() {
     // (so listeners that re-query versions see the new state)
     _lastVersions = { ...serverVersions };
 
-    // Dispatch all changed events
+    // Dispatch all changed events with passive synchronization metadata
     for (const eventName of eventsToFire) {
-      window.dispatchEvent(new CustomEvent(eventName));
+      window.dispatchEvent(new CustomEvent(eventName, {
+        detail: { passive: true, source: 'sync' },
+      }));
     }
 
   } catch (err) {

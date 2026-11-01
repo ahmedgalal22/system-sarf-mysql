@@ -51,6 +51,8 @@ try {
     $_SESSION['username']  = $user['username'];
     $_SESSION['role']      = $user['role'];
 
+    markSessionAuthenticated($GLOBALS['sessionConfig'] ?? []);
+
     // ── Update last_login_at ──────────────────────────────────────────────────
     $now = nowEgypt();
     $updateStmt = $db->prepare('UPDATE users SET last_login_at = :now WHERE id = :id');

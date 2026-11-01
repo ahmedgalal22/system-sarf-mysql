@@ -1,11 +1,11 @@
 import { DBProvider } from './dbProvider.js';
 
 export const TreasuryRepository = {
-  async getById(id) {
-    return DBProvider.get('treasury', id);
+  async getById(id, options = {}) {
+    return DBProvider.get('treasury', id, options);
   },
-  async getAll(username) {
-    return DBProvider.getAll('treasury', { username });
+  async getAll(username, options = {}) {
+    return DBProvider.getAll('treasury', { username }, options);
   },
   async save(payload, meta) {
     return DBProvider.save('treasury', payload, meta);

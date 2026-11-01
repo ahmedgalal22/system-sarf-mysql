@@ -775,7 +775,7 @@ export function compareLedgerEntriesChronologicalDesc(a, b) {
   return cmp === 0 ? 0 : -cmp;
 }
 
-async function getClientLedger(client_id, client_type, dateRange = null) {
+async function getClientLedger(client_id, client_type, dateRange = null, options = {}) {
   const key = client_id != null ? String(client_id).trim() : '';
   if (!key) throw new Error('[FinancialService:getClientLedger] client_id is required.');
   if (!client_type) throw new Error('[FinancialService:getClientLedger] client_type is required for entity isolation.');
@@ -790,7 +790,7 @@ async function getClientLedger(client_id, client_type, dateRange = null) {
   if (normalizedRange?.from) filters.from = normalizedRange.from;
   if (normalizedRange?.to) filters.to = normalizedRange.to;
 
-  const entries = await DBProvider.findByFields(STORE.LEDGER, filters);
+  const entries = await DBProvider.findByFields(STORE.LEDGER, filters, options);
 
   return entries
     .filter((entry) => _entryMatchesDateFilter(entry, normalizedRange))
@@ -799,10 +799,10 @@ async function getClientLedger(client_id, client_type, dateRange = null) {
     .map(Money.decimalizeRecord);
 }
 
-async function getClientBalance(client_id, client_type, dateRange = null) {
+async function getClientBalance(client_id, client_type, dateRange = null, options = {}) {
   if (!client_type) throw new Error('[FinancialService:getClientBalance] client_type is required for entity isolation.');
   const normalizedRange = _normalizeLedgerDateFilter(dateRange);
-  const ledger = await getClientLedger(client_id, client_type, normalizedRange);
+  const ledger = await getClientLedger(client_id, client_type, normalizedRange, options);
   let deposit_total = 0;
   let withdraw_total = 0;
 
@@ -845,7 +845,7 @@ async function getClientBalance(client_id, client_type, dateRange = null) {
     try {
       const session = (typeof window !== 'undefined' && window.__APP_CONTEXT__?.username) || '';
       if (session) {
-        archivedCents = await ArchiveService.getArchivedClientBalance(session, client_id, client_type);
+        archivedCents = await ArchiveService.getArchivedClientBalance(session, client_id, client_type, options);
       }
     } catch (_) { /* no archive data — continue with zero */ }
   }

@@ -31,11 +31,11 @@ async function _withReceiptLock(receiptId, fn) {
 }
 
 export const ReceiptRepository = {
-  async getById(id) {
-    return DBProvider.get('receipts', id);
+  async getById(id, options = {}) {
+    return DBProvider.get('receipts', id, options);
   },
-  async getAll(username) {
-    return DBProvider.getAll('receipts', { username });
+  async getAll(username, options = {}) {
+    return DBProvider.getAll('receipts', { username }, options);
   },
   async save(payload, meta) {
     return DBProvider.save('receipts', payload, meta);
@@ -46,8 +46,8 @@ export const ReceiptRepository = {
   async delete(id, meta) {
     return DBProvider.delete('receipts', id, meta);
   },
-  async getByIndex(indexName, value) {
-    return DBProvider.getByIndex('receipts', indexName, value);
+  async getByIndex(indexName, value, options = {}) {
+    return DBProvider.getByIndex('receipts', indexName, value, options);
   },
   async findByFields(filters, options = {}) {
     return DBProvider.findByFields('receipts', filters, options);
@@ -233,9 +233,9 @@ export const ReceiptRepository = {
    *   data  — receipt records (same shape as list.php)
    *   meta  — { total, returned, offset, limit, has_more, summary, options? }
    */
-  async search(params = {}) {
+  async search(params = {}, options = {}) {
     const qs = _buildSearchQueryString(params);
-    const res = await ApiClient.get(`/entities/receipts/search.php?${qs}`);
+    const res = await ApiClient.get(`/entities/receipts/search.php?${qs}`, options);
     if (!res.success) throw new Error(res.message || 'Search failed');
     return { data: res.data || [], meta: res.meta || {} };
   },

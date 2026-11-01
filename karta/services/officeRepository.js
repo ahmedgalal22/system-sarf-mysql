@@ -1,14 +1,14 @@
 import { DBProvider } from './dbProvider.js';
 
 export const OfficeRepository = {
-  async getById(id) {
-    return DBProvider.get('offices', String(id));
+  async getById(id, options = {}) {
+    return DBProvider.get('offices', String(id), options);
   },
-  async getAll(username) {
-    return DBProvider.findByFields('offices', { username });
+  async getAll(username, options = {}) {
+    return DBProvider.findByFields('offices', { username }, options);
   },
-  async findByFields(filters) {
-    return DBProvider.findByFields('offices', filters);
+  async findByFields(filters, options = {}) {
+    return DBProvider.findByFields('offices', filters, options);
   },
   async save(payload, meta) {
     return DBProvider.save('offices', payload, meta);
@@ -21,10 +21,10 @@ export const OfficeRepository = {
   },
 
   // ── Receipts (read-only from offices context) ───────────────────────────
-  async getReceipts(username) {
-    return DBProvider.findByFields('receipts', { username });
+  async getReceipts(username, options = {}) {
+    return DBProvider.findByFields('receipts', { username }, options);
   },
-  async getReceiptById(id) {
-    return DBProvider.get('receipts', id);
+  async getReceiptById(id, options = {}) {
+    return DBProvider.get('receipts', id, options);
   },
 };

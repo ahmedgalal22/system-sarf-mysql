@@ -2,19 +2,19 @@ import { DBProvider } from './dbProvider.js';
 
 export const ClientRepository = {
   // ── Vehicle Owners ──────────────────────────────────────────────────────
-  async getOwnerById(id) {
-    return DBProvider.get('vehicleOwners', id);
+  async getOwnerById(id, options = {}) {
+    return DBProvider.get('vehicleOwners', id, options);
   },
-  async getAllOwners() {
-    return DBProvider.getAll('vehicleOwners');
+  async getAllOwners(options = {}) {
+    return DBProvider.getAll('vehicleOwners', null, options);
   },
-  async getOwnersForUser(username) {
-    return DBProvider.findByFields('vehicleOwners', { username });
+  async getOwnersForUser(username, options = {}) {
+    return DBProvider.findByFields('vehicleOwners', { username }, options);
   },
-  async findOwnersByName(name, ownerType = null) {
+  async findOwnersByName(name, ownerType = null, options = {}) {
     const filters = { name };
     if (ownerType) filters.owner_type = ownerType;
-    return DBProvider.findByFields('vehicleOwners', filters);
+    return DBProvider.findByFields('vehicleOwners', filters, options);
   },
   async saveOwner(payload, meta) {
     return DBProvider.save('vehicleOwners', payload, meta);
@@ -27,14 +27,14 @@ export const ClientRepository = {
   },
 
   // ── Vehicles ────────────────────────────────────────────────────────────
-  async getVehicleById(id) {
-    return DBProvider.get('vehicles', id);
+  async getVehicleById(id, options = {}) {
+    return DBProvider.get('vehicles', id, options);
   },
-  async getAllVehicles() {
-    return DBProvider.getAll('vehicles');
+  async getAllVehicles(options = {}) {
+    return DBProvider.getAll('vehicles', null, options);
   },
-  async getVehiclesByPlate(plate) {
-    return DBProvider.findByFields('vehicles', { plate });
+  async getVehiclesByPlate(plate, options = {}) {
+    return DBProvider.findByFields('vehicles', { plate }, options);
   },
   async saveVehicle(payload, meta) {
     return DBProvider.save('vehicles', payload, meta);

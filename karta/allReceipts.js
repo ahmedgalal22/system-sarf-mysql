@@ -977,7 +977,7 @@ function _hasActiveReceiptFilters() {
  * The ONLY difference between modes is the data source.
  * After STATE.receipts is assigned, the rendering pipeline is identical.
  */
-async function loadReceiptsData(mode) {
+async function loadReceiptsData(mode, options = {}) {
   const username = getSessionUsername();
   if (!username) return;
   if (STATE.loading) return;
@@ -989,7 +989,7 @@ async function loadReceiptsData(mode) {
 
     if (mode === 'list') {
       // ── list.php: fast, 1 query, all receipts in date range ──
-      const receipts = await ReceiptsModule.getByDateRange(username, f.from, f.to);
+      const receipts = await ReceiptsModule.getByDateRange(username, f.from, f.to, options);
       STATE.receipts = receipts.slice();
       STATE.meta = null;
     } else {
@@ -1006,7 +1006,7 @@ async function loadReceiptsData(mode) {
           searchParams[def.apiParam] = f[def.stateKey];
         }
       }
-      const searchResult = await ReceiptsModule.searchReceipts(searchParams);
+      const searchResult = await ReceiptsModule.searchReceipts(searchParams, options);
       STATE.receipts = searchResult.data;
       STATE.meta = searchResult.meta;
       if (searchResult.meta?.options) {
@@ -2160,10 +2160,10 @@ function renderAll() {
 
 }
 
-async function refreshAllReceiptsPage(mode = 'list') {
+async function refreshAllReceiptsPage(mode = 'list', options = {}) {
   const page = getPage();
   if (!page) return;
-  await loadReceiptsData(mode);
+  await loadReceiptsData(mode, options);
   STATE.ready = true;
 }
 
@@ -2190,20 +2190,32 @@ async function refreshAllReceiptsPage(mode = 'list') {
 let _refreshScheduled = false;
 let _refreshInflight = false;
 let _refreshAgainAfter = false;
-function _scheduleAllReceiptsRefresh() {
-  if (_refreshInflight) { _refreshAgainAfter = true; return; }
+let _refreshPassiveOnly = true;
+let _refreshAgainPassiveOnly = true;
+function _scheduleAllReceiptsRefresh(event = null) {
+  const isPassive = event?.detail?.passive === true;
+  if (_refreshInflight) {
+    _refreshAgainAfter = true;
+    if (!isPassive) _refreshAgainPassiveOnly = false;
+    return;
+  }
+  if (!isPassive) _refreshPassiveOnly = false;
   if (_refreshScheduled) return;
   _refreshScheduled = true;
   queueMicrotask(async () => {
     _refreshScheduled = false;
+    const options = _refreshPassiveOnly ? { passive: true } : {};
+    _refreshPassiveOnly = true;
     _refreshInflight = true;
     try {
-      await refreshAllReceiptsPage('list');
+      await refreshAllReceiptsPage('list', options);
     } finally {
       _refreshInflight = false;
       if (_refreshAgainAfter) {
+        const nextPassive = _refreshAgainPassiveOnly;
         _refreshAgainAfter = false;
-        _scheduleAllReceiptsRefresh();
+        _refreshAgainPassiveOnly = true;
+        _scheduleAllReceiptsRefresh({ detail: { passive: nextPassive } });
       }
     }
   });

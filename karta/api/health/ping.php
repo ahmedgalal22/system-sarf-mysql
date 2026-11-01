@@ -25,6 +25,8 @@ $health = [
     'mysql'     => 'unknown',
 ];
 
+releasePassiveSessionLock(false);
+
 try {
     $db = getDB();
     $stmt = $db->query('SELECT 1');

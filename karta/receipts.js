@@ -371,18 +371,18 @@ async function remove(username, id) {
 
 // ─── PUBLIC: getAll ───────────────────────────────────────────────────────────
 
-async function getAll(username) {
+async function getAll(username, options = {}) {
   if (!username) throw new Error('[ReceiptsModule:getAll] username is required.');
 
-  return await ReceiptRepository.getAll(username);
+  return await ReceiptRepository.getAll(username, options);
 }
 
-async function getByDateRange(username, from_date, to_date) {
+async function getByDateRange(username, from_date, to_date, options = {}) {
   if (!username) throw new Error('[ReceiptsModule:getByDateRange] username is required.');
   const filters = {};
   if (from_date) filters.from_date = from_date;
   if (to_date) filters.to_date = to_date;
-  return ReceiptRepository.findByFields(filters);
+  return ReceiptRepository.findByFields(filters, options);
 }
 
 /**
@@ -393,8 +393,8 @@ async function getByDateRange(username, from_date, to_date) {
  * Does NOT affect getAll() or getByDateRange() — those remain for
  * dashboard, home, entities, and receipt validation.
  */
-async function searchReceipts(params = {}) {
-  return ReceiptRepository.search(params);
+async function searchReceipts(params = {}, options = {}) {
+  return ReceiptRepository.search(params, options);
 }
 
 // ─── PUBLIC: getClientBalance ─────────────────────────────────────────────
@@ -469,13 +469,13 @@ async function getVehiclesByPlate(plate) {
   return ClientRepository.getVehiclesByPlate(p);
 }
 
-async function getOfficesForUser(username) {
+async function getOfficesForUser(username, options = {}) {
   if (!username) throw new Error('[ReceiptsModule:getOfficesForUser] username is required.');
-  return OfficesService.getOffices(username);
+  return OfficesService.getOffices(username, options);
 }
 
-async function getOffices(username) {
-  return getOfficesForUser(username);
+async function getOffices(username, options = {}) {
+  return getOfficesForUser(username, options);
 }
 
 /**
@@ -1411,9 +1411,9 @@ async function _receiptPopulateClientVehicles() {
   }
 }
 
-async function loadClientsList() {
+async function loadClientsList(options = {}) {
   // Vehicle owners only (exclude brokers)
-  const allOwners = (await OwnersModule.getAllOwners())
+  const allOwners = (await OwnersModule.getAllOwners(options))
     .filter(o => o.deleted_at === null && o.owner_type !== 'broker')
     .map(o => ({
       id: String(o.id),
@@ -1460,10 +1460,10 @@ async function updateSelectedClientBalance() {
   await refreshVehicleWarnings();
 }
 
-async function loadOfficesForReceipt() {
+async function loadOfficesForReceipt(options = {}) {
   const username = _currentUsername();
   if (!username) return;
-  const offices = await ReceiptsModule.getOffices(username);
+  const offices = await ReceiptsModule.getOffices(username, options);
   const dl      = document.getElementById('officesList');
   if (dl) dl.innerHTML = offices.map(o => `<option value="${o.name}">`).join('');
 }
@@ -3486,11 +3486,13 @@ document.addEventListener('focusin', function (e) {
   setTimeout(function () { try { el.select(); } catch (_) {} }, 0);
 });
 
-window.addEventListener('owners:changed', () => {
-  loadClientsList();
+window.addEventListener('owners:changed', (event) => {
+  const options = event?.detail?.passive === true ? { passive: true } : {};
+  loadClientsList(options);
 });
-window.addEventListener('offices:changed', () => {
-  loadOfficesForReceipt();
+window.addEventListener('offices:changed', (event) => {
+  const options = event?.detail?.passive === true ? { passive: true } : {};
+  loadOfficesForReceipt(options);
 });
 
 

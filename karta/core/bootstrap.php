@@ -30,14 +30,17 @@ if ($appConfig['log_errors'] && $appConfig['log_file']) {
     ini_set('error_log', $appConfig['log_file']);
 }
 
-// ── Session setup ─────────────────────────────────────────────────────────────
-if (session_status() === PHP_SESSION_NONE) {
-    $sp = $sessionConfig['save_path'] ?? '';
-    if ($sp !== '') {
-        session_save_path($sp);
-    }
+// ── Load helpers ──────────────────────────────────────────────────────────────
+require_once __DIR__ . '/response.php';
+require_once __DIR__ . '/json.php';
+require_once __DIR__ . '/security.php';
+require_once __DIR__ . '/helpers.php';
 
-    ini_set('session.gc_maxlifetime', $sessionConfig['gc_maxlifetime']);
+// ── Session setup (30-day rolling inactivity policy + dedicated storage) ──────
+if (session_status() === PHP_SESSION_NONE) {
+    initSessionSavePath($sessionConfig['save_path'] ?? '');
+
+    ini_set('session.gc_maxlifetime', (string) $sessionConfig['gc_maxlifetime']);
 
     session_set_cookie_params([
         'lifetime' => $sessionConfig['lifetime'],
@@ -50,6 +53,7 @@ if (session_status() === PHP_SESSION_NONE) {
 
     session_name($sessionConfig['name']);
     session_start();
+    enforceAndRenewRollingSession($sessionConfig);
 }
 
 // ── Database connection (singleton) ───────────────────────────────────────────
@@ -63,12 +67,6 @@ function getDB(): PDO {
     return $pdo;
 }
 
-// ── Load helpers ──────────────────────────────────────────────────────────────
-require_once __DIR__ . '/response.php';
-require_once __DIR__ . '/json.php';
-require_once __DIR__ . '/security.php';
-require_once __DIR__ . '/helpers.php';
-
 // ── CORS for LAN (allow any origin on local network) ─────────────────────────
 header('Content-Type: application/json; charset=utf-8');
 header('X-Content-Type-Options: nosniff');
@@ -77,7 +75,7 @@ $origin = $_SERVER['HTTP_ORIGIN'] ?? '';
 if ($origin !== '') {
     header("Access-Control-Allow-Origin: {$origin}");
     header('Access-Control-Allow-Credentials: true');
-    header('Access-Control-Allow-Headers: Content-Type, Accept');
+    header('Access-Control-Allow-Headers: Content-Type, Accept, X-Background-Poll, X-Passive-Request');
     header('Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS');
 }
 

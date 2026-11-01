@@ -196,8 +196,8 @@ async function previewArchive(username, fromDate, toDate) {
 
 // ─── CARRY-FORWARD ────────────────────────────────────────────────────────────
 
-async function getArchivedTreasuryBalance(username) {
-  const res = await ApiClient.get('/archive/list.php');
+async function getArchivedTreasuryBalance(username, options = {}) {
+  const res = await ApiClient.get('/archive/list.php', options);
   const batches = (res.success && res.data) ? res.data : [];
   let carryForward = 0;
   for (const b of batches) {
@@ -208,8 +208,8 @@ async function getArchivedTreasuryBalance(username) {
   return carryForward;
 }
 
-async function getArchivedClientBalance(username, clientId, clientType = null) {
-  const res = await ApiClient.get('/archive/list.php');
+async function getArchivedClientBalance(username, clientId, clientType = null, options = {}) {
+  const res = await ApiClient.get('/archive/list.php', options);
   const batches = (res.success && res.data) ? res.data : [];
   let carryForward = 0;
   const cid = String(clientId);

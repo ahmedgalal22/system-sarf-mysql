@@ -42,7 +42,7 @@ async function _apiWriteStrict(store, apiFn) {
 
 // ── CRUD operations ───────────────────────────────────────────────────────────
 
-async function getAll(store, filters = null) {
+async function getAll(store, filters = null, options = {}) {
   const r = resolveDomain(store, 'read');
   if (r.transport === 'API' && r.apiPath) {
     return _apiRead(store,
@@ -50,7 +50,7 @@ async function getAll(store, filters = null) {
         const params = filters ? '?' + new URLSearchParams(
           Object.entries(filters).filter(([k]) => k !== 'includeArchived')
         ).toString() : '';
-        const res = await ApiClient.get(`${r.apiPath}/list.php${params}`);
+        const res = await ApiClient.get(`${r.apiPath}/list.php${params}`, options);
         if (!res.success) throw new Error(res.message);
         return res.data || [];
       }
@@ -59,12 +59,12 @@ async function getAll(store, filters = null) {
   throw new Error('[DBProvider] No IDB store: ' + store);
 }
 
-async function get(store, id) {
+async function get(store, id, options = {}) {
   const r = resolveDomain(store, 'read');
   if (r.transport === 'API' && r.apiPath) {
     return _apiRead(store,
       async () => {
-        const res = await ApiClient.get(`${r.apiPath}/get.php?id=${encodeURIComponent(id)}`);
+        const res = await ApiClient.get(`${r.apiPath}/get.php?id=${encodeURIComponent(id)}`, options);
         if (!res.success) throw new Error(res.message);
         return res.data;
       }
@@ -170,7 +170,7 @@ async function findByFields(store, filters, options = {}) {
     return _apiRead(store,
       async () => {
         const params = new URLSearchParams(filters).toString();
-        const res = await ApiClient.get(`${r.apiPath}/list.php?${params}`);
+        const res = await ApiClient.get(`${r.apiPath}/list.php?${params}`, options);
         if (!res.success) throw new Error(res.message);
         return res.data || [];
       }
@@ -184,7 +184,7 @@ async function getByIndex(store, indexName, value, options = {}) {
   if (r.transport === 'API' && r.apiPath) {
     return _apiRead(store,
       async () => {
-        const res = await ApiClient.get(`${r.apiPath}/list.php?${indexName}=${encodeURIComponent(value)}`);
+        const res = await ApiClient.get(`${r.apiPath}/list.php?${indexName}=${encodeURIComponent(value)}`, options);
         if (!res.success) throw new Error(res.message);
         return res.data || [];
       }
