@@ -6,6 +6,7 @@ import { AuthModule }  from './auth.js';
 import { initReceiptPage } from './receipts.js';
 import { initAllReceiptsPage } from './allReceipts.js';
 import { attachOwnersPageListeners, loadOwners } from './entities.js';
+import { attachVehicleDetailsPageListeners, loadVehicleDetailsOwners } from './vehicleDetails.js';
 import { attachOfficesPageListeners, initOfficesPage, loadOffices } from './offices.js';
 import { initTreasuryPage } from './treasury.js';
 import { initArchivePage } from './archive.js';
@@ -27,6 +28,8 @@ const PAGE_MAP = {
   allReceipts: 'allReceiptsPage',
   ownersPage: 'ownersPage',
   ownerDetailsPage: 'ownerDetailsPage',
+  vehicleDetailsPage: 'vehicleDetailsPage',
+  vehicleOwnerDetailsPage: 'vehicleOwnerDetailsPage',
   officesPage: 'officesPage',
   treasuryPage: 'treasuryPage',
   archivePage: 'archivePage',
@@ -41,6 +44,8 @@ const PAGE_KEY_NORMALIZE = {
   allReceiptsPage: 'allReceipts',
   ownersPage: 'ownersPage',
   ownerDetailsPage: 'ownerDetailsPage',
+  vehicleDetailsPage: 'vehicleDetailsPage',
+  vehicleOwnerDetailsPage: 'vehicleOwnerDetailsPage',
   officesPage: 'officesPage',
   treasuryPage: 'treasuryPage',
   archivePage: 'archivePage',
@@ -95,13 +100,17 @@ async function showPage(pageName) {
   _writeLastPage(pageKey);
 
   // ── Sidebar active state ──
+  const sidebarKey = pageKey === 'vehicleOwnerDetailsPage' ? 'vehicleDetailsPage' : pageKey;
   document.querySelectorAll('#sidebar .sidebar-link').forEach(link => {
     const lp = link.dataset.page;
-    link.classList.toggle('active', lp === pageKey || lp === targetId);
+    link.classList.toggle('active', lp === sidebarKey || lp === pageKey || lp === targetId);
   });
 
   if (pageName === 'ownersPage' || targetId === 'ownersPage') {
     await loadOwners();
+  }
+  if (pageName === 'vehicleDetailsPage' || targetId === 'vehicleDetailsPage') {
+    await loadVehicleDetailsOwners();
   }
   if (pageName === 'officesPage' || targetId === 'officesPage') {
     await loadOffices();
@@ -175,6 +184,7 @@ async function boot() {
     await initAllReceiptsPage();
     initOfficesPage();
     attachOwnersPageListeners();
+    attachVehicleDetailsPageListeners();
     attachOfficesPageListeners();
     initTreasuryPage();
     const lastPage = _readLastPage();
@@ -187,12 +197,16 @@ async function boot() {
     } else if (lastPage === 'ownerDetailsPage' && ctx?.ownerId && typeof window.showOwnerDetails === 'function') {
       await window.showOwnerDetails(ctx.ownerId, ctx.ownerType || 'owner');
       restored = true;
+    } else if (lastPage === 'vehicleOwnerDetailsPage' && ctx?.ownerId && typeof window.showVehicleOwnerDetails === 'function') {
+      const ownerRestored = await window.showVehicleOwnerDetails(ctx.ownerId);
+      restored = Boolean(ownerRestored);
     }
 
     if (!restored) {
       let fallbackPage = lastPage;
       if (lastPage === 'officeDetailsPage') fallbackPage = 'officesPage';
       if (lastPage === 'ownerDetailsPage') fallbackPage = 'ownersPage';
+      if (lastPage === 'vehicleOwnerDetailsPage') fallbackPage = 'vehicleDetailsPage';
       if (!fallbackPage || !_resolvePageElement(fallbackPage)) fallbackPage = 'homePage';
       await showPage(fallbackPage);
     }

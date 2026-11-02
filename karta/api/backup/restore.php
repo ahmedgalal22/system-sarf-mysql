@@ -67,7 +67,7 @@ try {
         $stats = $repo->restore($backup, $authUser['username']);
 
         bumpVersions($db, [
-            'vehicle_owners', 'offices', 'vehicles',
+            'vehicle_owners', 'vehicle_details_movements', 'offices', 'vehicles',
             'receipts', 'treasury', 'vehicle_ledger',
             'main_capital', 'archive_batches', 'drivers', 'notes'
         ]);
