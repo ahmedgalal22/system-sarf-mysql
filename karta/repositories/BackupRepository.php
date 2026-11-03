@@ -17,7 +17,6 @@ class BackupRepository {
     private const TABLE_ORDER = [
         'users',
         'vehicle_owners',
-        'vehicle_details_movements',
         'vehicles',
         'offices',
         'hamola_details',

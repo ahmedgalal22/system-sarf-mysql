@@ -31,17 +31,16 @@ const ENDPOINT = '/sync/versions.php';
  * Each value is the CustomEvent name to dispatch on window.
  */
 const ENTITY_EVENT_MAP = Object.freeze({
-  vehicle_owners:            'owners:changed',
-  vehicle_details_movements: 'vehicleDetails:changed',
-  offices:                   'offices:changed',
-  hamola_details:            'offices:changed',
-  receipts:                  'receipts:changed',
-  treasury:                  'treasury:changed',
-  main_capital:              'capital:changed',
-  vehicle_ledger:            'receipts:changed',
-  archive_batches:           'archive:changed',
-  drivers:                   'drivers:changed',
-  notes:                     'notes:changed',
+  vehicle_owners:  'owners:changed',
+  offices:         'offices:changed',
+  hamola_details:  'offices:changed',
+  receipts:        'receipts:changed',
+  treasury:        'treasury:changed',
+  main_capital:    'capital:changed',
+  vehicle_ledger:  'receipts:changed',
+  archive_batches: 'archive:changed',
+  drivers:         'drivers:changed',
+  notes:           'notes:changed',
 });
 
 // ── Internal State ────────────────────────────────────────────────────────────

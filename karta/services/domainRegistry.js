@@ -109,13 +109,6 @@ const DOMAIN_REGISTRY = Object.freeze({
     criticality: DOMAIN_CRITICALITY.NORMAL,
     apiPath:     '/entities/vehicleOwners',
   },
-  vehicleDetailsMovements: {
-    owner:       DOMAIN_OWNER.SERVER,
-    transport:   DOMAIN_TRANSPORT.MYSQL,
-    status:      DOMAIN_STATUS.SERVER_OWNED,
-    criticality: DOMAIN_CRITICALITY.NORMAL,
-    apiPath:     '/entities/vehicle-details',
-  },
   offices: {
     owner:       DOMAIN_OWNER.SERVER,
     transport:   DOMAIN_TRANSPORT.MYSQL,
