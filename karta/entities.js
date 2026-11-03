@@ -214,6 +214,93 @@ async function getOwnerVehicles(owner_id, options = {}) {
   return vehicles.filter(v => String(v.owner_id || '') === String(owner_id));
 }
 
+function normalizeOwnerAccountDigits(value) {
+  if (value === null || value === undefined) return '';
+  return String(value)
+    .replace(/[٠-٩]/g, (d) => String(d.charCodeAt(0) - 0x0660))
+    .replace(/[۰-۹]/g, (d) => String(d.charCodeAt(0) - 0x06f0))
+    .replace(/٫/g, '.');
+}
+
+function normalizeAndValidateOwnerAccNumber(rawValue, fieldLabel = 'القيمة') {
+  if (rawValue === null || rawValue === undefined) {
+    return { valid: true, value: null, display: '', error: null };
+  }
+  if (typeof rawValue === 'boolean' || typeof rawValue === 'object') {
+    return {
+      valid: false,
+      value: String(rawValue),
+      display: String(rawValue),
+      error: `حقل ${fieldLabel} يقبل أرقاماً موجبة فقط (حتى خانتين عشريتين)`,
+    };
+  }
+  const clean = normalizeOwnerAccountDigits(String(rawValue)).trim();
+  if (clean === '') {
+    return { valid: true, value: null, display: '', error: null };
+  }
+  if (!/^\d{1,12}(?:\.\d{1,2})?$/.test(clean)) {
+    return {
+      valid: false,
+      value: String(rawValue),
+      display: String(rawValue),
+      error: `حقل ${fieldLabel} يقبل أرقاماً موجبة فقط (حتى خانتين عشريتين)`,
+    };
+  }
+  return { valid: true, value: clean, display: clean, error: null };
+}
+
+async function getOwnerAccountDetails(owner_id, options = {}) {
+  if (!owner_id) return [];
+  const rows = await ClientRepository.getOwnerAccountDetails(String(owner_id), options);
+  return Array.isArray(rows) ? rows : [];
+}
+
+async function createOwnerAccountDetail(username, payload = {}) {
+  if (!username) throw new Error('[OwnersModule:createOwnerAccountDetail] username is required.');
+  const ownerId = payload?.owner_id;
+  if (!ownerId) throw new Error('معرّف صاحب المركبة مطلوب');
+
+  const lehCheck = normalizeAndValidateOwnerAccNumber(payload?.leh_amount ?? null, 'له');
+  if (!lehCheck.valid) throw new Error(lehCheck.error);
+
+  const alayhCheck = normalizeAndValidateOwnerAccNumber(payload?.alayh_amount ?? null, 'عليه');
+  if (!alayhCheck.valid) throw new Error(alayhCheck.error);
+
+  const rawNotes = payload?.notes;
+  const trimmedNotes = rawNotes === null || rawNotes === undefined ? '' : String(rawNotes).trim();
+
+  return ClientRepository.createOwnerAccountDetail({
+    owner_id: Number(ownerId),
+    leh_amount: lehCheck.value,
+    alayh_amount: alayhCheck.value,
+    notes: trimmedNotes === '' ? null : trimmedNotes,
+  }, { username });
+}
+
+async function updateOwnerAccountDetail(username, id, patch = {}) {
+  if (!username) throw new Error('[OwnersModule:updateOwnerAccountDetail] username is required.');
+  if (!id) throw new Error('معرّف الصف مطلوب');
+
+  const cleanPatch = {};
+  if ('leh_amount' in patch) {
+    const lehCheck = normalizeAndValidateOwnerAccNumber(patch.leh_amount, 'له');
+    if (!lehCheck.valid) throw new Error(lehCheck.error);
+    cleanPatch.leh_amount = lehCheck.value;
+  }
+  if ('alayh_amount' in patch) {
+    const alayhCheck = normalizeAndValidateOwnerAccNumber(patch.alayh_amount, 'عليه');
+    if (!alayhCheck.valid) throw new Error(alayhCheck.error);
+    cleanPatch.alayh_amount = alayhCheck.value;
+  }
+  if ('notes' in patch) {
+    const rawNotes = patch.notes;
+    const trimmedNotes = rawNotes === null || rawNotes === undefined ? '' : String(rawNotes).trim();
+    cleanPatch.notes = trimmedNotes === '' ? null : trimmedNotes;
+  }
+
+  return ClientRepository.updateOwnerAccountDetail(Number(id), cleanPatch, { username });
+}
+
 async function addAccount(username, _kind, payload) {
   if (!username) throw new Error('[OwnersModule:addAccount] username is required.');
   const name = _toText(payload?.name).trim();
@@ -237,6 +324,9 @@ const OwnersModule = Object.freeze({
   getClientLedger,
   createClientBalanceEntry,
   getOwnerVehicles,
+  getOwnerAccountDetails,
+  createOwnerAccountDetail,
+  updateOwnerAccountDetail,
   addAccount,
 });
 
@@ -252,6 +342,17 @@ let _selectedClient = null;
 let _balanceActionType = 'deposit';
 let _activeOwnerDetailsTab = 'movements';
 let _lastOwnerDetailsClientId = null;
+let _ownerDetailsLoadSeq = 0;
+let _ownerAccountDetailRows = [];
+let _ownerAccSearchQuery = '';
+let _ownerAccFromDate = '';
+let _ownerAccToDate = '';
+let _ownerAccStatusText = '';
+let _ownerAccStatusKind = '';
+let _ownerAccActiveInputId = null;
+let _ownerAccPendingSaves = 0;
+const _ownerAccUnsavedDrafts = new Map();
+const _ownerAccInFlightValues = new Map();
 const LAST_PAGE_CTX_KEY = 'karta_v2_last_page_ctx';
 
 function _fmt(n) {
@@ -897,8 +998,569 @@ async function _renderOwnerVehicles(client, preloadedVehicles = null) {
   `;
 }
 
+function _escHtml(value) {
+  if (value === null || value === undefined) return '';
+  return String(value)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function _escAttr(value) {
+  return _escHtml(value);
+}
+
+function _formatOwnerAccNumericDisplay(value) {
+  if (value === null || value === undefined) return '';
+  const trimmed = String(value).trim();
+  return trimmed === '' ? '' : trimmed;
+}
+
+function _dedupOwnerAccountRows(rows) {
+  if (!Array.isArray(rows)) return [];
+  const seen = new Set();
+  const out = [];
+  for (const row of rows) {
+    if (!row || typeof row !== 'object') continue;
+    const key = row.id !== undefined && row.id !== null ? String(row.id) : '';
+    if (key) {
+      if (seen.has(key)) continue;
+      seen.add(key);
+    }
+    out.push({ ...row });
+  }
+  return out;
+}
+
+function _resetOwnerAccTabState() {
+  _ownerAccountDetailRows = [];
+  _ownerAccSearchQuery = '';
+  _ownerAccFromDate = '';
+  _ownerAccToDate = '';
+  _ownerAccStatusText = '';
+  _ownerAccStatusKind = '';
+  _ownerAccActiveInputId = null;
+  _ownerAccPendingSaves = 0;
+  _ownerAccUnsavedDrafts.clear();
+  _ownerAccInFlightValues.clear();
+}
+
+function _shouldDeferOwnerAccRedraw() {
+  if (_ownerAccPendingSaves > 0) return true;
+  if (_ownerAccUnsavedDrafts.size > 0) return true;
+  if (_ownerAccActiveInputId) return true;
+  const activeEl = typeof document !== 'undefined' ? document.activeElement : null;
+  if (activeEl && activeEl.id && /^ownerAcc(Leh|Alayh|Notes)_/.test(activeEl.id)) {
+    return true;
+  }
+  return false;
+}
+
+function _setOwnerAccStatus(text, kind = '') {
+  _ownerAccStatusText = String(text || '');
+  _ownerAccStatusKind = String(kind || '');
+  const el = document.getElementById('ownerAccStatusMsg');
+  if (!el) return;
+  el.textContent = _ownerAccStatusText;
+  el.setAttribute('data-status', _ownerAccStatusKind);
+  el.classList?.remove('owner-acc-status--saving', 'owner-acc-status--saved', 'owner-acc-status--error');
+  if (_ownerAccStatusKind === 'saving') el.classList?.add('owner-acc-status--saving');
+  if (_ownerAccStatusKind === 'saved') el.classList?.add('owner-acc-status--saved');
+  if (_ownerAccStatusKind === 'error') el.classList?.add('owner-acc-status--error');
+}
+
+function _getFilteredOwnerAccountRows() {
+  const rawQuery = normalizeOwnerAccountDigits(_ownerAccSearchQuery || '').trim().toLowerCase();
+  const fromDate = String(_ownerAccFromDate || '').trim();
+  const toDate = String(_ownerAccToDate || '').trim();
+
+  return _ownerAccountDetailRows.filter((row) => {
+    if (!row) return false;
+    const rowDate = String(row.entry_date || '').trim().slice(0, 10);
+    if (fromDate && (!rowDate || rowDate < fromDate)) return false;
+    if (toDate && (!rowDate || rowDate > toDate)) return false;
+
+    if (rawQuery) {
+      const leh = normalizeOwnerAccountDigits(row.leh_amount ?? '').toLowerCase();
+      const alayh = normalizeOwnerAccountDigits(row.alayh_amount ?? '').toLowerCase();
+      const notes = normalizeOwnerAccountDigits(row.notes ?? '').toLowerCase();
+      const dateStr = normalizeOwnerAccountDigits(row.entry_date ?? '').toLowerCase();
+      const timeStr = normalizeOwnerAccountDigits(row.entry_time ?? '').toLowerCase();
+      const combined = `${leh} ${alayh} ${notes} ${dateStr} ${timeStr}`;
+      if (!combined.includes(rawQuery)) return false;
+    }
+
+    return true;
+  });
+}
+
+function _renderOwnerAccountTableRows(rows) {
+  if (!Array.isArray(rows) || rows.length === 0) {
+    return `
+      <tr>
+        <td colspan="5" class="text-muted text-center p-4">لا توجد سجلات في تفاصيل الحساب</td>
+      </tr>
+    `;
+  }
+
+  return rows.map((row) => {
+    const rowId = String(row.id);
+    const lehDraftKey = `${rowId}:leh_amount`;
+    const alayhDraftKey = `${rowId}:alayh_amount`;
+    const notesDraftKey = `${rowId}:notes`;
+
+    const lehVal = _ownerAccUnsavedDrafts.has(lehDraftKey)
+      ? _ownerAccUnsavedDrafts.get(lehDraftKey)
+      : _formatOwnerAccNumericDisplay(row.leh_amount);
+    const alayhVal = _ownerAccUnsavedDrafts.has(alayhDraftKey)
+      ? _ownerAccUnsavedDrafts.get(alayhDraftKey)
+      : _formatOwnerAccNumericDisplay(row.alayh_amount);
+    const notesVal = _ownerAccUnsavedDrafts.has(notesDraftKey)
+      ? _ownerAccUnsavedDrafts.get(notesDraftKey)
+      : (row.notes ?? '');
+
+    const dateVal = row.entry_date ?? '';
+    const timeVal = row.entry_time ?? '';
+
+    return `
+      <tr id="ownerAccRow_${_escAttr(rowId)}" data-row-id="${_escAttr(rowId)}">
+        <td>
+          <input
+            id="ownerAccLeh_${_escAttr(rowId)}"
+            type="text"
+            inputmode="decimal"
+            class="input input-sm owner-acc-input"
+            data-acc-field="leh_amount"
+            data-row-id="${_escAttr(rowId)}"
+            value="${_escAttr(lehVal)}"
+            placeholder="له"
+          >
+        </td>
+        <td>
+          <input
+            id="ownerAccAlayh_${_escAttr(rowId)}"
+            type="text"
+            inputmode="decimal"
+            class="input input-sm owner-acc-input"
+            data-acc-field="alayh_amount"
+            data-row-id="${_escAttr(rowId)}"
+            value="${_escAttr(alayhVal)}"
+            placeholder="عليه"
+          >
+        </td>
+        <td>
+          <input
+            id="ownerAccNotes_${_escAttr(rowId)}"
+            type="text"
+            class="input input-sm owner-acc-input"
+            data-acc-field="notes"
+            data-row-id="${_escAttr(rowId)}"
+            value="${_escAttr(notesVal)}"
+            placeholder="ملاحظات"
+          >
+        </td>
+        <td id="ownerAccDate_${_escAttr(rowId)}" class="owner-acc-readonly-cell">${_escHtml(dateVal)}</td>
+        <td id="ownerAccTime_${_escAttr(rowId)}" class="owner-acc-readonly-cell">${_escHtml(timeVal)}</td>
+      </tr>
+    `;
+  }).join('');
+}
+
+function _renderOwnerAccountDetails(client, preloadedRows = null) {
+  const rows = Array.isArray(preloadedRows) ? preloadedRows : _ownerAccountDetailRows;
+  _ownerAccountDetailRows = _dedupOwnerAccountRows(rows);
+  const filteredRows = _getFilteredOwnerAccountRows();
+  const statusClass = _ownerAccStatusKind
+    ? `owner-acc-status--${_ownerAccStatusKind}`
+    : '';
+
+  return `
+    <section class="ent-tab-section">
+      <div class="ent-section-header flex items-center justify-between mb-4 flex-wrap gap-3">
+        <div class="flex items-center gap-3 flex-wrap">
+          <h3 class="ent-section-title text-lg font-bold mb-0">تفاصيل الحساب</h3>
+          <span
+            id="ownerAccStatusMsg"
+            role="status"
+            aria-live="polite"
+            data-status="${_escAttr(_ownerAccStatusKind)}"
+            class="owner-acc-status ${statusClass}"
+          >${_escHtml(_ownerAccStatusText)}</span>
+        </div>
+        <div class="flex gap-2 flex-wrap">
+          <button
+            type="button"
+            id="ownerAccAddRowBtn"
+            data-action="owner-acc-add-row"
+            data-owner-id="${_escAttr(client.id)}"
+            class="ent-btn-add-vehicle"
+          >➕ إضافة صف</button>
+          <button
+            type="button"
+            id="ownerAccPrintBtn"
+            data-action="owner-acc-print"
+            data-owner-id="${_escAttr(client.id)}"
+            class="btn btn-secondary btn-sm"
+          >🖨️ طباعة</button>
+        </div>
+      </div>
+
+      <div class="filter-row ent-filter-bar mb-6 flex-wrap">
+        <div class="form-group mb-0" style="flex:1;min-width:200px;">
+          <label class="label mb-2 text-muted text-xs" for="ownerAccSearchInput">بحث</label>
+          <input
+            id="ownerAccSearchInput"
+            type="text"
+            class="input input-sm"
+            placeholder="🔍 ابحث في تفاصيل الحساب..."
+            value="${_escAttr(_ownerAccSearchQuery)}"
+          >
+        </div>
+        <div class="form-group mb-0">
+          <label class="label mb-2 text-muted text-xs" for="ownerAccFromDate">من</label>
+          <input
+            id="ownerAccFromDate"
+            type="date"
+            class="input input-sm"
+            value="${_escAttr(_ownerAccFromDate)}"
+          >
+        </div>
+        <div class="form-group mb-0">
+          <label class="label mb-2 text-muted text-xs" for="ownerAccToDate">إلى</label>
+          <input
+            id="ownerAccToDate"
+            type="date"
+            class="input input-sm"
+            value="${_escAttr(_ownerAccToDate)}"
+          >
+        </div>
+        <div class="ent-filter-actions">
+          <button
+            type="button"
+            id="ownerAccApplyFilterBtn"
+            data-action="owner-acc-apply-filter"
+            data-id="${_escAttr(client.id)}"
+            class="btn btn-primary btn-sm"
+          >تطبيق</button>
+          <button
+            type="button"
+            id="ownerAccClearFilterBtn"
+            data-action="owner-acc-clear-filter"
+            data-id="${_escAttr(client.id)}"
+            class="btn btn-secondary btn-sm"
+          >مسح التحديد</button>
+        </div>
+      </div>
+
+      <div class="table-wrapper">
+        <table id="ownerAccTable" class="table">
+          <thead>
+            <tr>
+              <th>له</th>
+              <th>عليه</th>
+              <th>ملاحظات</th>
+              <th>التاريخ</th>
+              <th>الوقت</th>
+            </tr>
+          </thead>
+          <tbody id="ownerAccTableBody">
+            ${_renderOwnerAccountTableRows(filteredRows)}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  `;
+}
+
+async function _commitOwnerAccountCellEdit(rowId, field, rawValue, inputEl = null) {
+  const row = _ownerAccountDetailRows.find((r) => String(r.id) === String(rowId));
+  if (!row) return false;
+
+  const draftKey = `${rowId}:${field}`;
+  let normalizedValue = null;
+  let displayValue = '';
+
+  if (field === 'leh_amount' || field === 'alayh_amount') {
+    const label = field === 'leh_amount' ? 'له' : 'عليه';
+    const check = normalizeAndValidateOwnerAccNumber(rawValue, label);
+    if (!check.valid) {
+      const preserved = String(rawValue ?? '');
+      _ownerAccUnsavedDrafts.set(draftKey, preserved);
+      if (inputEl) {
+        inputEl.value = preserved;
+        inputEl.classList?.add('owner-acc-input--error');
+      }
+      _setOwnerAccStatus(`❌ ${check.error}`, 'error');
+      return false;
+    }
+    normalizedValue = check.value;
+    displayValue = check.display;
+  } else if (field === 'notes') {
+    const trimmed = String(rawValue ?? '').trim();
+    normalizedValue = trimmed === '' ? null : trimmed;
+    displayValue = trimmed;
+  } else {
+    return false;
+  }
+
+  const currentRaw = row[field];
+  const currentSaved =
+    currentRaw === null || currentRaw === undefined || String(currentRaw).trim() === ''
+      ? null
+      : String(currentRaw).trim();
+
+  if (normalizedValue === currentSaved && !inputEl?.classList?.contains('owner-acc-input--error')) {
+    _ownerAccUnsavedDrafts.delete(draftKey);
+    if (inputEl) inputEl.value = displayValue;
+    return true;
+  }
+
+  if (_ownerAccInFlightValues.get(draftKey) === normalizedValue) {
+    return true;
+  }
+
+  _ownerAccInFlightValues.set(draftKey, normalizedValue);
+  _ownerAccPendingSaves += 1;
+  if (inputEl) {
+    inputEl.value = displayValue;
+    inputEl.classList?.remove('owner-acc-input--error');
+  }
+  _setOwnerAccStatus('⏳ جاري الحفظ...', 'saving');
+
+  try {
+    const updated = await OwnersModule.updateOwnerAccountDetail(_currentUsername(), Number(rowId), {
+      [field]: normalizedValue,
+    });
+
+    row[field] = updated && field in updated ? updated[field] : normalizedValue;
+    if (updated?.updated_at) {
+      row.updated_at = updated.updated_at;
+    }
+
+    _ownerAccUnsavedDrafts.delete(draftKey);
+    if (inputEl) {
+      inputEl.value = field === 'notes'
+        ? (row.notes ?? '')
+        : _formatOwnerAccNumericDisplay(row[field]);
+      inputEl.classList?.remove('owner-acc-input--error');
+    }
+    _setOwnerAccStatus('✓ تم الحفظ', 'saved');
+    return true;
+  } catch (err) {
+    const preserved = String(rawValue ?? '');
+    _ownerAccUnsavedDrafts.set(draftKey, preserved);
+    if (inputEl) {
+      inputEl.value = preserved;
+      inputEl.classList?.add('owner-acc-input--error');
+    }
+    _setOwnerAccStatus(`❌ فشل الحفظ: ${err.message || 'خطأ في الخادم'}`, 'error');
+    return false;
+  } finally {
+    _ownerAccInFlightValues.delete(draftKey);
+    _ownerAccPendingSaves = Math.max(0, _ownerAccPendingSaves - 1);
+  }
+}
+
+function _bindOwnerAccountRowInputs() {
+  for (const row of _ownerAccountDetailRows) {
+    const rowId = String(row.id);
+    const configs = [
+      { id: `ownerAccLeh_${rowId}`, field: 'leh_amount' },
+      { id: `ownerAccAlayh_${rowId}`, field: 'alayh_amount' },
+      { id: `ownerAccNotes_${rowId}`, field: 'notes' },
+    ];
+
+    for (const { id, field } of configs) {
+      const inputEl = document.getElementById(id);
+      if (!inputEl || inputEl.dataset.accBound === '1') continue;
+      inputEl.dataset.accBound = '1';
+
+      inputEl.addEventListener('focus', function () {
+        _ownerAccActiveInputId = id;
+      });
+
+      inputEl.addEventListener('input', function () {
+        _ownerAccActiveInputId = id;
+        _ownerAccUnsavedDrafts.set(`${rowId}:${field}`, this.value);
+      });
+
+      inputEl.addEventListener('blur', async function () {
+        if (_ownerAccActiveInputId === id) {
+          _ownerAccActiveInputId = null;
+        }
+        await _commitOwnerAccountCellEdit(rowId, field, this.value, this);
+      });
+
+      inputEl.addEventListener('change', async function () {
+        await _commitOwnerAccountCellEdit(rowId, field, this.value, this);
+      });
+
+      inputEl.addEventListener('keydown', async function (e) {
+        if (e && e.key === 'Enter') {
+          if (typeof e.preventDefault === 'function') e.preventDefault();
+          await _commitOwnerAccountCellEdit(rowId, field, this.value, this);
+        }
+      });
+    }
+  }
+}
+
+function _refreshOwnerAccountTableBody() {
+  const tbody = document.getElementById('ownerAccTableBody');
+  if (tbody) {
+    const filtered = _getFilteredOwnerAccountRows();
+    tbody.innerHTML = _renderOwnerAccountTableRows(filtered);
+  }
+  const countEl = document.getElementById('ownerTabCountAccountDetails');
+  if (countEl) {
+    countEl.textContent = String(_ownerAccountDetailRows.length);
+  }
+  _bindOwnerAccountRowInputs();
+}
+
+function _bindOwnerAccountDetailsControls() {
+  const searchEl = document.getElementById('ownerAccSearchInput');
+  if (searchEl && searchEl.dataset.accBound !== '1') {
+    searchEl.dataset.accBound = '1';
+    searchEl.addEventListener('input', function () {
+      _ownerAccSearchQuery = this.value || '';
+      _refreshOwnerAccountTableBody();
+    });
+  }
+
+  const fromEl = document.getElementById('ownerAccFromDate');
+  if (fromEl && fromEl.dataset.accBound !== '1') {
+    fromEl.dataset.accBound = '1';
+    const onFromChange = function () {
+      _ownerAccFromDate = this.value || '';
+      _refreshOwnerAccountTableBody();
+    };
+    fromEl.addEventListener('change', onFromChange);
+    fromEl.addEventListener('input', onFromChange);
+  }
+
+  const toEl = document.getElementById('ownerAccToDate');
+  if (toEl && toEl.dataset.accBound !== '1') {
+    toEl.dataset.accBound = '1';
+    const onToChange = function () {
+      _ownerAccToDate = this.value || '';
+      _refreshOwnerAccountTableBody();
+    };
+    toEl.addEventListener('change', onToChange);
+    toEl.addEventListener('input', onToChange);
+  }
+
+  _bindOwnerAccountRowInputs();
+}
+
+async function _handleAddOwnerAccountRow() {
+  if (!_selectedClient || !_selectedClient.id) return null;
+  const targetOwnerId = String(_selectedClient.id);
+  _ownerAccPendingSaves += 1;
+  _setOwnerAccStatus('⏳ جاري الحفظ...', 'saving');
+
+  try {
+    const created = await OwnersModule.createOwnerAccountDetail(_currentUsername(), {
+      owner_id: Number(targetOwnerId),
+      leh_amount: null,
+      alayh_amount: null,
+      notes: null,
+    });
+
+    if (String(_selectedClient?.id) !== targetOwnerId) {
+      return null;
+    }
+
+    if (created && created.id !== undefined && created.id !== null) {
+      const exists = _ownerAccountDetailRows.some((r) => String(r.id) === String(created.id));
+      if (!exists) {
+        _ownerAccountDetailRows.push({ ...created });
+      }
+      _refreshOwnerAccountTableBody();
+      _setOwnerAccStatus('✓ تم الحفظ', 'saved');
+
+      const lehInput = document.getElementById(`ownerAccLeh_${created.id}`);
+      if (lehInput && typeof lehInput.focus === 'function') {
+        lehInput.focus();
+      }
+    }
+    return created;
+  } catch (err) {
+    if (String(_selectedClient?.id) === targetOwnerId) {
+      _setOwnerAccStatus(`❌ فشل إضافة الصف: ${err.message || 'خطأ في الخادم'}`, 'error');
+    }
+    return null;
+  } finally {
+    _ownerAccPendingSaves = Math.max(0, _ownerAccPendingSaves - 1);
+  }
+}
+
+function _printOwnerAccountDetails() {
+  if (!_selectedClient) return;
+  const filteredRows = _getFilteredOwnerAccountRows();
+
+  const ownerName = _escHtml(_selectedClient.name || '');
+  const tableRowsHtml = filteredRows.length
+    ? filteredRows.map((r) => `
+      <tr>
+        <td style="border:1px solid #d1d5db;padding:8px 12px;text-align:center;">${_escHtml(_formatOwnerAccNumericDisplay(r.leh_amount))}</td>
+        <td style="border:1px solid #d1d5db;padding:8px 12px;text-align:center;">${_escHtml(_formatOwnerAccNumericDisplay(r.alayh_amount))}</td>
+        <td style="border:1px solid #d1d5db;padding:8px 12px;text-align:right;">${_escHtml(r.notes ?? '')}</td>
+        <td style="border:1px solid #d1d5db;padding:8px 12px;text-align:center;">${_escHtml(r.entry_date ?? '')}</td>
+        <td style="border:1px solid #d1d5db;padding:8px 12px;text-align:center;">${_escHtml(r.entry_time ?? '')}</td>
+      </tr>
+    `).join('')
+    : `
+      <tr>
+        <td colspan="5" style="border:1px solid #d1d5db;padding:12px;text-align:center;">لا توجد سجلات مطابقة</td>
+      </tr>
+    `;
+
+  const html = `<!DOCTYPE html>
+<html dir="rtl" lang="ar">
+<head>
+  <meta charset="UTF-8">
+  <title>تفاصيل الحساب — ${ownerName}</title>
+  <style>
+    @import url('cairo-font.css');
+    body { font-family: 'Cairo', Arial, sans-serif; direction: rtl; margin: 0; padding: 20px; }
+    h2 { text-align: center; color: #1f2937; margin-bottom: 16px; }
+    table { width: 100%; border-collapse: collapse; }
+    th { background: #1e3a8a; color: #fff; padding: 10px 12px; text-align: center; border: 1px solid #1e3a8a; font-size: 0.875rem; }
+    td { font-size: 0.875rem; }
+    @page { size: A4 portrait; margin: 15mm; }
+  </style>
+</head>
+<body>
+  <h2>تفاصيل الحساب — ${ownerName}</h2>
+  <table>
+    <thead>
+      <tr>
+        <th>له</th>
+        <th>عليه</th>
+        <th>ملاحظات</th>
+        <th>التاريخ</th>
+        <th>الوقت</th>
+      </tr>
+    </thead>
+    <tbody>${tableRowsHtml}</tbody>
+  </table>
+</body>
+</html>`;
+
+  printHTML(html, { id: 'owner-account-details-print-iframe' });
+}
+
+function _normalizeOwnerDetailsTab(tabName) {
+  if (tabName === 'vehicles') return 'vehicles';
+  if (tabName === 'account-details') return 'account-details';
+  return 'movements';
+}
+
 function _switchOwnerDetailsTab(tabName) {
-  const nextTab = tabName === 'vehicles' ? 'vehicles' : 'movements';
+  const nextTab = _normalizeOwnerDetailsTab(tabName);
   _activeOwnerDetailsTab = nextTab;
 
   const page = document.getElementById('ownerDetailsPage');
@@ -912,20 +1574,70 @@ function _switchOwnerDetailsTab(tabName) {
     btn.setAttribute('tabindex', isMatch ? '0' : '-1');
   });
 
+  const explicitTabButtons = [
+    ['movements', 'ownerTabBtnMovements'],
+    ['vehicles', 'ownerTabBtnVehicles'],
+    ['account-details', 'ownerTabBtnAccountDetails'],
+  ];
+  for (const [key, btnId] of explicitTabButtons) {
+    const btn = document.getElementById(btnId);
+    if (!btn) continue;
+    const isMatch = key === nextTab;
+    btn.classList?.toggle('is-active', isMatch);
+    btn.setAttribute?.('aria-selected', isMatch ? 'true' : 'false');
+    btn.setAttribute?.('tabindex', isMatch ? '0' : '-1');
+  }
+
   const panels = page.querySelectorAll('[data-owner-tab-panel]');
   panels.forEach((panel) => {
     const isMatch = panel.getAttribute('data-owner-tab-panel') === nextTab;
     panel.classList.toggle('is-active', isMatch);
     panel.classList.toggle('hidden', !isMatch);
   });
+
+  const explicitPanels = [
+    ['movements', 'ownerTabPanelMovements'],
+    ['vehicles', 'ownerTabPanelVehicles'],
+    ['account-details', 'ownerTabPanelAccountDetails'],
+  ];
+  for (const [key, panelId] of explicitPanels) {
+    const panel = document.getElementById(panelId);
+    if (!panel) continue;
+    const isMatch = key === nextTab;
+    panel.classList?.toggle('is-active', isMatch);
+    panel.classList?.toggle('hidden', !isMatch);
+  }
 }
 
 async function showOwnerDetails(id, type = 'owner', options = {}) {
+  const isPassive = options?.passive === true;
+  if (isPassive && _shouldDeferOwnerAccRedraw()) {
+    return;
+  }
+
+  const isSwitchingOwner = String(_lastOwnerDetailsClientId) !== String(id);
+  if (!isPassive) {
+    _ownerAccStatusText = '';
+    _ownerAccStatusKind = '';
+    _ownerAccActiveInputId = null;
+    _ownerAccPendingSaves = 0;
+    _ownerAccUnsavedDrafts.clear();
+    _ownerAccInFlightValues.clear();
+    if (isSwitchingOwner) {
+      _activeOwnerDetailsTab = 'movements';
+      _resetOwnerAccTabState();
+    }
+  }
+
+  const loadSeq = ++_ownerDetailsLoadSeq;
   const client = await _getClient(type, id, options);
   if (!client) return;
+  if (loadSeq !== _ownerDetailsLoadSeq) return;
+
   if (String(_lastOwnerDetailsClientId) !== String(client.id)) {
     _activeOwnerDetailsTab = 'movements';
     _lastOwnerDetailsClientId = String(client.id);
+    _resetOwnerAccTabState();
   }
   _selectedClient = client;
 
@@ -935,12 +1647,25 @@ async function showOwnerDetails(id, type = 'owner', options = {}) {
     ownerType: type,
   }));
 
-  const balance = await OwnersModule.getClientBalance(client.id, client.type, options);
-  const ledger = await OwnersModule.getClientLedger(client.id, client.type, options);
-  const owned = await OwnersModule.getOwnerVehicles(client.id, options);
+  const [balance, ledger, owned, accountDetails] = await Promise.all([
+    OwnersModule.getClientBalance(client.id, client.type, options),
+    OwnersModule.getClientLedger(client.id, client.type, options),
+    OwnersModule.getOwnerVehicles(client.id, options),
+    OwnersModule.getOwnerAccountDetails(client.id, options),
+  ]);
+
+  if (loadSeq !== _ownerDetailsLoadSeq || String(_selectedClient?.id) !== String(client.id)) {
+    return;
+  }
+  if (isPassive && _shouldDeferOwnerAccRedraw()) {
+    return;
+  }
+
+  const dedupedAccountDetails = _dedupOwnerAccountRows(accountDetails);
   const ledgerHtml = await _renderLedger(client, ledger);
   const relatedHtml = await _renderOwnerVehicles(client, owned);
-  const activeTab = _activeOwnerDetailsTab === 'vehicles' ? 'vehicles' : 'movements';
+  const accountDetailsHtml = _renderOwnerAccountDetails(client, dedupedAccountDetails);
+  const activeTab = _normalizeOwnerDetailsTab(_activeOwnerDetailsTab);
   const phoneText = String(client.phone || '').trim();
 
   const page = document.getElementById('ownerDetailsPage');
@@ -1010,6 +1735,20 @@ async function showOwnerDetails(id, type = 'owner', options = {}) {
             <span class="ent-details-tab__label">المركبات والسائقين</span>
             <span class="ent-details-tab__count">${owned.length}</span>
           </button>
+          <button
+            type="button"
+            id="ownerTabBtnAccountDetails"
+            role="tab"
+            data-action="owner-details-tab"
+            data-owner-tab="account-details"
+            aria-selected="${activeTab === 'account-details' ? 'true' : 'false'}"
+            aria-controls="ownerTabPanelAccountDetails"
+            tabindex="${activeTab === 'account-details' ? '0' : '-1'}"
+            class="ent-details-tab ${activeTab === 'account-details' ? 'is-active' : ''}"
+          >
+            <span class="ent-details-tab__label">تفاصيل الحساب</span>
+            <span id="ownerTabCountAccountDetails" class="ent-details-tab__count">${dedupedAccountDetails.length}</span>
+          </button>
         </div>
       </div>
 
@@ -1031,6 +1770,16 @@ async function showOwnerDetails(id, type = 'owner', options = {}) {
         class="ent-details-tab-panel ${activeTab === 'vehicles' ? 'is-active' : 'hidden'}"
       >
         ${relatedHtml}
+      </div>
+
+      <div
+        id="ownerTabPanelAccountDetails"
+        role="tabpanel"
+        aria-labelledby="ownerTabBtnAccountDetails"
+        data-owner-tab-panel="account-details"
+        class="ent-details-tab-panel ${activeTab === 'account-details' ? 'is-active' : 'hidden'}"
+      >
+        ${accountDetailsHtml}
       </div>
 
       <div id="balanceEntryModal" class="modal-overlay hidden">
@@ -1063,6 +1812,8 @@ async function showOwnerDetails(id, type = 'owner', options = {}) {
       </div>
     </div>
   `;
+
+  _bindOwnerAccountDetailsControls();
 
   if (typeof window.showPage === 'function') {
     await window.showPage('ownerDetailsPage');
@@ -1374,6 +2125,7 @@ function attachOwnersPageListeners() {
     if (e.target.closest('[data-action="back-to-customers"]') || e.target.closest('[data-action="back-to-accounts"]')) {
       _lastOwnerDetailsClientId = null;
       _activeOwnerDetailsTab = 'movements';
+      _resetOwnerAccTabState();
       if (typeof window.showPage === 'function') {
         await window.showPage('ownersPage');
       }
@@ -1383,6 +2135,41 @@ function attachOwnersPageListeners() {
     const ownerTabBtn = e.target.closest('[data-action="owner-details-tab"]');
     if (ownerTabBtn) {
       _switchOwnerDetailsTab(ownerTabBtn.dataset.ownerTab);
+      return;
+    }
+
+    if (e.target.closest('[data-action="owner-acc-add-row"]')) {
+      await _handleAddOwnerAccountRow();
+      return;
+    }
+
+    if (e.target.closest('[data-action="owner-acc-print"]')) {
+      _printOwnerAccountDetails();
+      return;
+    }
+
+    if (e.target.closest('[data-action="owner-acc-apply-filter"]')) {
+      const searchEl = document.getElementById('ownerAccSearchInput');
+      const fromEl = document.getElementById('ownerAccFromDate');
+      const toEl = document.getElementById('ownerAccToDate');
+      _ownerAccSearchQuery = searchEl?.value || '';
+      _ownerAccFromDate = fromEl?.value || '';
+      _ownerAccToDate = toEl?.value || '';
+      _refreshOwnerAccountTableBody();
+      return;
+    }
+
+    if (e.target.closest('[data-action="owner-acc-clear-filter"]')) {
+      const searchEl = document.getElementById('ownerAccSearchInput');
+      const fromEl = document.getElementById('ownerAccFromDate');
+      const toEl = document.getElementById('ownerAccToDate');
+      if (searchEl) searchEl.value = '';
+      if (fromEl) fromEl.value = '';
+      if (toEl) toEl.value = '';
+      _ownerAccSearchQuery = '';
+      _ownerAccFromDate = '';
+      _ownerAccToDate = '';
+      _refreshOwnerAccountTableBody();
       return;
     }
 
@@ -1474,6 +2261,28 @@ window.addEventListener('owners:changed', (event) => {
   loadOwners(options);
 });
 
+window.addEventListener('ownerAccountDetails:changed', async (event) => {
+  const detailsPage = document.getElementById('ownerDetailsPage');
+  if (!detailsPage || detailsPage.classList.contains('hidden') || !_selectedClient?.id) {
+    return;
+  }
+  if (_shouldDeferOwnerAccRedraw()) {
+    return;
+  }
+  const targetOwnerId = String(_selectedClient.id);
+  const options = event?.detail?.passive === true ? { passive: true } : {};
+  try {
+    const rows = await OwnersModule.getOwnerAccountDetails(targetOwnerId, options);
+    if (String(_selectedClient?.id) !== targetOwnerId || _shouldDeferOwnerAccRedraw()) {
+      return;
+    }
+    _ownerAccountDetailRows = _dedupOwnerAccountRows(rows);
+    _refreshOwnerAccountTableBody();
+  } catch (err) {
+    console.warn('[entities] ownerAccountDetails sync refresh failed:', err.message || err);
+  }
+});
+
 window.addEventListener('receipts:changed', () => {
   _invalidateKartaCounts();
 });
@@ -1500,6 +2309,11 @@ export {
   getClientLedger,
   createClientBalanceEntry,
   getOwnerVehicles,
+  getOwnerAccountDetails,
+  createOwnerAccountDetail,
+  updateOwnerAccountDetail,
+  normalizeOwnerAccountDigits,
+  normalizeAndValidateOwnerAccNumber,
   addAccount,
   loadOwners,
   attachOwnersPageListeners,

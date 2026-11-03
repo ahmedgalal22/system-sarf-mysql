@@ -18,13 +18,14 @@ CREATE TABLE IF NOT EXISTS data_versions (
 
 -- Initial seed — only inserts if not already present
 INSERT IGNORE INTO data_versions (entity_name, version) VALUES
-  ('vehicle_owners',    1),
-  ('offices',           1),
-  ('vehicles',          1),
-  ('receipts',          1),
-  ('treasury',          1),
-  ('vehicle_ledger',    1),
-  ('main_capital',      1),
-  ('archive_batches',   1),
-  ('drivers',           1),
-  ('notes',             1);
+  ('vehicle_owners',        1),
+  ('owner_account_details', 1),
+  ('offices',               1),
+  ('vehicles',              1),
+  ('receipts',              1),
+  ('treasury',              1),
+  ('vehicle_ledger',        1),
+  ('main_capital',          1),
+  ('archive_batches',       1),
+  ('drivers',               1),
+  ('notes',                 1);

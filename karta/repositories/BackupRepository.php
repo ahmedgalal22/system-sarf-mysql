@@ -17,6 +17,7 @@ class BackupRepository {
     private const TABLE_ORDER = [
         'users',
         'vehicle_owners',
+        'owner_account_details',
         'vehicles',
         'offices',
         'hamola_details',
@@ -29,6 +30,16 @@ class BackupRepository {
         'main_capital_treasury',
         'archive_batches',
         'financial_snapshots',
+    ];
+
+    /**
+     * Tables introduced after the original v2.0.0 snapshot format.
+     * Pre-existing backups that omit these keys continue to validate with their
+     * original checksum rules, while newer backups include them in validation,
+     * checksum calculation, and restore ordering.
+     */
+    private const OPTIONAL_LEGACY_TABLES = [
+        'owner_account_details',
     ];
 
     public function __construct(PDO $db) { $this->db = $db; }
@@ -127,6 +138,9 @@ class BackupRepository {
         // Verify all required tables exist in backup
         foreach (self::TABLE_ORDER as $table) {
             if (!array_key_exists($table, $backup['tables'])) {
+                if (in_array($table, self::OPTIONAL_LEGACY_TABLES, true)) {
+                    continue;
+                }
                 $errors[] = "Missing table: $table";
             } elseif (!is_array($backup['tables'][$table])) {
                 $errors[] = "Invalid data for table: $table";
@@ -197,8 +211,15 @@ class BackupRepository {
 
     private function computeChecksum(array $backup): string {
         $parts = ['karta-v2-v1'];
+        $tables = (isset($backup['tables']) && is_array($backup['tables'])) ? $backup['tables'] : [];
         foreach (self::TABLE_ORDER as $table) {
-            $count = count($backup['tables'][$table] ?? []);
+            if (
+                in_array($table, self::OPTIONAL_LEGACY_TABLES, true) &&
+                !array_key_exists($table, $tables)
+            ) {
+                continue;
+            }
+            $count = count($tables[$table] ?? []);
             $parts[] = "$table:$count";
         }
         return hash('sha256', implode('|', $parts));

@@ -54,4 +54,15 @@ export const ClientRepository = {
     return DBProvider.save('drivers', payload, meta);
   },
 
+  // ── Owner Account Details (تفاصيل الحساب) ───────────────────────────────
+  async getOwnerAccountDetails(ownerId, options = {}) {
+    return DBProvider.findByFields('ownerAccountDetails', { owner_id: String(ownerId) }, options);
+  },
+  async createOwnerAccountDetail(payload, meta) {
+    return DBProvider.save('ownerAccountDetails', payload, meta);
+  },
+  async updateOwnerAccountDetail(id, patch, meta) {
+    return DBProvider.update('ownerAccountDetails', id, patch, meta);
+  },
+
 };

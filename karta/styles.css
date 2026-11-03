@@ -3399,14 +3399,14 @@ input[type="number"] {
   outline-offset: 2px;
 }
 
-/* ── Segmented Tab Bar (الحركات / المركبات والسائقين) ── */
+/* ── Segmented Tab Bar (الحركات / المركبات والسائقين / تفاصيل الحساب) ── */
 .ent-details-tabs-wrap {
   margin-bottom: 20px;
 }
 
 .ent-details-tabs {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 8px;
   background: #f1f5f9;
   border: 1px solid #cbd5e1;
@@ -3550,6 +3550,39 @@ input[type="number"] {
 .ent-btn-add-vehicle:focus-visible {
   outline: 2px solid #0f766e;
   outline-offset: 2px;
+}
+
+.owner-acc-input {
+  width: 100%;
+  min-width: 110px;
+}
+
+.owner-acc-input--error {
+  border-color: #dc2626 !important;
+  background-color: #fef2f2 !important;
+}
+
+.owner-acc-readonly-cell {
+  white-space: nowrap;
+  color: #475569;
+  font-variant-numeric: tabular-nums;
+}
+
+.owner-acc-status {
+  font-size: 0.8125rem;
+  font-weight: 700;
+}
+
+.owner-acc-status--saving {
+  color: #2563eb;
+}
+
+.owner-acc-status--saved {
+  color: #16a34a;
+}
+
+.owner-acc-status--error {
+  color: #dc2626;
 }
 
 @media (max-width: 768px) {
