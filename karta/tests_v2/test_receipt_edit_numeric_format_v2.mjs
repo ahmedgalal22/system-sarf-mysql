@@ -159,6 +159,7 @@ function resetDom() {
   registerEl('paidAmount', '0');
   elementsById.get('paidAmount').dataset.auto = '1';
   registerEl('generalAdd', '0');
+  registerEl('henaAmount', '');
   registerEl('totalAmount', '0.00');
   registerEl('rowCount', '0');
   registerEl('netDueAmount', '0.00');
@@ -392,3 +393,65 @@ test('4. End-to-end loadReceiptForEdit() prefills integer, decimal, and zero/emp
   assert.equal(elementsById.get('netDueAmount').textContent, expectedTotals.net_due.toFixed(2));
   assert.equal(elementsById.get('netTotalAmount').textContent, expectedTotals.net_total.toFixed(2));
 });
+
+test('5. Disbursement Form Totals Table includes manual field "هنا" after "الصافي المستحق", restores it on edit, and excludes it from financial formulas', async () => {
+  resetDom();
+  const receiptPage = {
+    id: 'receiptPage',
+    innerHTML: '',
+    querySelector() { return null; },
+  };
+  elementsById.set('receiptPage', receiptPage);
+
+  const { renderReceiptPage } = await import('../receipts.js');
+  renderReceiptPage();
+
+  // Verify "هنا" appears immediately after "الصافي المستحق" in the totals table
+  const netDueIdx = receiptPage.innerHTML.indexOf('الصافي المستحق');
+  const henaIdx = receiptPage.innerHTML.indexOf('>هنا<');
+  const clientBalIdx = receiptPage.innerHTML.indexOf('رصيد العميل');
+  assert.ok(netDueIdx > 0, 'الصافي المستحق must exist in totals table');
+  assert.ok(henaIdx > netDueIdx, 'خانة (هنا) must appear after الصافي المستحق');
+  assert.ok(clientBalIdx > henaIdx, 'خانة (هنا) must appear before رصيد العميل');
+  assert.ok(receiptPage.innerHTML.includes('id="henaAmount"'), 'Input #henaAmount must be rendered');
+
+  // Verify loadReceiptForEdit restores saved manual number into #henaAmount without affecting financial totals
+  resetDom();
+  const savedReceiptWithHena = {
+    id: 88,
+    receipt_number: '20',
+    receipt_date: '2026-11-04',
+    client_id: 'owner-1',
+    client_type: 'owner',
+    client_name: 'أحمد جلال',
+    payout_status: 'unpaid',
+    general_add: 0,
+    previous_balance: 0,
+    paid: 95000,
+    net_due: 95000,
+    net_total: 95000,
+    shipping_number: '777.5',
+    rows: [
+      {
+        _type: 'data',
+        row_id: 'r1',
+        kartano: '201',
+        date: '2026-11-04',
+        weight: 30,
+        deficit: 0,
+        noloon: 40,
+        ohda: 500,
+        officeAmount: 150,
+        add: 400,
+        sarf: 0,
+      },
+    ],
+  };
+
+  await loadReceiptForEdit(savedReceiptWithHena);
+  assert.equal(elementsById.get('henaAmount').value, '777.5', 'Saved manual value in "هنا" must be restored');
+  assert.equal(elementsById.get('totalAmount').textContent, '950.00', '"هنا" must not affect totalAmount');
+  assert.equal(elementsById.get('netDueAmount').textContent, '950.00', '"هنا" must not affect netDueAmount');
+  assert.equal(elementsById.get('netTotalAmount').textContent, '950.00', '"هنا" must not affect netTotalAmount');
+});
+

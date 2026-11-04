@@ -84,7 +84,7 @@ try {
             'general_add'      => intval($body['general_add'] ?? 0),
             'rows'             => $body['rows'] ?? [],
             'notes'            => sanitizeString($body['notes'] ?? null) ?: null,
-            'shipping_number'  => sanitizeString($body['shipping_number'] ?? null) ?: null,
+            'shipping_number'  => (($sn = sanitizeString($body['shipping_number'] ?? null)) !== '') ? $sn : null,
             'request_id'       => $requestId,
             'created_by'       => $authUser['username'],
         ]);

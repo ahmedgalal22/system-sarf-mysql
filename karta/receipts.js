@@ -207,6 +207,7 @@ function _normalize(rawData) {
   const net_total = calcs.net_total;
   const balance = calcs.balance;
   const row_count        = dataRows.length;
+  const hena             = normalizeOptionalString(rawData.hena ?? rawData.shipping_number);
 
   return {
     id             : receiptId,
@@ -217,7 +218,8 @@ function _normalize(rawData) {
     client_name    : resolvedClientName,
     payment_status,
     notes          : normalizeOptionalString(rawData.notes),
-    shipping_number: null,
+    hena,
+    shipping_number: hena,
     vehicle_id     : rawData.vehicle_id != null ? String(rawData.vehicle_id) : null,
     account_type   : rawData.account_type ? String(rawData.account_type).toLowerCase() : null,
     rows,
@@ -236,6 +238,7 @@ function _normalize(rawData) {
 
 function _buildServicePayload(n) {
   const firstDataRow = n.rows.find(r => r._type !== ROW_TYPES.SEPARATOR) || null;
+  const henaVal = n.hena ?? n.shipping_number ?? null;
   return {
     id               : n.id,
     receipt_date     : n.receipt_date,
@@ -245,7 +248,8 @@ function _buildServicePayload(n) {
     client_name      : n.client_name,
     payment_status   : n.payment_status,
     notes          : n.notes,
-    shipping_number: null,
+    hena           : henaVal,
+    shipping_number: henaVal,
     vehicle_id       : n.vehicle_id || firstDataRow?.vehicle_id || null,
     account_type     : n.account_type,
     rows             : n.rows,
@@ -1110,6 +1114,11 @@ function renderTotals() {
             <td class="totals-cell" style="background:#0d9488;color:white;border:1px solid #e5e7eb;padding:8px;text-align:center;">
               <div style="font-size:10px;opacity:.9;margin:0 0 4px 0;">الصافي المستحق</div>
               <div style="font-size:18px;font-weight:bold;margin:0;" id="netDueAmount">0.00</div>
+            </td>
+            <td class="totals-cell" style="background:#d97706;color:white;border:1px solid #e5e7eb;padding:8px;text-align:center;">
+              <div style="font-size:10px;opacity:.9;margin:0 0 4px 0;">هنا</div>
+              <input type="number" id="henaAmount" value="" step="any"
+                style="width:100%;background:rgba(255,255,255,0.2);border:1px solid rgba(255,255,255,0.4);border-radius:6px;padding:3px 6px;font-size:15px;font-weight:bold;color:white;text-align:center;box-sizing:border-box;">
             </td>
           </tr>
         </table>
@@ -2626,6 +2635,10 @@ async function collectRawData() {
   const receiptNumberInput = document.getElementById('receiptNumber')?.value;
   const client = _selectedClient();
   const generalAdd      = parseFloat(document.getElementById('generalAdd')?.value) || 0;
+  const henaRaw         = document.getElementById('henaAmount')?.value;
+  const henaVal         = henaRaw !== undefined && henaRaw !== null && String(henaRaw).trim() !== ''
+    ? String(henaRaw).trim()
+    : null;
   return {
     id               : ReceiptState.editingReceiptId || undefined,
     receipt_date     : (receiptDateInput || '').trim(),
@@ -2638,6 +2651,8 @@ async function collectRawData() {
       : {}),
     previous_balance : previousBalance,
     general_add      : generalAdd,
+    hena             : henaVal,
+    shipping_number  : henaVal,
     paid             : parseFloat(document.getElementById('paidAmount')?.value) || 0,
     total            : parseFloat(document.getElementById('totalAmount')?.textContent) || 0,
     net_due          : parseFloat(document.getElementById('netDueAmount')?.textContent) || 0,
@@ -2934,6 +2949,10 @@ function printReceipt() {
     const total      = document.getElementById('totalAmount')?.textContent || '0.00';
     const generalAdd = document.getElementById('generalAdd')?.value || '0';
     const netDue = document.getElementById('netDueAmount')?.textContent || '0.00';
+    const henaRaw = document.getElementById('henaAmount')?.value;
+    const hena = henaRaw !== undefined && henaRaw !== null && String(henaRaw).trim() !== ''
+      ? String(henaRaw).trim()
+      : '—';
     const netTotal = document.getElementById('netTotalAmount')?.textContent || '0.00';
     const paid       = document.getElementById('paidAmount')?.value || '0';
     const balance    = document.getElementById('receiptBalance')?.textContent || '0.00';
@@ -2946,6 +2965,7 @@ function printReceipt() {
             <th style="background:#fff;color:#000;padding:5px 8px;border:1.5px solid #000;text-align:center;font-size:8pt;font-weight:700;">الإجمالي</th>
             <th style="background:#fff;color:#000;padding:5px 8px;border:1.5px solid #000;text-align:center;font-size:8pt;font-weight:700;">إضافة عام</th>
             <th style="background:#fff;color:#000;padding:5px 8px;border:1.5px solid #000;text-align:center;font-size:8pt;font-weight:700;">الصافي المستحق</th>
+            <th style="background:#fff;color:#000;padding:5px 8px;border:1.5px solid #000;text-align:center;font-size:8pt;font-weight:700;">هنا</th>
             <th style="background:#fff;color:#000;padding:5px 8px;border:1.5px solid #000;text-align:center;font-size:8pt;font-weight:700;">رصيد العميل</th>
             <th style="background:#fff;color:#000;padding:5px 8px;border:1.5px solid #000;text-align:center;font-size:8pt;font-weight:700;">الصافي الكلي</th>
             <th style="background:#fff;color:#000;padding:5px 8px;border:1.5px solid #000;text-align:center;font-size:8pt;font-weight:700;">المدفوع</th>
@@ -2957,6 +2977,7 @@ function printReceipt() {
             <td style="background:#fff;color:#000;padding:6px 8px;border:1.5px solid #000;text-align:center;font-size:12pt;font-weight:800;">${total}</td>
             <td style="background:#fff;color:#000;padding:6px 8px;border:1.5px solid #000;text-align:center;font-size:12pt;font-weight:800;">${generalAdd}</td>
             <td style="background:#fff;color:#000;padding:6px 8px;border:1.5px solid #000;text-align:center;font-size:12pt;font-weight:800;">${netDue}</td>
+            <td style="background:#fff;color:#000;padding:6px 8px;border:1.5px solid #000;text-align:center;font-size:12pt;font-weight:800;">${hena}</td>
             <td style="background:#fff;color:#000;padding:6px 8px;border:1.5px solid #000;text-align:center;font-size:12pt;font-weight:800;">${balance}</td>
             <td style="background:#fff;color:#000;padding:6px 8px;border:1.5px solid #000;text-align:center;font-size:12pt;font-weight:800;">${netTotal}</td>
             <td style="background:#fff;color:#000;padding:6px 8px;border:1.5px solid #000;text-align:center;font-size:12pt;font-weight:800;">${paid}</td>
@@ -3035,6 +3056,9 @@ function clearReceiptSilent() {
   
   const ga = document.getElementById('generalAdd');
   if (ga) ga.value = '0';
+
+  const henaEl = document.getElementById('henaAmount');
+  if (henaEl) henaEl.value = '';
   
   const paidEl = document.getElementById('paidAmount');
   if (paidEl) { paidEl.value = '0'; paidEl.dataset.auto = '1'; paidEl.dataset.advanceOffset = '0'; }
@@ -3124,6 +3148,8 @@ async function loadReceiptForEdit(receiptData) {
   }
 
   setV('generalAdd',      generalAdd);
+  const rawHena = receiptData.hena ?? receiptData.shipping_number ?? '';
+  setV('henaAmount', rawHena !== null && rawHena !== undefined ? String(rawHena).trim() : '');
 
   const tbody       = document.getElementById('receiptTableBody');
   tbody.innerHTML   = '';

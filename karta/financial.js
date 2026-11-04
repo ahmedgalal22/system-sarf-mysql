@@ -373,7 +373,14 @@ async function updateReceipt(username, id, data, extraOps = []) {
       net_due         : clean.net_due,
       net_total       : clean.net_total,
       ...(data.notes !== undefined ? { notes: data.notes || null } : {}),
-      ...(data.shipping_number !== undefined ? { shipping_number: data.shipping_number || null } : {}),
+      ...(data.shipping_number !== undefined
+        ? {
+            shipping_number:
+              data.shipping_number !== null && String(data.shipping_number).trim() !== ''
+                ? String(data.shipping_number).trim()
+                : null,
+          }
+        : {}),
     },
   };
 
