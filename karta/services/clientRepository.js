@@ -64,5 +64,8 @@ export const ClientRepository = {
   async updateOwnerAccountDetail(id, patch, meta) {
     return DBProvider.update('ownerAccountDetails', id, patch, meta);
   },
+  async deleteOwnerAccountDetail(id, meta) {
+    return DBProvider.delete('ownerAccountDetails', id, meta);
+  },
 
 };

@@ -3585,6 +3585,23 @@ input[type="number"] {
   color: #dc2626;
 }
 
+.owner-acc-actions-col,
+.owner-acc-actions-cell {
+  width: 72px;
+  text-align: center;
+  white-space: nowrap;
+}
+
+.owner-acc-delete-btn {
+  padding: 4px 10px;
+  font-size: 0.75rem;
+  font-weight: 700;
+}
+.owner-acc-delete-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
 @media (max-width: 768px) {
   .ent-details-page {
     padding: 16px;

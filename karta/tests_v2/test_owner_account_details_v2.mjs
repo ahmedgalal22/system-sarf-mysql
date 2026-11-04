@@ -311,16 +311,31 @@ globalThis.alert = () => {};
 let currentSessionUser = 'admin';
 let nextAccountDetailId = 1;
 let failNextUpdate = false;
+let failNextDelete = false;
+let holdNextDelete = null;
+let nextConfirmReturn = true;
+let confirmCalls = [];
 let mockOwners = [];
 let mockVehicles = [];
 let mockLedgerEntries = [];
 let mockOwnerAccountDetails = [];
 let apiRequestLog = [];
 
+const confirmHandler = (msg) => {
+  confirmCalls.push(String(msg ?? ''));
+  return nextConfirmReturn;
+};
+globalThis.confirm = confirmHandler;
+globalThis.window.confirm = confirmHandler;
+
 function resetMockServer() {
   currentSessionUser = 'admin';
   nextAccountDetailId = 1;
   failNextUpdate = false;
+  failNextDelete = false;
+  holdNextDelete = null;
+  nextConfirmReturn = true;
+  confirmCalls = [];
   apiRequestLog = [];
   printedDocuments.length = 0;
   activeElement = null;
@@ -524,6 +539,47 @@ globalThis.fetch = async (url, options = {}) => {
     // Server never modifies entry_date, entry_time, or created_at
     existing.updated_at = '2026-11-03 18:30:00.000';
     return respond({ success: true, data: { ...existing } });
+  }
+
+  if (u.includes('/entities/owner-account-details/delete.php') && method === 'DELETE') {
+    if (holdNextDelete) {
+      await holdNextDelete;
+      holdNextDelete = null;
+    }
+    if (failNextDelete) {
+      failNextDelete = false;
+      return respond({ success: false, message: 'تعذر حذف الصف من قاعدة البيانات' }, 500);
+    }
+    const rawId = bodyObj?.id;
+    if (rawId === undefined || rawId === null || !/^\d+$/.test(String(rawId).trim())) {
+      return respond({ success: false, message: 'معرف الصف مطلوب' }, 400);
+    }
+    const id = Number(String(rawId).trim());
+    if (id <= 0) {
+      return respond({ success: false, message: 'معرف الصف غير صالح' }, 400);
+    }
+    const idx = mockOwnerAccountDetails.findIndex((r) => r.id === id);
+    if (idx === -1) {
+      return respond({ success: false, message: 'السجل غير موجود' }, 404);
+    }
+    const existing = mockOwnerAccountDetails[idx];
+    if (existing.username !== currentSessionUser) {
+      return respond({ success: false, message: 'غير مسموح بالحذف' }, 403);
+    }
+    const owner = mockOwners.find(
+      (o) =>
+        o.id === Number(existing.owner_id) &&
+        o.deleted_at === null &&
+        o.owner_type === 'owner'
+    );
+    if (!owner) {
+      return respond({ success: false, message: 'صاحب المركبة غير موجود' }, 404);
+    }
+    if (owner.username !== currentSessionUser) {
+      return respond({ success: false, message: 'غير مسموح بالحذف' }, 403);
+    }
+    mockOwnerAccountDetails.splice(idx, 1);
+    return respond({ success: true, data: { id } });
   }
 
   return respond({ success: true, data: [] });
@@ -971,6 +1027,7 @@ test('8. Strict financial isolation: memo values never affect owner balances, le
     path.join(KARTA_DIR, 'api', 'entities', 'owner-account-details', 'list.php'),
     path.join(KARTA_DIR, 'api', 'entities', 'owner-account-details', 'create.php'),
     path.join(KARTA_DIR, 'api', 'entities', 'owner-account-details', 'update.php'),
+    path.join(KARTA_DIR, 'api', 'entities', 'owner-account-details', 'delete.php'),
   ];
   for (const file of phpFiles) {
     const content = fs.readFileSync(file, 'utf8');
@@ -980,4 +1037,221 @@ test('8. Strict financial isolation: memo values never affect owner balances, le
     assert.ok(!content.includes('ReceiptRepository'), `${path.basename(file)} must not use ReceiptRepository`);
     assert.ok(!content.includes('floatval(') && !content.includes('(float)'), `${path.basename(file)} must not use PHP float conversions`);
   }
+});
+
+test('9. Row deletion UI: delete button per row, confirmation cancel/confirm, single-row removal, error preservation, duplicate request prevention, and active-edit protection', async () => {
+  resetMockServer();
+  await showOwnerDetails('1', 'owner');
+  await clickAction('owner-details-tab', { ownerTab: 'account-details' });
+
+  // Add 3 rows
+  await clickAction('owner-acc-add-row');
+  await clickAction('owner-acc-add-row');
+  await clickAction('owner-acc-add-row');
+  assert.equal(mockOwnerAccountDetails.length, 3);
+
+  // Blur active input from row 3 so no edit is active
+  const leh3 = document.getElementById('ownerAccLeh_3');
+  await leh3.trigger('blur');
+
+  // Verify each row renders a delete button with data-action="owner-acc-delete-row"
+  for (const rowId of [1, 2, 3]) {
+    const delBtn = document.getElementById(`ownerAccDelete_${rowId}`);
+    assert.ok(delBtn, `Row ${rowId} must have a delete button`);
+    assert.equal(delBtn.getAttribute('data-action'), 'owner-acc-delete-row');
+    assert.equal(delBtn.getAttribute('data-row-id'), String(rowId));
+    assert.equal(delBtn.textContent, 'حذف');
+  }
+
+  // 1. Canceling confirmation does NOT call the delete API and keeps all rows
+  nextConfirmReturn = false;
+  confirmCalls.length = 0;
+  const deleteReqCountBeforeCancel = apiRequestLog.filter((r) => r.method === 'DELETE').length;
+  await clickAction('owner-acc-delete-row', { rowId: '2' });
+
+  assert.equal(confirmCalls.length, 1, 'Confirmation dialog must be shown before deleting');
+  assert.ok(
+    confirmCalls[0].includes('حذف هذا الصف من تفاصيل الحساب'),
+    'Confirmation message must clearly identify deleting the selected row'
+  );
+  assert.equal(
+    apiRequestLog.filter((r) => r.method === 'DELETE').length,
+    deleteReqCountBeforeCancel,
+    'Canceling confirmation must not call DELETE API'
+  );
+  assert.equal(mockOwnerAccountDetails.length, 3);
+
+  // 2. Confirming deletion calls DELETE endpoint with selected record ID and removes ONLY that row
+  nextConfirmReturn = true;
+  confirmCalls.length = 0;
+  await clickAction('owner-acc-delete-row', { rowId: '2' });
+
+  const deleteReqs = apiRequestLog.filter((r) => r.method === 'DELETE');
+  assert.equal(deleteReqs.length, deleteReqCountBeforeCancel + 1);
+  assert.ok(deleteReqs.at(-1).url.includes('/entities/owner-account-details/delete.php'));
+  assert.deepEqual(deleteReqs.at(-1).body, { id: 2 });
+
+  const tbodyHtmlAfterDelete = document.getElementById('ownerAccTableBody').innerHTML;
+  const remainingRowIds = [...tbodyHtmlAfterDelete.matchAll(/id="ownerAccRow_(\d+)"/g)].map((m) =>
+    Number(m[1])
+  );
+  assert.deepEqual(remainingRowIds, [1, 3], 'Only row 2 should be removed; rows 1 and 3 remain in order');
+  assert.equal(document.getElementById('ownerTabCountAccountDetails').textContent, '2');
+  assert.equal(document.getElementById('ownerAccStatusMsg').getAttribute('data-status'), 'saved');
+
+  // Ensure sync refresh does not reintroduce deleted row 2
+  await window.dispatchEvent(
+    new CustomEvent('ownerAccountDetails:changed', { detail: { passive: true, source: 'sync' } })
+  );
+  const tbodyHtmlAfterSync = document.getElementById('ownerAccTableBody').innerHTML;
+  const rowIdsAfterSync = [...tbodyHtmlAfterSync.matchAll(/id="ownerAccRow_(\d+)"/g)].map((m) =>
+    Number(m[1])
+  );
+  assert.deepEqual(rowIdsAfterSync, [1, 3], 'Sync refresh must not reintroduce deleted row 2');
+
+  // 3. Failed API request preserves the row and displays an error
+  failNextDelete = true;
+  await clickAction('owner-acc-delete-row', { rowId: '1' });
+  const tbodyHtmlAfterFail = document.getElementById('ownerAccTableBody').innerHTML;
+  const rowIdsAfterFail = [...tbodyHtmlAfterFail.matchAll(/id="ownerAccRow_(\d+)"/g)].map((m) =>
+    Number(m[1])
+  );
+  assert.deepEqual(rowIdsAfterFail, [1, 3], 'Failed deletion must keep row 1 visible');
+  assert.equal(document.getElementById('ownerAccStatusMsg').getAttribute('data-status'), 'error');
+
+  // 4. Prevent duplicate deletion requests while one is pending
+  let releaseDelete;
+  holdNextDelete = new Promise((resolve) => {
+    releaseDelete = resolve;
+  });
+  confirmCalls.length = 0;
+  const delCountBeforeDup = apiRequestLog.filter((r) => r.method === 'DELETE').length;
+
+  const firstDeletePromise = clickAction('owner-acc-delete-row', { rowId: '1' });
+  const secondDeletePromise = clickAction('owner-acc-delete-row', { rowId: '1' });
+
+  assert.equal(confirmCalls.length, 1, 'Duplicate delete click must not show a second confirmation');
+  assert.equal(
+    apiRequestLog.filter((r) => r.method === 'DELETE').length,
+    delCountBeforeDup + 1,
+    'Duplicate delete click must not send a second DELETE request'
+  );
+
+  releaseDelete();
+  await Promise.all([firstDeletePromise, secondDeletePromise]);
+
+  const tbodyHtmlAfterDup = document.getElementById('ownerAccTableBody').innerHTML;
+  const rowIdsAfterDup = [...tbodyHtmlAfterDup.matchAll(/id="ownerAccRow_(\d+)"/g)].map((m) =>
+    Number(m[1])
+  );
+  assert.deepEqual(rowIdsAfterDup, [3], 'Row 1 should be removed after the pending delete resolves');
+
+  // 5. Active-edit protection: if row 3 is being edited with unsaved input, prevent deletion from conflicting
+  const notes3 = document.getElementById('ownerAccNotes_3');
+  notes3.focus();
+  notes3.value = 'تعديل قيد الكتابة';
+  await notes3.trigger('input');
+
+  const delCountBeforeBusy = apiRequestLog.filter((r) => r.method === 'DELETE').length;
+  await clickAction('owner-acc-delete-row', { rowId: '3' });
+  assert.equal(
+    apiRequestLog.filter((r) => r.method === 'DELETE').length,
+    delCountBeforeBusy,
+    'Deleting a row that has an active unsaved edit in focus must be blocked'
+  );
+  assert.equal(document.getElementById('ownerAccStatusMsg').getAttribute('data-status'), 'error');
+  assert.equal(notes3.value, 'تعديل قيد الكتابة');
+});
+
+test('10. Backend delete ownership enforcement, owner-switch isolation, and financial isolation on deletion', async () => {
+  resetMockServer();
+  mockOwnerAccountDetails.push(
+    {
+      id: 10,
+      uuid: '00000000-0000-4000-8000-000000000010',
+      owner_id: 1,
+      username: 'admin',
+      leh_amount: '1500.00',
+      alayh_amount: null,
+      notes: 'صف المالك الأول',
+      entry_date: '2026-11-01',
+      entry_time: '09:00:00',
+    },
+    {
+      id: 20,
+      uuid: '00000000-0000-4000-8000-000000000020',
+      owner_id: 2,
+      username: 'admin',
+      leh_amount: '3000.00',
+      alayh_amount: null,
+      notes: 'صف المالك الثاني',
+      entry_date: '2026-11-02',
+      entry_time: '10:00:00',
+    },
+    {
+      id: 30,
+      uuid: '00000000-0000-4000-8000-000000000030',
+      owner_id: 3,
+      username: 'other_user',
+      leh_amount: '4500.00',
+      alayh_amount: null,
+      notes: 'صف مستخدم آخر',
+      entry_date: '2026-11-03',
+      entry_time: '11:00:00',
+    }
+  );
+
+  // Verify PHP source of delete.php and OwnerAccountDetailsRepository.php
+  const deletePhp = fs.readFileSync(
+    path.join(KARTA_DIR, 'api', 'entities', 'owner-account-details', 'delete.php'),
+    'utf8'
+  );
+  const repoPhp = fs.readFileSync(
+    path.join(KARTA_DIR, 'repositories', 'OwnerAccountDetailsRepository.php'),
+    'utf8'
+  );
+
+  assert.ok(deletePhp.includes("require_once __DIR__ . '/../../../api/middleware/auth.php'"));
+  assert.ok(deletePhp.includes("isMethod('DELETE')"));
+  assert.ok(deletePhp.includes('$repo->getById($id)'));
+  assert.ok(deletePhp.includes('$authUser[\'username\']'));
+  assert.ok(deletePhp.includes('$ownerRepo->getById((int) $existing[\'owner_id\'])'));
+  assert.ok(deletePhp.includes("($owner['owner_type'] ?? 'owner') !== 'owner'"));
+  assert.ok(deletePhp.includes("bumpVersion($db, 'owner_account_details')"));
+  assert.ok(repoPhp.includes('DELETE FROM owner_account_details'));
+  assert.ok(repoPhp.includes('WHERE id = :id AND username = :username'));
+
+  // Open Owner 1 and switch to Owner 2 -> attempting to delete Owner 1's row (id 10) from Owner 2 view must do nothing
+  await showOwnerDetails('1', 'owner');
+  await showOwnerDetails('2', 'owner');
+  await clickAction('owner-details-tab', { ownerTab: 'account-details' });
+
+  const delCountBefore = apiRequestLog.filter((r) => r.method === 'DELETE').length;
+  await clickAction('owner-acc-delete-row', { rowId: '10' });
+  assert.equal(
+    apiRequestLog.filter((r) => r.method === 'DELETE').length,
+    delCountBefore,
+    'Cannot trigger deletion of Owner 1 row while viewing Owner 2'
+  );
+  assert.ok(mockOwnerAccountDetails.some((r) => r.id === 10), 'Owner 1 row must remain untouched');
+
+  // Direct API call trying to delete other_user's row (id 30) must fail with 403
+  await assert.rejects(
+    () => OwnersModule.deleteOwnerAccountDetail('admin', 30),
+    /غير مسموح بالحذف/
+  );
+  assert.ok(mockOwnerAccountDetails.some((r) => r.id === 30), 'Other user row must remain untouched');
+
+  // Deleting Owner 2's row (id 20) succeeds and never affects Owner 1 or Owner 2 financial balances/ledgers
+  const balanceBefore = await OwnersModule.getClientBalance('1', 'owner');
+  const ledgerBefore = await OwnersModule.getClientLedger('1', 'owner');
+
+  await clickAction('owner-acc-delete-row', { rowId: '20' });
+  assert.ok(!mockOwnerAccountDetails.some((r) => r.id === 20), 'Owner 2 row 20 should be deleted');
+  assert.ok(mockOwnerAccountDetails.some((r) => r.id === 10), 'Owner 1 row 10 must remain');
+
+  const balanceAfter = await OwnersModule.getClientBalance('1', 'owner');
+  const ledgerAfter = await OwnersModule.getClientLedger('1', 'owner');
+  assert.equal(balanceAfter.balance, balanceBefore.balance);
+  assert.equal(ledgerAfter.length, ledgerBefore.length);
 });

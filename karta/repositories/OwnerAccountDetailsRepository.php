@@ -144,6 +144,23 @@ class OwnerAccountDetailsRepository {
         return $this->getById($id);
     }
 
+    /**
+     * Delete a single memo row belonging to the authenticated user.
+     * Deletes only the requested owner_account_details record.
+     */
+    public function delete(int $id, string $username): bool {
+        $stmt = $this->db->prepare(
+            'DELETE FROM owner_account_details
+             WHERE id = :id AND username = :username
+             LIMIT 1'
+        );
+        $stmt->execute([
+            ':id'       => $id,
+            ':username' => $username,
+        ]);
+        return $stmt->rowCount() > 0;
+    }
+
     private function generateUUID(): string {
         $data = random_bytes(16);
         $data[6] = chr(ord($data[6]) & 0x0f | 0x40);

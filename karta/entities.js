@@ -301,6 +301,12 @@ async function updateOwnerAccountDetail(username, id, patch = {}) {
   return ClientRepository.updateOwnerAccountDetail(Number(id), cleanPatch, { username });
 }
 
+async function deleteOwnerAccountDetail(username, id) {
+  if (!username) throw new Error('[OwnersModule:deleteOwnerAccountDetail] username is required.');
+  if (!id) throw new Error('معرّف الصف مطلوب');
+  return ClientRepository.deleteOwnerAccountDetail(Number(id), { username });
+}
+
 async function addAccount(username, _kind, payload) {
   if (!username) throw new Error('[OwnersModule:addAccount] username is required.');
   const name = _toText(payload?.name).trim();
@@ -327,6 +333,7 @@ const OwnersModule = Object.freeze({
   getOwnerAccountDetails,
   createOwnerAccountDetail,
   updateOwnerAccountDetail,
+  deleteOwnerAccountDetail,
   addAccount,
 });
 
@@ -351,8 +358,10 @@ let _ownerAccStatusText = '';
 let _ownerAccStatusKind = '';
 let _ownerAccActiveInputId = null;
 let _ownerAccPendingSaves = 0;
+let _ownerAccMutationSeq = 0;
 const _ownerAccUnsavedDrafts = new Map();
 const _ownerAccInFlightValues = new Map();
+const _ownerAccDeletingRowIds = new Set();
 const LAST_PAGE_CTX_KEY = 'karta_v2_last_page_ctx';
 
 function _fmt(n) {
@@ -1045,15 +1054,38 @@ function _resetOwnerAccTabState() {
   _ownerAccPendingSaves = 0;
   _ownerAccUnsavedDrafts.clear();
   _ownerAccInFlightValues.clear();
+  _ownerAccDeletingRowIds.clear();
 }
 
 function _shouldDeferOwnerAccRedraw() {
   if (_ownerAccPendingSaves > 0) return true;
+  if (_ownerAccDeletingRowIds.size > 0) return true;
   if (_ownerAccUnsavedDrafts.size > 0) return true;
   if (_ownerAccActiveInputId) return true;
   const activeEl = typeof document !== 'undefined' ? document.activeElement : null;
   if (activeEl && activeEl.id && /^ownerAcc(Leh|Alayh|Notes)_/.test(activeEl.id)) {
     return true;
+  }
+  return false;
+}
+
+function _isOwnerAccountRowBusy(rowId) {
+  const rowKey = String(rowId || '').trim();
+  if (!rowKey) return false;
+  for (const key of _ownerAccInFlightValues.keys()) {
+    if (key.startsWith(`${rowKey}:`)) return true;
+  }
+  const activeEl = typeof document !== 'undefined' ? document.activeElement : null;
+  const activeId = _ownerAccActiveInputId || (activeEl && activeEl.id ? activeEl.id : null);
+  if (
+    activeId &&
+    (activeId === `ownerAccLeh_${rowKey}` ||
+      activeId === `ownerAccAlayh_${rowKey}` ||
+      activeId === `ownerAccNotes_${rowKey}`)
+  ) {
+    for (const key of _ownerAccUnsavedDrafts.keys()) {
+      if (key.startsWith(`${rowKey}:`)) return true;
+    }
   }
   return false;
 }
@@ -1100,13 +1132,14 @@ function _renderOwnerAccountTableRows(rows) {
   if (!Array.isArray(rows) || rows.length === 0) {
     return `
       <tr>
-        <td colspan="5" class="text-muted text-center p-4">لا توجد سجلات في تفاصيل الحساب</td>
+        <td colspan="6" class="text-muted text-center p-4">لا توجد سجلات في تفاصيل الحساب</td>
       </tr>
     `;
   }
 
   return rows.map((row) => {
     const rowId = String(row.id);
+    const isDeleting = _ownerAccDeletingRowIds.has(rowId);
     const lehDraftKey = `${rowId}:leh_amount`;
     const alayhDraftKey = `${rowId}:alayh_amount`;
     const notesDraftKey = `${rowId}:notes`;
@@ -1163,6 +1196,17 @@ function _renderOwnerAccountTableRows(rows) {
         </td>
         <td id="ownerAccDate_${_escAttr(rowId)}" class="owner-acc-readonly-cell">${_escHtml(dateVal)}</td>
         <td id="ownerAccTime_${_escAttr(rowId)}" class="owner-acc-readonly-cell">${_escHtml(timeVal)}</td>
+        <td class="owner-acc-actions-cell">
+          <button
+            type="button"
+            id="ownerAccDelete_${_escAttr(rowId)}"
+            data-action="owner-acc-delete-row"
+            data-row-id="${_escAttr(rowId)}"
+            class="ent-action-btn ent-action-btn--delete owner-acc-delete-btn"
+            title="حذف"
+            ${isDeleting ? 'disabled' : ''}
+          >حذف</button>
+        </td>
       </tr>
     `;
   }).join('');
@@ -1263,6 +1307,7 @@ function _renderOwnerAccountDetails(client, preloadedRows = null) {
               <th>ملاحظات</th>
               <th>التاريخ</th>
               <th>الوقت</th>
+              <th class="owner-acc-actions-col">حذف</th>
             </tr>
           </thead>
           <tbody id="ownerAccTableBody">
@@ -1275,10 +1320,13 @@ function _renderOwnerAccountDetails(client, preloadedRows = null) {
 }
 
 async function _commitOwnerAccountCellEdit(rowId, field, rawValue, inputEl = null) {
-  const row = _ownerAccountDetailRows.find((r) => String(r.id) === String(rowId));
+  const rowKey = String(rowId || '').trim();
+  if (!rowKey || _ownerAccDeletingRowIds.has(rowKey)) return false;
+
+  const row = _ownerAccountDetailRows.find((r) => String(r.id) === rowKey);
   if (!row) return false;
 
-  const draftKey = `${rowId}:${field}`;
+  const draftKey = `${rowKey}:${field}`;
   let normalizedValue = null;
   let displayValue = '';
 
@@ -1323,6 +1371,7 @@ async function _commitOwnerAccountCellEdit(rowId, field, rawValue, inputEl = nul
 
   _ownerAccInFlightValues.set(draftKey, normalizedValue);
   _ownerAccPendingSaves += 1;
+  _ownerAccMutationSeq += 1;
   if (inputEl) {
     inputEl.value = displayValue;
     inputEl.classList?.remove('owner-acc-input--error');
@@ -1333,6 +1382,7 @@ async function _commitOwnerAccountCellEdit(rowId, field, rawValue, inputEl = nul
     const updated = await OwnersModule.updateOwnerAccountDetail(_currentUsername(), Number(rowId), {
       [field]: normalizedValue,
     });
+    _ownerAccMutationSeq += 1;
 
     row[field] = updated && field in updated ? updated[field] : normalizedValue;
     if (updated?.updated_at) {
@@ -1459,6 +1509,7 @@ async function _handleAddOwnerAccountRow() {
   if (!_selectedClient || !_selectedClient.id) return null;
   const targetOwnerId = String(_selectedClient.id);
   _ownerAccPendingSaves += 1;
+  _ownerAccMutationSeq += 1;
   _setOwnerAccStatus('⏳ جاري الحفظ...', 'saving');
 
   try {
@@ -1468,6 +1519,7 @@ async function _handleAddOwnerAccountRow() {
       alayh_amount: null,
       notes: null,
     });
+    _ownerAccMutationSeq += 1;
 
     if (String(_selectedClient?.id) !== targetOwnerId) {
       return null;
@@ -1493,6 +1545,82 @@ async function _handleAddOwnerAccountRow() {
     }
     return null;
   } finally {
+    _ownerAccPendingSaves = Math.max(0, _ownerAccPendingSaves - 1);
+  }
+}
+
+async function _handleDeleteOwnerAccountRow(rowId) {
+  if (!_selectedClient || !_selectedClient.id) return false;
+  const rowKey = String(rowId || '').trim();
+  if (!rowKey) return false;
+
+  const row = _ownerAccountDetailRows.find((r) => String(r.id) === rowKey);
+  if (!row) return false;
+
+  if (_ownerAccDeletingRowIds.has(rowKey)) {
+    return false;
+  }
+
+  if (_isOwnerAccountRowBusy(rowKey)) {
+    _setOwnerAccStatus('❌ لا يمكن حذف الصف أثناء تعديله أو حفظه', 'error');
+    return false;
+  }
+
+  const rowDateLabel = row.entry_date ? ` (${row.entry_date})` : '';
+  const confirmFn =
+    typeof window !== 'undefined' && typeof window.confirm === 'function'
+      ? window.confirm
+      : confirm;
+  if (!confirmFn(`هل تريد حذف هذا الصف من تفاصيل الحساب${rowDateLabel}؟`)) {
+    return false;
+  }
+
+  if (_ownerAccDeletingRowIds.has(rowKey) || _isOwnerAccountRowBusy(rowKey)) {
+    return false;
+  }
+
+  const targetOwnerId = String(_selectedClient.id);
+  _ownerAccDeletingRowIds.add(rowKey);
+  _ownerAccPendingSaves += 1;
+  _ownerAccMutationSeq += 1;
+  const deleteBtn = document.getElementById(`ownerAccDelete_${rowKey}`);
+  if (deleteBtn) deleteBtn.disabled = true;
+  _setOwnerAccStatus('⏳ جاري حذف الصف...', 'saving');
+
+  try {
+    await OwnersModule.deleteOwnerAccountDetail(_currentUsername(), Number(rowKey));
+    _ownerAccMutationSeq += 1;
+
+    if (String(_selectedClient?.id) !== targetOwnerId) {
+      return false;
+    }
+
+    _ownerAccountDetailRows = _ownerAccountDetailRows.filter((r) => String(r.id) !== rowKey);
+    _ownerAccUnsavedDrafts.delete(`${rowKey}:leh_amount`);
+    _ownerAccUnsavedDrafts.delete(`${rowKey}:alayh_amount`);
+    _ownerAccUnsavedDrafts.delete(`${rowKey}:notes`);
+    _ownerAccInFlightValues.delete(`${rowKey}:leh_amount`);
+    _ownerAccInFlightValues.delete(`${rowKey}:alayh_amount`);
+    _ownerAccInFlightValues.delete(`${rowKey}:notes`);
+    if (
+      _ownerAccActiveInputId === `ownerAccLeh_${rowKey}` ||
+      _ownerAccActiveInputId === `ownerAccAlayh_${rowKey}` ||
+      _ownerAccActiveInputId === `ownerAccNotes_${rowKey}`
+    ) {
+      _ownerAccActiveInputId = null;
+    }
+
+    _refreshOwnerAccountTableBody();
+    _setOwnerAccStatus('✓ تم حذف الصف', 'saved');
+    return true;
+  } catch (err) {
+    if (deleteBtn) deleteBtn.disabled = false;
+    if (String(_selectedClient?.id) === targetOwnerId) {
+      _setOwnerAccStatus(`❌ فشل حذف الصف: ${err.message || 'خطأ في الخادم'}`, 'error');
+    }
+    return false;
+  } finally {
+    _ownerAccDeletingRowIds.delete(rowKey);
     _ownerAccPendingSaves = Math.max(0, _ownerAccPendingSaves - 1);
   }
 }
@@ -1623,6 +1751,7 @@ async function showOwnerDetails(id, type = 'owner', options = {}) {
     _ownerAccPendingSaves = 0;
     _ownerAccUnsavedDrafts.clear();
     _ownerAccInFlightValues.clear();
+    _ownerAccDeletingRowIds.clear();
     if (isSwitchingOwner) {
       _activeOwnerDetailsTab = 'movements';
       _resetOwnerAccTabState();
@@ -2143,6 +2272,15 @@ function attachOwnersPageListeners() {
       return;
     }
 
+    const deleteAccRowBtn = e.target.closest('[data-action="owner-acc-delete-row"]');
+    if (deleteAccRowBtn) {
+      const rowId =
+        deleteAccRowBtn.dataset?.rowId ||
+        deleteAccRowBtn.getAttribute?.('data-row-id');
+      await _handleDeleteOwnerAccountRow(rowId);
+      return;
+    }
+
     if (e.target.closest('[data-action="owner-acc-print"]')) {
       _printOwnerAccountDetails();
       return;
@@ -2270,10 +2408,15 @@ window.addEventListener('ownerAccountDetails:changed', async (event) => {
     return;
   }
   const targetOwnerId = String(_selectedClient.id);
+  const mutationSeqAtStart = _ownerAccMutationSeq;
   const options = event?.detail?.passive === true ? { passive: true } : {};
   try {
     const rows = await OwnersModule.getOwnerAccountDetails(targetOwnerId, options);
-    if (String(_selectedClient?.id) !== targetOwnerId || _shouldDeferOwnerAccRedraw()) {
+    if (
+      String(_selectedClient?.id) !== targetOwnerId ||
+      mutationSeqAtStart !== _ownerAccMutationSeq ||
+      _shouldDeferOwnerAccRedraw()
+    ) {
       return;
     }
     _ownerAccountDetailRows = _dedupOwnerAccountRows(rows);
@@ -2312,6 +2455,7 @@ export {
   getOwnerAccountDetails,
   createOwnerAccountDetail,
   updateOwnerAccountDetail,
+  deleteOwnerAccountDetail,
   normalizeOwnerAccountDigits,
   normalizeAndValidateOwnerAccNumber,
   addAccount,
