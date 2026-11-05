@@ -1147,6 +1147,9 @@ function buildReceiptPrintBlock(record) {
   const thead      = _bulkReceiptBuildTableHead(activeCols);
   const tbody      = _bulkReceiptBuildTableBody(allRows, activeCols);
 
+  const showGeneralAdd = _isNonZeroPrintNumeric(record?.general_add);
+  const showHena       = _isNonZeroPrintNumeric(record?.hena ?? record?.shipping_number);
+
   return `
     <section class="print-card">
       <header>
@@ -1165,9 +1168,9 @@ function buildReceiptPrintBlock(record) {
       <div class="print-footer">
         <span>عدد الكارتات: <strong>${kartaCount}</strong></span>
         <span>الإجمالي: <strong>${Money.fmtCents(record.total)}</strong></span>
-        <span>إضافة عام: <strong>${Money.fmtCents(record.general_add)}</strong></span>
+        ${showGeneralAdd ? `<span>إضافة عام: <strong>${Money.fmtCents(record.general_add)}</strong></span>` : ''}
         <span>الصافي المستحق: <strong>${Money.fmtCents(record.net_due)}</strong></span>
-        <span>هنا: <strong>${esc(_formatHenaDisplay(record))}</strong></span>
+        ${showHena ? `<span>هنا: <strong>${esc(_formatHenaDisplay(record))}</strong></span>` : ''}
         <span>رصيد العميل: <strong>${Money.fmtCents((record.net_total ?? 0) - (record.paid ?? 0))}</strong></span>
         <span>الصافي الكلي: <strong>${Money.fmtCents(record.net_total)}</strong></span>
         <span>المدفوع: <strong>${Money.fmtCents(record.paid)}</strong></span>
@@ -1395,6 +1398,18 @@ function _receiptPrintBuildTableBody(rows, activeCols) {
  * All top-level money values are CENTS in DB → Money.fmtCents().
  * kartaCount is derived from record.row_count or counted from rows.
  */
+function _isNonZeroPrintNumeric(raw) {
+  if (raw === null || raw === undefined) return false;
+  const str = String(raw)
+    .replace(/[٠-٩]/g, (d) => String(d.charCodeAt(0) - 0x0660))
+    .replace(/[۰-۹]/g, (d) => String(d.charCodeAt(0) - 0x06f0))
+    .replace(/٫/g, '.')
+    .trim();
+  if (str === '' || str === '—') return false;
+  const num = Number(str);
+  return Number.isFinite(num) && num !== 0;
+}
+
 function _formatHenaDisplay(record) {
   const raw = record?.hena ?? record?.shipping_number;
   if (raw === null || raw === undefined) return '—';
@@ -1404,8 +1419,10 @@ function _formatHenaDisplay(record) {
 
 function _receiptPrintBuildTotalsRow(record, kartaCount) {
   const total           = Money.fmtCents(record.total           ?? 0);
+  const showGeneralAdd  = _isNonZeroPrintNumeric(record?.general_add);
   const generalAdd      = Money.fmtCents(record.general_add     ?? 0);
   const netDue          = Money.fmtCents(record.net_due         ?? 0);
+  const showHena        = _isNonZeroPrintNumeric(record?.hena ?? record?.shipping_number);
   const hena            = _formatHenaDisplay(record);
   const previousBalance = Money.fmtCents((record.net_total ?? 0) - (record.paid ?? 0));
   const netTotal        = Money.fmtCents(record.net_total       ?? 0);
@@ -1420,9 +1437,9 @@ function _receiptPrintBuildTotalsRow(record, kartaCount) {
         <tr>
           ${th('عدد الكارتات')}
           ${th('الإجمالي')}
-          ${th('إضافة عام')}
+          ${showGeneralAdd ? th('إضافة عام') : ''}
           ${th('الصافي المستحق')}
-          ${th('هنا')}
+          ${showHena ? th('هنا') : ''}
           ${th('رصيد العميل')}
           ${th('الصافي الكلي')}
           ${th('المدفوع')}
@@ -1432,9 +1449,9 @@ function _receiptPrintBuildTotalsRow(record, kartaCount) {
         <tr>
           ${td(String(kartaCount))}
           ${td(total)}
-          ${td(generalAdd)}
+          ${showGeneralAdd ? td(generalAdd) : ''}
           ${td(netDue)}
-          ${td(hena)}
+          ${showHena ? td(hena) : ''}
           ${td(previousBalance)}
           ${td(netTotal)}
           ${td(paid)}

@@ -2945,14 +2945,27 @@ function printReceipt() {
   // إجماليات الطباعة
   let totalsHTML = '';
   if (totalsContainer) {
+    const isNonZeroPrintVal = (raw) => {
+      if (raw === null || raw === undefined) return false;
+      const str = String(raw)
+        .replace(/[٠-٩]/g, (d) => String(d.charCodeAt(0) - 0x0660))
+        .replace(/[۰-۹]/g, (d) => String(d.charCodeAt(0) - 0x06f0))
+        .replace(/٫/g, '.')
+        .trim();
+      if (str === '' || str === '—') return false;
+      const num = Number(str);
+      return Number.isFinite(num) && num !== 0;
+    };
+
     const rowCount   = document.getElementById('rowCount')?.textContent || '0';
     const total      = document.getElementById('totalAmount')?.textContent || '0.00';
-    const generalAdd = document.getElementById('generalAdd')?.value || '0';
+    const generalAddRaw = document.getElementById('generalAdd')?.value;
+    const showGeneralAdd = isNonZeroPrintVal(generalAddRaw);
+    const generalAdd = String(generalAddRaw ?? '').trim();
     const netDue = document.getElementById('netDueAmount')?.textContent || '0.00';
     const henaRaw = document.getElementById('henaAmount')?.value;
-    const hena = henaRaw !== undefined && henaRaw !== null && String(henaRaw).trim() !== ''
-      ? String(henaRaw).trim()
-      : '—';
+    const showHena = isNonZeroPrintVal(henaRaw);
+    const hena = String(henaRaw ?? '').trim();
     const netTotal = document.getElementById('netTotalAmount')?.textContent || '0.00';
     const paid       = document.getElementById('paidAmount')?.value || '0';
     const balance    = document.getElementById('receiptBalance')?.textContent || '0.00';
@@ -2963,9 +2976,9 @@ function printReceipt() {
           <tr>
             <th style="background:#fff;color:#000;padding:5px 8px;border:1.5px solid #000;text-align:center;font-size:8pt;font-weight:700;">عدد الكارتات</th>
             <th style="background:#fff;color:#000;padding:5px 8px;border:1.5px solid #000;text-align:center;font-size:8pt;font-weight:700;">الإجمالي</th>
-            <th style="background:#fff;color:#000;padding:5px 8px;border:1.5px solid #000;text-align:center;font-size:8pt;font-weight:700;">إضافة عام</th>
+            ${showGeneralAdd ? '<th style="background:#fff;color:#000;padding:5px 8px;border:1.5px solid #000;text-align:center;font-size:8pt;font-weight:700;">إضافة عام</th>' : ''}
             <th style="background:#fff;color:#000;padding:5px 8px;border:1.5px solid #000;text-align:center;font-size:8pt;font-weight:700;">الصافي المستحق</th>
-            <th style="background:#fff;color:#000;padding:5px 8px;border:1.5px solid #000;text-align:center;font-size:8pt;font-weight:700;">هنا</th>
+            ${showHena ? '<th style="background:#fff;color:#000;padding:5px 8px;border:1.5px solid #000;text-align:center;font-size:8pt;font-weight:700;">هنا</th>' : ''}
             <th style="background:#fff;color:#000;padding:5px 8px;border:1.5px solid #000;text-align:center;font-size:8pt;font-weight:700;">رصيد العميل</th>
             <th style="background:#fff;color:#000;padding:5px 8px;border:1.5px solid #000;text-align:center;font-size:8pt;font-weight:700;">الصافي الكلي</th>
             <th style="background:#fff;color:#000;padding:5px 8px;border:1.5px solid #000;text-align:center;font-size:8pt;font-weight:700;">المدفوع</th>
@@ -2975,9 +2988,9 @@ function printReceipt() {
           <tr>
             <td style="background:#fff;color:#000;padding:6px 8px;border:1.5px solid #000;text-align:center;font-size:12pt;font-weight:800;">${rowCount}</td>
             <td style="background:#fff;color:#000;padding:6px 8px;border:1.5px solid #000;text-align:center;font-size:12pt;font-weight:800;">${total}</td>
-            <td style="background:#fff;color:#000;padding:6px 8px;border:1.5px solid #000;text-align:center;font-size:12pt;font-weight:800;">${generalAdd}</td>
+            ${showGeneralAdd ? `<td style="background:#fff;color:#000;padding:6px 8px;border:1.5px solid #000;text-align:center;font-size:12pt;font-weight:800;">${generalAdd}</td>` : ''}
             <td style="background:#fff;color:#000;padding:6px 8px;border:1.5px solid #000;text-align:center;font-size:12pt;font-weight:800;">${netDue}</td>
-            <td style="background:#fff;color:#000;padding:6px 8px;border:1.5px solid #000;text-align:center;font-size:12pt;font-weight:800;">${hena}</td>
+            ${showHena ? `<td style="background:#fff;color:#000;padding:6px 8px;border:1.5px solid #000;text-align:center;font-size:12pt;font-weight:800;">${hena}</td>` : ''}
             <td style="background:#fff;color:#000;padding:6px 8px;border:1.5px solid #000;text-align:center;font-size:12pt;font-weight:800;">${balance}</td>
             <td style="background:#fff;color:#000;padding:6px 8px;border:1.5px solid #000;text-align:center;font-size:12pt;font-weight:800;">${netTotal}</td>
             <td style="background:#fff;color:#000;padding:6px 8px;border:1.5px solid #000;text-align:center;font-size:12pt;font-weight:800;">${paid}</td>

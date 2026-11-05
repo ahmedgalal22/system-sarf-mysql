@@ -19,6 +19,7 @@ import assert from 'node:assert/strict';
 
 const elementsById = new Map();
 let tbodyChildren = [];
+let printedDocs = [];
 
 function createMockClassList(initial = '') {
   const set = new Set(String(initial).split(/\s+/).filter(Boolean));
@@ -213,13 +214,34 @@ globalThis.Event = class Event {
 };
 globalThis.document = {
   head: { appendChild() {} },
-  body: { appendChild() {} },
+  body: {
+    appendChild(child) {
+      if (child && child.id) elementsById.set(child.id, child);
+      return child;
+    },
+  },
   getElementById(id) {
     return elementsById.get(id) || null;
   },
   createElement(tag) {
     const t = String(tag).toLowerCase();
     if (t === 'tr') return createMockTr();
+    if (t === 'iframe') {
+      const iframe = createMockInput();
+      iframe.remove = () => {
+        if (iframe.id) elementsById.delete(iframe.id);
+      };
+      iframe.contentWindow = {
+        document: {
+          open() {},
+          write(html) { printedDocs.push(String(html ?? '')); },
+          close() {},
+        },
+        focus() {},
+        print() {},
+      };
+      return iframe;
+    }
     return createMockInput();
   },
   querySelector(sel) {
@@ -454,4 +476,62 @@ test('5. Disbursement Form Totals Table includes manual field "هنا" after "ا
   assert.equal(elementsById.get('netDueAmount').textContent, '950.00', '"هنا" must not affect netDueAmount');
   assert.equal(elementsById.get('netTotalAmount').textContent, '950.00', '"هنا" must not affect netTotalAmount');
 });
+
+test('6. Printing Disbursement Form shows "إضافة عام" and "هنا" only when non-zero (positive or negative) and hides them when zero or empty', async () => {
+  resetDom();
+  elementsById.set('receiptTable', { id: 'receiptTable' });
+  elementsById.set('finalTotalsContainer', { id: 'finalTotalsContainer' });
+
+  const { printReceipt } = await import('../receipts.js');
+
+  // Case 1: Both generalAdd = '0' and henaAmount = '' (or '0') -> neither should appear in print
+  elementsById.get('generalAdd').value = '0';
+  elementsById.get('henaAmount').value = '0';
+  printedDocs.length = 0;
+  printReceipt();
+  assert.equal(printedDocs.length, 1);
+  assert.ok(!printedDocs[0].includes('إضافة عام'), 'Zero إضافة عام must not appear in print');
+  assert.ok(!printedDocs[0].includes('>هنا<'), 'Zero هنا must not appear in print');
+
+  // Case 2: Positive generalAdd ('125.5') and negative henaAmount ('-40') -> both must appear in print
+  elementsById.get('generalAdd').value = '125.5';
+  elementsById.get('henaAmount').value = '-40';
+  printedDocs.length = 0;
+  printReceipt();
+  assert.equal(printedDocs.length, 1);
+  assert.ok(printedDocs[0].includes('إضافة عام'), 'Non-zero إضافة عام must appear in print');
+  assert.ok(printedDocs[0].includes('125.5'), 'Positive إضافة عام value must appear in print');
+  assert.ok(printedDocs[0].includes('>هنا<'), 'Negative non-zero هنا must appear in print');
+  assert.ok(printedDocs[0].includes('-40'), 'Negative هنا value must appear in print');
+
+  // Case 3: All Receipts page (printSingleReceipt) — zero values hidden, non-zero positive/negative shown
+  const { printSingleReceipt } = await import('../allReceipts.js');
+  const baseRecord = {
+    id: 99,
+    receipt_number: '30',
+    receipt_date: '2026-11-05',
+    client_name: 'عميل تجريبي',
+    general_add: 0,
+    shipping_number: '0',
+    net_due: 50000,
+    previous_balance: 0,
+    paid: 50000,
+    net_total: 50000,
+    rows: [{ _type: 'data', row_id: 'r1', kartano: '101', weight: 10, net: 500 }],
+  };
+
+  printedDocs.length = 0;
+  printSingleReceipt(baseRecord);
+  assert.equal(printedDocs.length, 1);
+  assert.ok(!printedDocs[0].includes('إضافة عام'), 'Zero general_add in printSingleReceipt must not appear in print');
+  assert.ok(!printedDocs[0].includes('>هنا<'), 'Zero shipping_number (هنا) in printSingleReceipt must not appear in print');
+
+  printedDocs.length = 0;
+  printSingleReceipt({ ...baseRecord, general_add: -2500, shipping_number: '350' });
+  assert.equal(printedDocs.length, 1);
+  assert.ok(printedDocs[0].includes('إضافة عام'), 'Negative non-zero general_add in printSingleReceipt must appear in print');
+  assert.ok(printedDocs[0].includes('>هنا<'), 'Positive non-zero shipping_number (هنا) in printSingleReceipt must appear in print');
+  assert.ok(printedDocs[0].includes('350'), 'Positive shipping_number (هنا) value must appear in printSingleReceipt');
+});
+
 
