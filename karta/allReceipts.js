@@ -1172,7 +1172,6 @@ function buildReceiptPrintBlock(record) {
         <span>الصافي المستحق: <strong>${Money.fmtCents(record.net_due)}</strong></span>
         ${showHena ? `<span>هنا: <strong>${esc(_formatHenaDisplay(record))}</strong></span>` : ''}
         <span>رصيد العميل: <strong>${Money.fmtCents((record.net_total ?? 0) - (record.paid ?? 0))}</strong></span>
-        <span>الصافي الكلي: <strong>${Money.fmtCents(record.net_total)}</strong></span>
         <span>المدفوع: <strong>${Money.fmtCents(record.paid)}</strong></span>
       </div>
     </section>
@@ -1425,7 +1424,6 @@ function _receiptPrintBuildTotalsRow(record, kartaCount) {
   const showHena        = _isNonZeroPrintNumeric(record?.hena ?? record?.shipping_number);
   const hena            = _formatHenaDisplay(record);
   const previousBalance = Money.fmtCents((record.net_total ?? 0) - (record.paid ?? 0));
-  const netTotal        = Money.fmtCents(record.net_total       ?? 0);
   const paid            = Money.fmtCents(record.paid            ?? 0);
 
   const th = (label) => `<th style="background:#fff;color:#000;padding:4px 6px;border:1.5px solid #000;text-align:center;font-size:7pt;font-weight:700;">${label}</th>`;
@@ -1441,7 +1439,6 @@ function _receiptPrintBuildTotalsRow(record, kartaCount) {
           ${th('الصافي المستحق')}
           ${showHena ? th('هنا') : ''}
           ${th('رصيد العميل')}
-          ${th('الصافي الكلي')}
           ${th('المدفوع')}
         </tr>
       </thead>
@@ -1453,7 +1450,6 @@ function _receiptPrintBuildTotalsRow(record, kartaCount) {
           ${td(netDue)}
           ${showHena ? td(hena) : ''}
           ${td(previousBalance)}
-          ${td(netTotal)}
           ${td(paid)}
         </tr>
       </tbody>

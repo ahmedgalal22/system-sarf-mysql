@@ -492,6 +492,7 @@ test('6. Printing Disbursement Form shows "إضافة عام" and "هنا" only 
   assert.equal(printedDocs.length, 1);
   assert.ok(!printedDocs[0].includes('إضافة عام'), 'Zero إضافة عام must not appear in print');
   assert.ok(!printedDocs[0].includes('>هنا<'), 'Zero هنا must not appear in print');
+  assert.ok(!printedDocs[0].includes('الصافي الكلي'), 'الصافي الكلي must not appear in printReceipt');
 
   // Case 2: Positive generalAdd ('125.5') and negative henaAmount ('-40') -> both must appear in print
   elementsById.get('generalAdd').value = '125.5';
@@ -503,6 +504,7 @@ test('6. Printing Disbursement Form shows "إضافة عام" and "هنا" only 
   assert.ok(printedDocs[0].includes('125.5'), 'Positive إضافة عام value must appear in print');
   assert.ok(printedDocs[0].includes('>هنا<'), 'Negative non-zero هنا must appear in print');
   assert.ok(printedDocs[0].includes('-40'), 'Negative هنا value must appear in print');
+  assert.ok(!printedDocs[0].includes('الصافي الكلي'), 'الصافي الكلي must not appear in printReceipt even when other fields are shown');
 
   // Case 3: All Receipts page (printSingleReceipt) — zero values hidden, non-zero positive/negative shown
   const { printSingleReceipt } = await import('../allReceipts.js');
@@ -525,6 +527,7 @@ test('6. Printing Disbursement Form shows "إضافة عام" and "هنا" only 
   assert.equal(printedDocs.length, 1);
   assert.ok(!printedDocs[0].includes('إضافة عام'), 'Zero general_add in printSingleReceipt must not appear in print');
   assert.ok(!printedDocs[0].includes('>هنا<'), 'Zero shipping_number (هنا) in printSingleReceipt must not appear in print');
+  assert.ok(!printedDocs[0].includes('الصافي الكلي'), 'الصافي الكلي must not appear in printSingleReceipt');
 
   printedDocs.length = 0;
   printSingleReceipt({ ...baseRecord, general_add: -2500, shipping_number: '350' });
@@ -532,6 +535,7 @@ test('6. Printing Disbursement Form shows "إضافة عام" and "هنا" only 
   assert.ok(printedDocs[0].includes('إضافة عام'), 'Negative non-zero general_add in printSingleReceipt must appear in print');
   assert.ok(printedDocs[0].includes('>هنا<'), 'Positive non-zero shipping_number (هنا) in printSingleReceipt must appear in print');
   assert.ok(printedDocs[0].includes('350'), 'Positive shipping_number (هنا) value must appear in printSingleReceipt');
+  assert.ok(!printedDocs[0].includes('الصافي الكلي'), 'الصافي الكلي must not appear in printSingleReceipt');
 });
 
 
