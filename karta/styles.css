@@ -3672,3 +3672,215 @@ input[type="number"] {
     display: none !important;
   }
 }
+
+/* ════════════════════════════════════════
+   TERMS OF USE PAGE & DEVELOPER CONTACT MODAL
+   ════════════════════════════════════════ */
+.terms-page-container {
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+  direction: rtl;
+  text-align: right;
+  max-width: 68rem;
+  width: 100%;
+  margin: 0 auto;
+}
+
+.terms-hero-card {
+  padding: 1.5rem 1.75rem;
+  border-right: 4px solid var(--color-primary, #9333ea);
+}
+
+.terms-hero-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+
+.terms-hero-title-group {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+}
+
+.terms-hero-icon {
+  width: 3rem;
+  height: 3rem;
+  border-radius: var(--radius-xl, 0.75rem);
+  background: var(--color-primary-light, #f3e8ff);
+  color: var(--color-primary-dark, #6b21a8);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.terms-page-title {
+  font-size: 1.5rem;
+  font-weight: 800;
+  color: var(--color-gray-800, #1f2937);
+  margin: 0 0 0.25rem;
+  line-height: 1.4;
+}
+
+.terms-page-subtitle {
+  font-size: 0.875rem;
+  color: var(--color-gray-600, #4b5563);
+  margin: 0;
+}
+
+.terms-contact-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  white-space: nowrap;
+  padding: 0.65rem 1.25rem;
+  font-size: 0.9375rem;
+  font-weight: 700;
+}
+
+.terms-sections-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 1.25rem;
+}
+
+.terms-section-card {
+  padding: 1.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  border-top: 3px solid var(--color-secondary, #4f46e5);
+}
+
+.terms-section-title {
+  font-size: 1.125rem;
+  font-weight: 700;
+  color: var(--color-gray-800, #1f2937);
+  margin: 0;
+  padding-bottom: 0.5rem;
+  border-bottom: 1px solid var(--color-gray-200, #e5e7eb);
+}
+
+.terms-list {
+  margin: 0;
+  padding: 0 1.25rem 0 0;
+  list-style-type: disc;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  color: var(--color-gray-700, #374151);
+  font-size: 0.9375rem;
+  line-height: 1.75;
+}
+
+.terms-paragraph {
+  margin: 0;
+  color: var(--color-gray-700, #374151);
+  font-size: 0.9375rem;
+  line-height: 1.75;
+}
+
+.terms-footer-card {
+  padding: 1rem 1.5rem;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background: var(--color-gray-50, #f9fafb);
+  border: 1px solid var(--color-gray-200, #e5e7eb);
+}
+
+.terms-last-updated {
+  font-size: 0.875rem;
+  font-weight: 700;
+  color: var(--color-gray-600, #4b5563);
+}
+
+.terms-contact-modal {
+  max-width: 24rem;
+  direction: rtl;
+  text-align: right;
+}
+
+.terms-contact-modal__body {
+  display: flex;
+  flex-direction: column;
+  gap: 0.875rem;
+}
+
+.terms-contact-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.75rem 1rem;
+  background: var(--color-gray-50, #f9fafb);
+  border: 1px solid var(--color-gray-200, #e5e7eb);
+  border-radius: var(--radius-lg, 0.5rem);
+  font-size: 0.9375rem;
+}
+
+.terms-contact-label {
+  color: var(--color-gray-600, #4b5563);
+  font-weight: 600;
+}
+
+.terms-contact-value {
+  color: var(--color-gray-800, #1f2937);
+  font-weight: 800;
+}
+
+.terms-contact-phone {
+  color: var(--color-blue-dark, #1d4ed8);
+  font-weight: 800;
+  text-decoration: none;
+  padding: 0.2rem 0.5rem;
+  border-radius: var(--radius-md, 0.375rem);
+  background: var(--color-blue-bg, #eff6ff);
+  transition: var(--transition);
+}
+
+.terms-contact-phone:hover {
+  background: #dbeafe;
+  text-decoration: underline;
+}
+
+@media (max-width: 768px) {
+  .terms-sections-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .terms-hero-card {
+    padding: 1.25rem;
+  }
+
+  .terms-hero-header {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .terms-contact-btn {
+    width: 100%;
+    justify-content: center;
+  }
+}
+
+@media (max-width: 480px) {
+  .terms-page-title {
+    font-size: 1.25rem;
+  }
+
+  .terms-section-card {
+    padding: 1.125rem;
+  }
+
+  .terms-contact-item {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.35rem;
+  }
+}
+

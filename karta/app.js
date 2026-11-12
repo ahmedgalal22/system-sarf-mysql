@@ -13,6 +13,7 @@ import { closeArchiveViewer } from './archiveViewer.js';
 import { initHomePage } from './home.js';
 import { initSidebarLayout } from './sidebarLayout.js';
 import { initDashboardPage } from './dashboard.js';
+import { initTermsPage } from './terms.js';
 import './entities.js';
 import { verifyServerReady } from './services/serverVerification.js';
 import { activateServerMode, API_CONFIG } from './services/apiConfig.js';
@@ -31,6 +32,7 @@ const PAGE_MAP = {
   treasuryPage: 'treasuryPage',
   archivePage: 'archivePage',
   officeDetailsPage: 'officeDetailsPage',
+  termsPage: 'termsPage',
 };
 const PAGE_KEY_NORMALIZE = {
   homePage: 'homePage',
@@ -45,6 +47,7 @@ const PAGE_KEY_NORMALIZE = {
   treasuryPage: 'treasuryPage',
   archivePage: 'archivePage',
   officeDetailsPage: 'officeDetailsPage',
+  termsPage: 'termsPage',
 };
 
 function _readLastPage() {
@@ -123,6 +126,9 @@ async function showPage(pageName) {
   if (pageName === 'homePage' || targetId === 'homePage') {
     initHomePage();
   }
+  if (pageName === 'termsPage' || targetId === 'termsPage') {
+    initTermsPage();
+  }
 }
 
 window.showPage = showPage;
@@ -177,6 +183,7 @@ async function boot() {
     attachOwnersPageListeners();
     attachOfficesPageListeners();
     initTreasuryPage();
+    initTermsPage();
     const lastPage = _readLastPage();
     const ctx = _readLastPageContext();
     let restored = false;
