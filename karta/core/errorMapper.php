@@ -7,14 +7,13 @@
  *
  * Usage:
  *   mapResult('CONFLICT', $latestData);
- *   mapResult('ARCHIVED');
  *   mapResult('NOT_FOUND');
  */
 
 /**
  * Map a domain Result Code to an HTTP JSON response and exit.
  *
- * @param string     $code    — OK, NOT_FOUND, CONFLICT, ARCHIVED, DUPLICATE
+ * @param string     $code    — OK, NOT_FOUND, CONFLICT, DUPLICATE
  * @param mixed      $data    — response payload (record for OK, latest for CONFLICT)
  * @param string     $message — optional override message
  */
@@ -44,15 +43,6 @@ function mapResult(string $code, $data = null, string $message = ''): void {
                 'message'  => $message ?: 'تعارض — تم تعديل السجل من مستخدم آخر',
                 'conflict' => true,
                 'latest'   => $data,
-            ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
-            exit;
-
-        case 'ARCHIVED':
-            http_response_code(403);
-            echo json_encode([
-                'success' => false,
-                'type'    => 'archived',
-                'message' => $message ?: 'لا يمكن تعديل أو حذف سجل مؤرشف',
             ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
             exit;
 

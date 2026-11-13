@@ -33,13 +33,34 @@ class BackupRepository {
     ];
 
     /**
-     * Tables introduced after the original v2.0.0 snapshot format.
+     * Archive tables retained in schema and backup format during Phase 1.
+     */
+    private const ARCHIVE_TABLES = [
+        'archive_batches',
+        'financial_snapshots',
+    ];
+
+    /**
+     * Business tables that carry the retained `is_archived` / `archive_batch_id` columns.
+     */
+    private const ARCHIVABLE_BUSINESS_TABLES = [
+        'receipts',
+        'treasury',
+        'vehicle_ledger',
+        'main_capital_treasury',
+    ];
+
+    /**
+     * Tables introduced after the original v2.0.0 snapshot format or optional
+     * in legacy backups.
      * Pre-existing backups that omit these keys continue to validate with their
      * original checksum rules, while newer backups include them in validation,
      * checksum calculation, and restore ordering.
      */
     private const OPTIONAL_LEGACY_TABLES = [
         'owner_account_details',
+        'archive_batches',
+        'financial_snapshots',
     ];
 
     public function __construct(PDO $db) { $this->db = $db; }
@@ -129,12 +150,6 @@ class BackupRepository {
 
         if (!empty($errors)) return ['valid' => false, 'errors' => $errors];
 
-        // Verify checksum
-        $expected = $this->computeChecksum($backup);
-        if ($backup['system']['checksum'] !== $expected) {
-            $errors[] = "Checksum mismatch: expected=$expected, got={$backup['system']['checksum']}";
-        }
-
         // Verify all required tables exist in backup
         foreach (self::TABLE_ORDER as $table) {
             if (!array_key_exists($table, $backup['tables'])) {
@@ -147,6 +162,38 @@ class BackupRepository {
             }
         }
 
+        // Verify checksum (supports both skipped-key legacy checksums and zero-count archive checksums when archive keys are omitted)
+        $expected = $this->computeChecksum($backup);
+        $legacyZeroArchiveExpected = $this->computeChecksumWithZeroOmittedArchive($backup);
+        if (
+            $backup['system']['checksum'] !== $expected &&
+            $backup['system']['checksum'] !== $legacyZeroArchiveExpected
+        ) {
+            $errors[] = "Checksum mismatch: expected=$expected, got={$backup['system']['checksum']}";
+        }
+
+        // Reject backups containing archive batches, financial snapshots, or archived business records
+        $backupArchiveData = $this->findBackupArchiveData($backup['tables']);
+        if (!empty($backupArchiveData)) {
+            $details = implode(', ', array_map(
+                fn($t, $c) => "$t ($c rows)",
+                array_keys($backupArchiveData),
+                array_values($backupArchiveData)
+            ));
+            $errors[] = "Cannot restore backup because it contains data from the removed Archive feature ($details).";
+        }
+
+        // Prevent silent loss of existing archive data if a legacy backup omits archive table keys
+        $nonEmptyArchive = $this->findNonEmptyOmittedArchiveTables($backup['tables']);
+        if (!empty($nonEmptyArchive)) {
+            $details = implode(', ', array_map(
+                fn($t, $c) => "$t ($c rows)",
+                array_keys($nonEmptyArchive),
+                array_values($nonEmptyArchive)
+            ));
+            $errors[] = "Cannot restore legacy backup missing archive table keys because the target database contains existing archive data ($details). Export a full backup with archive tables or clear archive data first.";
+        }
+
         return ['valid' => empty($errors), 'errors' => $errors];
     }
 
@@ -155,7 +202,14 @@ class BackupRepository {
      * MUST be called inside a transaction.
      */
     public function restore(array $backup, string $username): array {
+        // Enforce all validation and archive-safety guards BEFORE any destructive operation
+        $validation = $this->validateBackup($backup);
+        if (!$validation['valid']) {
+            throw new RuntimeException(implode(' | ', $validation['errors']));
+        }
+
         $stats = [];
+        $tables = (isset($backup['tables']) && is_array($backup['tables'])) ? $backup['tables'] : [];
 
         // Disable FK checks for safe truncation
         $this->db->exec('SET FOREIGN_KEY_CHECKS = 0');
@@ -166,15 +220,26 @@ class BackupRepository {
             // in MySQL, which kills the active transaction. Auto-increment
             // resets naturally when rows are inserted with explicit id values.
             foreach (array_reverse(self::TABLE_ORDER) as $table) {
+                if (in_array($table, self::ARCHIVE_TABLES, true) && !array_key_exists($table, $tables)) {
+                    continue;
+                }
+                if (!$this->tableExists($table)) {
+                    continue;
+                }
                 $this->db->exec("DELETE FROM `$table`");
             }
 
             // Insert data in correct order (parents first)
             foreach (self::TABLE_ORDER as $table) {
-                $rows = $backup['tables'][$table] ?? [];
+                if (!array_key_exists($table, $tables) && in_array($table, self::OPTIONAL_LEGACY_TABLES, true)) {
+                    $stats[$table] = 0;
+                    continue;
+                }
+
+                $rows = $tables[$table] ?? [];
                 $inserted = 0;
 
-                if (!empty($rows)) {
+                if (!empty($rows) && $this->tableExists($table)) {
                     $columns = array_keys($rows[0]);
                     $placeholders = implode(', ', array_fill(0, count($columns), '?'));
                     $colList = implode(', ', array_map(fn($c) => "`$c`", $columns));
@@ -207,7 +272,98 @@ class BackupRepository {
         return $stats;
     }
 
-    // ── CHECKSUM ──────────────────────────────────────────────────────────
+    // ── INTERNAL HELPERS & CHECKSUM ──────────────────────────────────────
+
+    private function tableExists(string $table): bool {
+        $stmt = $this->db->query("SHOW TABLES LIKE '$table'");
+        if (!$stmt) return false;
+        $rows = $stmt->fetchAll();
+        return !empty($rows);
+    }
+
+    private function getTableRowCount(string $table): int {
+        if (!$this->tableExists($table)) {
+            return 0;
+        }
+        $stmt = $this->db->query("SELECT COUNT(*) AS cnt FROM `$table`");
+        if (!$stmt) {
+            return 0;
+        }
+        $row = $stmt->fetch(PDO::FETCH_ASSOC);
+        if (is_array($row)) {
+            return intval($row['cnt'] ?? reset($row) ?? 0);
+        }
+        return intval($row ?? 0);
+    }
+
+    private function isArchivedRow(array $row): bool {
+        $flag = $row['is_archived'] ?? 0;
+        if ($flag === 1 || $flag === '1' || $flag === true || $flag === 'true') {
+            return true;
+        }
+        $batchId = $row['archive_batch_id'] ?? null;
+        if (is_string($batchId) && trim($batchId) !== '') {
+            return true;
+        }
+        return false;
+    }
+
+    /**
+     * Inspect backup payload for non-empty archive tables (`archive_batches`,
+     * `financial_snapshots`) or archived business records (`is_archived = 1` or
+     * non-empty `archive_batch_id` in `receipts`, `treasury`, `vehicle_ledger`,
+     * `main_capital_treasury`).
+     *
+     * @return array<string,int>
+     */
+    private function findBackupArchiveData(array $tables): array {
+        $found = [];
+
+        foreach (self::ARCHIVE_TABLES as $archiveTable) {
+            if (isset($tables[$archiveTable]) && is_array($tables[$archiveTable])) {
+                $count = count($tables[$archiveTable]);
+                if ($count > 0) {
+                    $found[$archiveTable] = $count;
+                }
+            }
+        }
+
+        foreach (self::ARCHIVABLE_BUSINESS_TABLES as $businessTable) {
+            if (!isset($tables[$businessTable]) || !is_array($tables[$businessTable])) {
+                continue;
+            }
+            $archivedCount = 0;
+            foreach ($tables[$businessTable] as $row) {
+                if (is_array($row) && $this->isArchivedRow($row)) {
+                    $archivedCount++;
+                }
+            }
+            if ($archivedCount > 0) {
+                $found["$businessTable.is_archived"] = $archivedCount;
+            }
+        }
+
+        return $found;
+    }
+
+    /**
+     * If a backup omits one or both archive table keys (`archive_batches`, `financial_snapshots`),
+     * inspect the target database and return any omitted archive table that currently contains rows.
+     *
+     * @return array<string,int>
+     */
+    private function findNonEmptyOmittedArchiveTables(array $tables): array {
+        $nonEmpty = [];
+        foreach (self::ARCHIVE_TABLES as $archiveTable) {
+            if (!array_key_exists($archiveTable, $tables)) {
+                $count = $this->getTableRowCount($archiveTable);
+                if ($count > 0) {
+                    $nonEmpty[$archiveTable] = $count;
+                }
+            }
+        }
+        return $nonEmpty;
+    }
 
     private function computeChecksum(array $backup): string {
         $parts = ['karta-v2-v1'];
@@ -219,7 +375,27 @@ class BackupRepository {
             ) {
                 continue;
             }
-            $count = count($tables[$table] ?? []);
+            $count = (array_key_exists($table, $tables) && is_array($tables[$table]))
+                ? count($tables[$table])
+                : 0;
+            $parts[] = "$table:$count";
+        }
+        return hash('sha256', implode('|', $parts));
+    }
+
+    private function computeChecksumWithZeroOmittedArchive(array $backup): string {
+        $parts = ['karta-v2-v1'];
+        $tables = (isset($backup['tables']) && is_array($backup['tables'])) ? $backup['tables'] : [];
+        foreach (self::TABLE_ORDER as $table) {
+            if (
+                $table === 'owner_account_details' &&
+                !array_key_exists($table, $tables)
+            ) {
+                continue;
+            }
+            $count = array_key_exists($table, $tables) && is_array($tables[$table])
+                ? count($tables[$table])
+                : 0;
             $parts[] = "$table:$count";
         }
         return hash('sha256', implode('|', $parts));

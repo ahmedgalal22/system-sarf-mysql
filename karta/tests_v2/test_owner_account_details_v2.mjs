@@ -471,10 +471,6 @@ globalThis.fetch = async (url, options = {}) => {
     return respond({ success: true, data: {} });
   }
 
-  if (u.includes('/archive/list.php')) {
-    return respond({ success: true, data: [] });
-  }
-
   // ── Owner Account Details endpoints ─────────────────────────────────────
   if (u.includes('/entities/owner-account-details/list.php') && method === 'GET') {
     const parsedUrl = new URL(u, 'http://localhost');

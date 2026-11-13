@@ -10,7 +10,6 @@
  *   - No domain without explicit owner
  *   - No transport without authority
  *   - Financial domains are LOCKED until explicit migration gate
- *   - Archive is IMMUTABLE — never migrated at runtime
  * ─────────────────────────────────────────────────────────────────────────────
  */
 
@@ -82,23 +81,6 @@ const DOMAIN_REGISTRY = Object.freeze({
     status:      DOMAIN_STATUS.SERVER_OWNED,
     criticality: DOMAIN_CRITICALITY.FINANCIAL_CRITICAL,
     apiPath:     '/entities/capital',
-  },
-
-  // ── CLIENT-OWNED: Archive (IMMUTABLE) ───────────────────────────────────
-  // ── SERVER-OWNED: Archive (Phase 7 — migrated to MySQL) ──────────────────
-  archive_batches: {
-    owner:       DOMAIN_OWNER.SERVER,
-    transport:   DOMAIN_TRANSPORT.MYSQL,
-    status:      DOMAIN_STATUS.SERVER_OWNED,
-    criticality: DOMAIN_CRITICALITY.FINANCIAL_CRITICAL,
-    apiPath:     '/archive',
-  },
-  financial_snapshots: {
-    owner:       DOMAIN_OWNER.SERVER,
-    transport:   DOMAIN_TRANSPORT.MYSQL,
-    status:      DOMAIN_STATUS.SERVER_OWNED,
-    criticality: DOMAIN_CRITICALITY.FINANCIAL_CRITICAL,
-    apiPath:     '/archive',
   },
 
   // ── SERVER-OWNED: Entities (Phase 5 — migrated to MySQL) ─────────────────

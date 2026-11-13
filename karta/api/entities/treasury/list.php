@@ -61,13 +61,6 @@ try {
         $params[':is_reversed'] = $reversed;
     }
 
-    // include_archived flag
-    $includeArchived = $_GET['include_archived'] ?? null;
-    if ($includeArchived === '1' || $includeArchived === 'true') {
-        // Remove the is_archived = 0 condition by rebuilding
-        $sql = str_replace(' AND is_archived = 0', '', $sql);
-    }
-
     $sql .= ' ORDER BY created_at DESC';
 
     $stmt = $db->prepare($sql);

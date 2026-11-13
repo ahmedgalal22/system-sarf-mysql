@@ -48,7 +48,7 @@ async function getAll(store, filters = null, options = {}) {
     return _apiRead(store,
       async () => {
         const params = filters ? '?' + new URLSearchParams(
-          Object.entries(filters).filter(([k]) => k !== 'includeArchived')
+          Object.entries(filters)
         ).toString() : '';
         const res = await ApiClient.get(`${r.apiPath}/list.php${params}`, options);
         if (!res.success) throw new Error(res.message);
@@ -148,7 +148,7 @@ async function transaction(opsOrCallback, meta) {
   //   multi-store IDB transaction (e.g. receipts.js reads 'receipts' +
   //   writes 'counters'). We cannot pre-detect writes in a callback, so
   //   we trust the callback author and skip the check. Array-style ops are
-  //   the primary vector for accidental server writes (archiveService, etc).
+  //   the primary vector for accidental server writes.
   if (Array.isArray(opsOrCallback)) {
     for (const op of opsOrCallback) {
       if (!op || !op.store) continue;

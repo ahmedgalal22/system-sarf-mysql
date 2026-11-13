@@ -66,10 +66,7 @@ try {
         $params[':is_reversed'] = $reversed;
     }
 
-    // include_archived flag
-    if (!isset($_GET['include_archived']) || $_GET['include_archived'] !== '1') {
-        $sql .= ' AND is_archived = 0';
-    }
+    $sql .= ' AND is_archived = 0';
 
     // Optional inclusive date range filter (YYYY-MM-DD)
     $fromDate = sanitizeString($_GET['from'] ?? ($_GET['from_date'] ?? null));

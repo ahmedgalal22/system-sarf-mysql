@@ -13,7 +13,7 @@
  *     concurrent updates to different rows on the same receipt never overwrite
  *     each other.
  *   - Verifies that the receipt exists, belongs to the authenticated user,
- *     is not archived, and contains the target `row_id`.
+ *     and contains the target `row_id`.
  *   - Prevents a `row_id` from another receipt from modifying this receipt.
  *   - Keeps status changes completely separate from receipt financial
  *     calculations, treasury entries, and vehicle/office ledger entries.
@@ -90,11 +90,6 @@ try {
             case ReceiptRepository::RESULT_FORBIDDEN:
                 $db->rollBack();
                 jsonError($result['message'] ?? 'غير مسموح بتعديل هذا الإيصال', 403);
-                break;
-
-            case ReceiptRepository::RESULT_ARCHIVED:
-                $db->rollBack();
-                mapResult('ARCHIVED');
                 break;
 
             case ReceiptRepository::RESULT_ROW_NOT_FOUND:

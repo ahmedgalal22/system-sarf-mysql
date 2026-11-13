@@ -96,9 +96,6 @@ export const ReceiptRepository = {
       if (meta?.username && existing.username && existing.username !== meta.username) {
         throw new Error('غير مسموح بتعديل هذا الإيصال');
       }
-      if (existing.is_archived) {
-        throw new Error('لا يمكن تعديل سجل مؤرشف');
-      }
 
       const rawRows = Array.isArray(existing.rows)
         ? existing.rows
@@ -183,9 +180,6 @@ export const ReceiptRepository = {
       }
       if (meta?.username && existing.username && existing.username !== meta.username) {
         throw new Error('غير مسموح بتعديل هذا الإيصال');
-      }
-      if (existing.is_archived) {
-        throw new Error('لا يمكن تعديل سجل مؤرشف');
       }
 
       const rawRows = Array.isArray(existing.rows)

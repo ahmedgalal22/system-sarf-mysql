@@ -26,7 +26,7 @@
  *
  * IDEMPOTENCY CONTRACT (LOCKED):
  *   request_id = immutable operation identity.
- *   findByRequestId() returns record regardless of soft-delete or archive.
+ *   findByRequestId() returns record regardless of soft-delete.
  *   DB UNIQUE(request_id) is the final enforcement layer.
  *
  * TRANSACTION MODEL (LOCKED):
@@ -44,7 +44,6 @@ class ReceiptRepository {
     const RESULT_DUPLICATE = 'DUPLICATE';
     const RESULT_NOT_FOUND = 'NOT_FOUND';
     const RESULT_CONFLICT  = 'CONFLICT';
-    const RESULT_ARCHIVED  = 'ARCHIVED';
     const RESULT_FORBIDDEN           = 'FORBIDDEN';
     const RESULT_ROW_NOT_FOUND       = 'ROW_NOT_FOUND';
     const RESULT_INVALID             = 'INVALID';
@@ -1186,7 +1185,7 @@ class ReceiptRepository {
     /**
      * Update a receipt with row locking + optimistic locking.
      *
-     * Check order: NOT_FOUND → ARCHIVED → CONFLICT → apply patch.
+     * Check order: NOT_FOUND → CONFLICT → apply patch.
      * Timestamp: explicit NOW(3) for millisecond-precision versioning.
      *
      * @return array ['code' => string, 'data' => ?array]
@@ -1205,10 +1204,6 @@ class ReceiptRepository {
 
         if (($current['username'] ?? '') !== $username) {
             return ['code' => self::RESULT_FORBIDDEN, 'data' => null];
-        }
-
-        if ($current['is_archived']) {
-            return ['code' => self::RESULT_ARCHIVED, 'data' => null];
         }
 
         if ($expectedUpdatedAt !== null && $current['updated_at'] !== $expectedUpdatedAt) {
@@ -1274,7 +1269,7 @@ class ReceiptRepository {
      *   - Acquires an exclusive row lock (`SELECT ... FOR UPDATE`) on the receipt row
      *     so concurrent updates to different rows of the same receipt are serialized
      *     and never overwrite each other.
-     *   - Verifies receipt ownership (`username`) and non-archived status.
+     *   - Verifies receipt ownership (`username`).
      *   - Validates `$status` strictly against the two supported values ('paid' / 'unpaid').
      *   - Verifies that `$rowId` exists as a non-separator row within `$receiptId`
      *     (preventing another receipt's row identifier from modifying this receipt).
@@ -1312,10 +1307,6 @@ class ReceiptRepository {
 
         if (($current['username'] ?? '') !== $username) {
             return ['code' => self::RESULT_FORBIDDEN, 'data' => null, 'row' => null];
-        }
-
-        if (!empty($current['is_archived'])) {
-            return ['code' => self::RESULT_ARCHIVED, 'data' => null, 'row' => null];
         }
 
         // Preserve resolved receipt-level payment_status (including unanimous legacy row fallback)
@@ -1384,7 +1375,7 @@ class ReceiptRepository {
      *
      * Concurrency & Data Integrity:
      *   - Acquires an exclusive row lock (`SELECT ... FOR UPDATE`) on the receipt row.
-     *   - Verifies receipt ownership (`username`) and non-archived status.
+     *   - Verifies receipt ownership (`username`).
      *   - Validates `$paymentStatus` strictly against the two supported values ('paid' / 'unpaid').
      *   - Stores one `payment_status` for the entire receipt and strips any legacy
      *     row-level `payment_status` fields from `rows` JSON while preserving each
@@ -1416,10 +1407,6 @@ class ReceiptRepository {
 
         if (($current['username'] ?? '') !== $username) {
             return ['code' => self::RESULT_FORBIDDEN, 'data' => null, 'payment_status' => null];
-        }
-
-        if (!empty($current['is_archived'])) {
-            return ['code' => self::RESULT_ARCHIVED, 'data' => null, 'payment_status' => null];
         }
 
         $rows = self::normalizeReceiptRows($current['rows'] ?? [], $receiptId);
@@ -1553,13 +1540,6 @@ class ReceiptRepository {
         $t = $tRows[0];
         $l = $lRows[0];
 
-        if (!empty($t['is_archived']) || !empty($l['is_archived'])) {
-            return [
-                'valid'   => false,
-                'message' => 'لا يمكن تعديل أو عكس حركة صرف صف مرتبطة بسجل مؤرشف',
-            ];
-        }
-
         $validTreasury = intval($t['amount'] ?? -1) === $expectedCents
             && ($t['type'] ?? '') === 'deposit'
             && ($t['effect'] ?? '') === 'row_disbursement'
@@ -1634,13 +1614,6 @@ class ReceiptRepository {
         $t = $tRows[0];
         $l = $lRows[0];
 
-        if (!empty($t['is_archived']) || !empty($l['is_archived'])) {
-            return [
-                'valid'   => false,
-                'message' => 'لا يمكن تعديل أو عكس حركة دفع إيصال مرتبطة بسجل مؤرشف',
-            ];
-        }
-
         $tAmount = intval($t['amount'] ?? -1);
         $lAmount = intval($l['amount'] ?? -2);
         $desc = trim((string)($t['description'] ?? ''));
@@ -1709,10 +1682,6 @@ class ReceiptRepository {
 
         if (($current['username'] ?? '') !== $username) {
             return ['code' => self::RESULT_FORBIDDEN, 'message' => 'غير مسموح بتعديل هذا الإيصال', 'data' => null, 'row' => null];
-        }
-
-        if (!empty($current['is_archived'])) {
-            return ['code' => self::RESULT_ARCHIVED, 'message' => 'الإيصال مؤرشف', 'data' => null, 'row' => null];
         }
 
         $preservedPaymentStatus = self::getReceiptPaymentStatus($current);
@@ -1963,15 +1932,6 @@ class ReceiptRepository {
             return [
                 'code'           => self::RESULT_FORBIDDEN,
                 'message'        => 'غير مسموح بتعديل هذا الإيصال',
-                'data'           => null,
-                'payment_status' => null,
-            ];
-        }
-
-        if (!empty($current['is_archived'])) {
-            return [
-                'code'           => self::RESULT_ARCHIVED,
-                'message'        => 'الإيصال مؤرشف',
                 'data'           => null,
                 'payment_status' => null,
             ];
@@ -2475,9 +2435,6 @@ class ReceiptRepository {
         if (($current['username'] ?? '') !== $username) {
             return ['code' => self::RESULT_FORBIDDEN, 'message' => 'غير مسموح بحذف هذا الإيصال'];
         }
-        if (!empty($current['is_archived'])) {
-            return ['code' => self::RESULT_ARCHIVED, 'message' => 'الإيصال مؤرشف'];
-        }
 
         $rows = self::normalizeReceiptRows($current['rows'] ?? [], $receiptId);
         $allOffices = $officeRepo->getAllByUsername($username);
@@ -2567,21 +2524,20 @@ class ReceiptRepository {
     // ── SOFT DELETE ───────────────────────────────────────────────────────
 
     /**
-     * Soft-delete with archive protection.
-     * Check order: NOT_FOUND → ARCHIVED → apply delete.
+     * Soft-delete receipt.
+     * Check order: NOT_FOUND → apply delete.
      * Sets deleted_at + deleted_by atomically under FOR UPDATE lock.
      *
      * @return array ['code' => string]
      */
     public function softDelete(int $id, string $username): array {
         $check = $this->db->prepare(
-            'SELECT is_archived FROM receipts WHERE id = :id AND deleted_at IS NULL FOR UPDATE'
+            'SELECT id FROM receipts WHERE id = :id AND deleted_at IS NULL FOR UPDATE'
         );
         $check->execute([':id' => $id]);
         $row = $check->fetch();
 
         if (!$row) return ['code' => self::RESULT_NOT_FOUND];
-        if ($row['is_archived']) return ['code' => self::RESULT_ARCHIVED];
 
         $this->db->prepare(
             'UPDATE receipts SET deleted_at = NOW(3), deleted_by = :username WHERE id = :id AND deleted_at IS NULL'

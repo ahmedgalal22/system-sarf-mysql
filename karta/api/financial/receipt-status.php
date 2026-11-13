@@ -65,9 +65,6 @@ if ($isPaymentUpdate) {
             if ($res['code'] === ReceiptRepository::RESULT_FORBIDDEN) {
                 $db->rollBack(); jsonError($res['message'] ?? 'غير مسموح', 403);
             }
-            if ($res['code'] === ReceiptRepository::RESULT_ARCHIVED) {
-                $db->rollBack(); mapResult('ARCHIVED');
-            }
             if (in_array($res['code'], [
                 ReceiptRepository::RESULT_NEGATIVE_AMOUNT,
                 ReceiptRepository::RESULT_INVALID,
@@ -137,9 +134,6 @@ if ($rawRowId !== null) {
             }
             if ($res['code'] === ReceiptRepository::RESULT_FORBIDDEN) {
                 $db->rollBack(); jsonError($res['message'] ?? 'غير مسموح', 403);
-            }
-            if ($res['code'] === ReceiptRepository::RESULT_ARCHIVED) {
-                $db->rollBack(); mapResult('ARCHIVED');
             }
             if ($res['code'] === ReceiptRepository::RESULT_ROW_NOT_FOUND) {
                 $db->rollBack(); jsonError($res['message'] ?? 'الصف المطلوب غير موجود في هذا الإيصال', 404);

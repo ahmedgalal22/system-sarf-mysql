@@ -44,9 +44,6 @@ try {
         if ($revStatus['code'] === ReceiptRepository::RESULT_FORBIDDEN) {
             $db->rollBack(); jsonError('غير مسموح', 403);
         }
-        if ($revStatus['code'] === ReceiptRepository::RESULT_ARCHIVED) {
-            $db->rollBack(); mapResult('ARCHIVED');
-        }
         if ($revStatus['code'] === ReceiptRepository::RESULT_INCONSISTENT_LEDGER) {
             $db->rollBack(); jsonError($revStatus['message'] ?? 'تعارض في القيود المالية للإيصال', 409);
         }

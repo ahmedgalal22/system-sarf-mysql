@@ -69,7 +69,7 @@ try {
         bumpVersions($db, [
             'vehicle_owners', 'owner_account_details', 'offices', 'vehicles',
             'receipts', 'treasury', 'vehicle_ledger',
-            'main_capital', 'archive_batches', 'drivers', 'notes'
+            'main_capital', 'drivers', 'notes'
         ]);
         $db->commit();
 

@@ -13,7 +13,7 @@
  *        the unpaginated `/entities/receipts/list.php` dataset.
  *      - Period-scoped top summary (`#officeTotalBalance` + `#officeTotalBalanceLabel` = `إجمالي الرصيد خلال الفترة`)
  *        while preserving all-time per-office row balances (`item.balance` in `#officesTableBody` and `#officeDetailsPage`).
- *      - Restoring all-time balance (including `archivedCents`) and `إجمالي الرصيد` label when cleared.
+ *      - Restoring all-time balance and `إجمالي الرصيد` label when cleared.
  *      - Strict calendar-date validation (`YYYY-MM-DD` only; rejecting `10/20/2026`, `2026-02-30`, `2026-13-01`, and `to < from`).
  *   3. All Forms Page (`جميع النماذج`):
  *      - Replace `إجمالي الصافي الكلي` / `إجمالي الصرف الكلي` with `إجمالي المدفوع` (`sums.paid` in cents),
@@ -159,7 +159,6 @@ makeElement('receiptPage', 'DIV');
 let mockTreasuryEntries = [];
 let mockOffices = [];
 let mockOfficeLedgerEntries = [];
-let mockOfficeArchivedLedgerEntries = [];
 let mockOfficeSummaries = [];
 let mockReceipts = [];
 let fetchedUrls = [];
@@ -290,10 +289,6 @@ globalThis.fetch = async (url) => {
     if (fromParam) rows = rows.filter((e) => String(e.date).slice(0, 10) >= fromParam);
     if (toParam) rows = rows.filter((e) => String(e.date).slice(0, 10) <= toParam);
     return respond({ success: true, data: rows });
-  }
-
-  if (u.includes('/archive/list.php')) {
-    return respond({ success: true, data: mockOfficeArchivedLedgerEntries });
   }
 
   return respond({ success: true, data: [] });
@@ -450,27 +445,16 @@ test('2. Offices Page — Preset local dates in Africa/Cairo, server-side office
     { office_name: 'مكتب السلام', total_sarf: 200, total_maktab: 100, karta_count: 2, receipts_count: 1 },
   ];
 
-  // Office 1 active ledger: +1000.00 on 2026-10-05, +500.00 on 2026-10-15, -200.00 on 2026-10-25 (active = 1300.00)
-  // Office 1 archived ledger: +200.00 on 2026-01-10 -> Office 1 all-time = 1500.00
+  // Office 1 active ledger: +200.00 on 2026-01-10, +1000.00 on 2026-10-05, +500.00 on 2026-10-15, -200.00 on 2026-10-25 (all-time = 1500.00)
   // Office 2 active ledger: +800.00 on 2026-10-18 -> Office 2 all-time = 800.00
   // All-time total = 1500.00 + 800.00 = 2300.00
   // Period 2026-10-10 .. 2026-10-20: Office 1 = 500.00, Office 2 = 800.00 -> Period total = 1300.00
   mockOfficeLedgerEntries = [
+    { id: 0, client_id: '1', client_type: 'office', type: 'OFFICE_DEPOSIT', amount: 20000, date: '2026-01-10', is_reversed: 0 },
     { id: 1, client_id: '1', client_type: 'office', type: 'OFFICE_DEPOSIT', amount: 100000, date: '2026-10-05', is_reversed: 0 },
     { id: 2, client_id: '1', client_type: 'office', type: 'OFFICE_DEPOSIT', amount: 50000, date: '2026-10-15', is_reversed: 0 },
     { id: 3, client_id: '1', client_type: 'office', type: 'OFFICE_WITHDRAW_AUTO', amount: 20000, date: '2026-10-25', is_reversed: 0 },
     { id: 4, client_id: '2', client_type: 'office', type: 'OFFICE_DEPOSIT', amount: 80000, date: '2026-10-18', is_reversed: 0 },
-  ];
-  mockOfficeArchivedLedgerEntries = [
-    {
-      id: 900,
-      status: 'archived',
-      from_date: '2026-01-01',
-      to_date: '2026-01-31',
-      snapshot: {
-        client_balances: [{ id: '1', type: 'office', balance: 20000 }],
-      },
-    },
   ];
 
   // 2A. Verify positive UTC offset (Africa/Cairo) preset date formatting does NOT shift back 1 day
@@ -500,14 +484,14 @@ test('2. Offices Page — Preset local dates in Africa/Cairo, server-side office
     `Preset 'month' in Africa/Cairo must start on ${expectedMonthStartIso} (not previous month's last day), got ${lastOfficeSummaryUrl}`
   );
 
-  // 2B. Initial unfiltered load: includes archivedCents (1500.00 + 800.00 = 2300.00) and default label 'إجمالي الرصيد'
+  // 2B. Initial unfiltered load: all-time balance (1500.00 + 800.00 = 2300.00) and default label 'إجمالي الرصيد'
   initOfficesPage();
   await loadOffices();
 
   const totalBalanceEl = elementsById.get('officeTotalBalance');
   const totalBalanceLabelEl = elementsById.get('officeTotalBalanceLabel');
   const officesTbodyEl = elementsById.get('officesTableBody');
-  assert.equal(totalBalanceEl.textContent, '2300.00', 'Default unfiltered إجمالي الرصيد must equal all-time balance including archivedCents (2300.00)');
+  assert.equal(totalBalanceEl.textContent, '2300.00', 'Default unfiltered إجمالي الرصيد must equal all-time balance (2300.00)');
   assert.equal(totalBalanceLabelEl.textContent, 'إجمالي الرصيد', 'Default unfiltered label must be إجمالي الرصيد');
   assert.ok(officesTbodyEl.innerHTML.includes('1500.00'), 'Unfiltered table must show Office 1 all-time balance (1500.00)');
   assert.ok(officesTbodyEl.innerHTML.includes('800.00'), 'Unfiltered table must show Office 2 all-time balance (800.00)');
@@ -601,7 +585,7 @@ test('2. Offices Page — Preset local dates in Africa/Cairo, server-side office
     'Individual office row for Office 1 must NOT be overwritten with its 500.00 period balance'
   );
 
-  // 2E. Clear/reset date filter -> restores 2300.00 all-time total (including archivedCents) and default label
+  // 2E. Clear/reset date filter -> restores 2300.00 all-time total and default label
   for (const listener of docClickListeners) {
     await listener({
       target: {
@@ -615,7 +599,7 @@ test('2. Offices Page — Preset local dates in Africa/Cairo, server-side office
 
   assert.equal(fromEl.value, '');
   assert.equal(toEl.value, '');
-  assert.equal(totalBalanceEl.textContent, '2300.00', 'Clearing date filter must restore all-time إجمالي الرصيد including archivedCents (2300.00)');
+  assert.equal(totalBalanceEl.textContent, '2300.00', 'Clearing date filter must restore all-time إجمالي الرصيد (2300.00)');
   assert.equal(totalBalanceLabelEl.textContent, 'إجمالي الرصيد', 'Clearing date filter must restore default label إجمالي الرصيد');
 
   // 2F. Verify PHP endpoints enforce strict calendar-date checkdate() validation

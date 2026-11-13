@@ -11,7 +11,6 @@ try {
     $existing = $repo->getById($id);
     if (!$existing) jsonError('السجل غير موجود', 404);
     if ($existing['username'] !== $authUser['username']) jsonError('غير مسموح', 403);
-    if (!empty($existing['is_archived'])) jsonError('لا يمكن حذف حركة خزنة مؤرشفة', 409);
     if (in_array($existing['reference_type'] ?? '', ['receipt_row_disbursement', 'receipt_payment_status'], true)
         || in_array($existing['effect'] ?? '', ['row_disbursement', 'receipt_payout'], true)
     ) {

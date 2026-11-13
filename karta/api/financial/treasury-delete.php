@@ -36,10 +36,6 @@ try {
         $existing = $treasuryRepo->getById($id);
         if (!$existing) { $db->rollBack(); jsonError('السجل غير موجود', 404); }
         if ($existing['username'] !== $username) { $db->rollBack(); jsonError('غير مسموح', 403); }
-        if (!empty($existing['is_archived'])) {
-            $db->rollBack();
-            jsonError('لا يمكن حذف حركة خزنة مؤرشفة', 409);
-        }
         if (in_array($existing['reference_type'] ?? '', [ReceiptRepository::REF_TYPE_ROW_DISBURSEMENT, ReceiptRepository::REF_TYPE_RECEIPT_PAYMENT], true)
             || in_array($existing['effect'] ?? '', ['row_disbursement', 'receipt_payout'], true)
         ) {

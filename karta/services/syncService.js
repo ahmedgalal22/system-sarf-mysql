@@ -39,7 +39,6 @@ const ENTITY_EVENT_MAP = Object.freeze({
   treasury:              'treasury:changed',
   main_capital:          'capital:changed',
   vehicle_ledger:        'receipts:changed',
-  archive_batches:       'archive:changed',
   drivers:               'drivers:changed',
   notes:                 'notes:changed',
 });

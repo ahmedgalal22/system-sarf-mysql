@@ -8,8 +8,6 @@ import { initAllReceiptsPage } from './allReceipts.js';
 import { attachOwnersPageListeners, loadOwners } from './entities.js';
 import { attachOfficesPageListeners, initOfficesPage, loadOffices } from './offices.js';
 import { initTreasuryPage } from './treasury.js';
-import { initArchivePage } from './archive.js';
-import { closeArchiveViewer } from './archiveViewer.js';
 import { initHomePage } from './home.js';
 import { initSidebarLayout } from './sidebarLayout.js';
 import { initDashboardPage } from './dashboard.js';
@@ -30,7 +28,6 @@ const PAGE_MAP = {
   ownerDetailsPage: 'ownerDetailsPage',
   officesPage: 'officesPage',
   treasuryPage: 'treasuryPage',
-  archivePage: 'archivePage',
   officeDetailsPage: 'officeDetailsPage',
   termsPage: 'termsPage',
 };
@@ -45,7 +42,6 @@ const PAGE_KEY_NORMALIZE = {
   ownerDetailsPage: 'ownerDetailsPage',
   officesPage: 'officesPage',
   treasuryPage: 'treasuryPage',
-  archivePage: 'archivePage',
   officeDetailsPage: 'officeDetailsPage',
   termsPage: 'termsPage',
 };
@@ -70,10 +66,12 @@ function _readLastPageContext() {
 }
 
 function _resolvePageElement(pageName) {
+  if (!pageName) return null;
   // allow passing direct section id
   const direct = document.getElementById(pageName);
   if (direct) return direct;
-  return document.getElementById(PAGE_MAP[pageName]);
+  const mappedId = PAGE_MAP[pageName];
+  return mappedId ? document.getElementById(mappedId) : null;
 }
 
 function _resolvePageKey(pageName, targetId) {
@@ -88,13 +86,18 @@ async function showPage(pageName) {
   const pages = document.querySelectorAll('.page');
   pages.forEach(p => p.classList.add('hidden'));
 
-  const target = _resolvePageElement(pageName);
+  let resolvedPageName = pageName;
+  let target = _resolvePageElement(resolvedPageName);
+  if (!target && resolvedPageName !== 'homePage') {
+    resolvedPageName = 'homePage';
+    target = _resolvePageElement('homePage');
+  }
   if (target) {
     target.classList.remove('hidden');
   }
 
   const targetId = target?.id || '';
-  const pageKey = _resolvePageKey(pageName, targetId);
+  const pageKey = _resolvePageKey(resolvedPageName, targetId);
   _writeLastPage(pageKey);
 
   // ── Sidebar active state ──
@@ -103,30 +106,26 @@ async function showPage(pageName) {
     link.classList.toggle('active', lp === pageKey || lp === targetId);
   });
 
-  if (pageName === 'ownersPage' || targetId === 'ownersPage') {
+  if (resolvedPageName === 'ownersPage' || targetId === 'ownersPage') {
     await loadOwners();
   }
-  if (pageName === 'officesPage' || targetId === 'officesPage') {
+  if (resolvedPageName === 'officesPage' || targetId === 'officesPage') {
     await loadOffices();
   }
-  if (pageName === 'allReceipts' || targetId === 'allReceiptsPage') {
+  if (resolvedPageName === 'allReceipts' || targetId === 'allReceiptsPage') {
     await initAllReceiptsPage();
   }
-  if (pageName === 'dashboardPage' || targetId === 'dashboardPage') {
+  if (resolvedPageName === 'dashboardPage' || targetId === 'dashboardPage') {
     await initDashboardPage();
   }
-  if (pageName === 'treasuryPage' || targetId === 'treasuryPage') {
+  if (resolvedPageName === 'treasuryPage' || targetId === 'treasuryPage') {
     initHomePage();
     initTreasuryPage();
   }
-  if (pageName === 'archivePage' || targetId === 'archivePage') {
-    closeArchiveViewer();
-    await initArchivePage();
-  }
-  if (pageName === 'homePage' || targetId === 'homePage') {
+  if (resolvedPageName === 'homePage' || targetId === 'homePage') {
     initHomePage();
   }
-  if (pageName === 'termsPage' || targetId === 'termsPage') {
+  if (resolvedPageName === 'termsPage' || targetId === 'termsPage') {
     initTermsPage();
   }
 }

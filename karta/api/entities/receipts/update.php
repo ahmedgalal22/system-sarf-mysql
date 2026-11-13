@@ -9,7 +9,7 @@
  * TRANSACTION MODEL:
  *   BEGIN
  *     SELECT FOR UPDATE — exclusive row lock
- *     Check: NOT_FOUND → ARCHIVED → CONFLICT
+ *     Check: NOT_FOUND → CONFLICT
  *     UPDATE with NOW(3) timestamp
  *   COMMIT
  *

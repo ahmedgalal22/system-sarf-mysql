@@ -9,7 +9,7 @@
  * TRANSACTION MODEL:
  *   Pre-check: findById (fast 404 + ownership, outside tx)
  *   BEGIN
- *     softDelete: FOR UPDATE → archive check → set deleted_at/by
+ *     softDelete: FOR UPDATE → set deleted_at/by
  *   COMMIT
  *
  * No external calls inside transaction. No schema operations.
@@ -56,11 +56,6 @@ try {
         if ($revStatus['code'] === ReceiptRepository::RESULT_FORBIDDEN) {
             $db->rollBack();
             mapResult('FORBIDDEN', null, 'غير مسموح بالحذف');
-            return;
-        }
-        if ($revStatus['code'] === ReceiptRepository::RESULT_ARCHIVED) {
-            $db->rollBack();
-            mapResult('ARCHIVED');
             return;
         }
         if ($revStatus['code'] === ReceiptRepository::RESULT_INCONSISTENT_LEDGER) {

@@ -67,7 +67,6 @@ import { printHTML, buildPrintDocument } from './printEngine.js';
 import { TreasuryRepository } from './services/treasuryRepository.js';
 import { ClientRepository } from './services/clientRepository.js';
 import { DateUtils } from './dateUtils.js';
-import { ArchiveService } from './services/archiveService.js';
 import { ApiClient } from './services/apiClient.js';
 import { dbBool } from './dbTypes.js';
 import { generateId as _uuid } from './utils/idGenerator.js';
@@ -402,7 +401,6 @@ async function editEntry(username, entryId, patch) {
   const existing = await TreasuryRepository.getById(entryId);
   if (!existing) throw new Error('❌ الحركة غير موجودة');
   if (existing.username !== username) throw new Error('❌ غير مسموح');
-  ArchiveService.assertNotArchived(existing);
 
   // Only allow editing manual entries — not auto entries
   const editableEffects = TREASURY_EDITABLE_EFFECTS;
@@ -441,7 +439,6 @@ async function deleteEntry(username, entryId) {
   const existing = await TreasuryRepository.getById(entryId);
   if (!existing) throw new Error('❌ الحركة غير موجودة');
   if (existing.username !== username) throw new Error('❌ غير مسموح');
-  ArchiveService.assertNotArchived(existing);
 
   const editableEffects = TREASURY_EDITABLE_EFFECTS;
   if (!editableEffects.includes(existing.effect)) {
@@ -501,11 +498,8 @@ async function getSummary(username, filters = null, options = {}) {
     if (e.type === TREASURY_ENTRY_TYPE.WITHDRAW) balance_out += amt;
   }
 
-  // Add carry-forward balance from archived periods
-  const archivedBalance = await ArchiveService.getArchivedTreasuryBalance(username, options);
-
   return {
-    balance: Money.toDecimal(balance_in - balance_out + archivedBalance),
+    balance: Money.toDecimal(balance_in - balance_out),
     total_in: Money.toDecimal(total_in),
     total_payout: Money.toDecimal(total_payout),
     total_salfa: Money.toDecimal(total_salfa),
@@ -1321,14 +1315,6 @@ async function _refreshPage(options = {}) {
 
   // Compute summary from filtered entries only
   const filteredSummary = _computeFilteredSummary(filteredEntries);
-
-  // Add carry-forward balance from archived periods to the UI summary
-  try {
-    const archivedBal = await ArchiveService.getArchivedTreasuryBalance(username, options);
-    if (archivedBal) {
-      filteredSummary.balance = Money.toDecimal(Money.toCents(filteredSummary.balance) + archivedBal);
-    }
-  } catch (_) { /* no archive data */ }
 
   // Cache summary for print (ISSUE-2 FIX)
   _lastRenderedSummary = filteredSummary;

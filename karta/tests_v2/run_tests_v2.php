@@ -42,7 +42,6 @@ require_once __DIR__ . '/test_permission_v2.php';
 require_once __DIR__ . '/test_idempotency_v2.php';
 require_once __DIR__ . '/test_conflict_v2.php';
 require_once __DIR__ . '/test_soft_delete_v2.php';
-require_once __DIR__ . '/test_archive_lock_v2.php';
 require_once __DIR__ . '/test_server_failure_v2.php';
 require_once __DIR__ . '/test_concurrency_v2.php';
 require_once __DIR__ . '/test_load_v2.php';
@@ -53,7 +52,6 @@ $modules = [
     'IDEMPOTENCY'    => 'run_idempotency_tests',
     'CONFLICT'       => 'run_conflict_tests',
     'SOFT_DELETE'    => 'run_soft_delete_tests',
-    'ARCHIVE_LOCK'   => 'run_archive_lock_tests',
     'SERVER_FAILURE' => 'run_server_failure_tests',
     'CONCURRENCY'    => 'run_concurrency_tests',
     'LOAD_TEST'      => 'run_load_tests',

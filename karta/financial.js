@@ -26,7 +26,6 @@
 import { Money } from './money.js';
 import { RECEIPT_PAYOUT_STATUS, normalizePayoutStatus } from './constants/payoutStatus.js';
 import { DateUtils } from './dateUtils.js';
-import { ArchiveService } from './services/archiveService.js';
 import { DBProvider } from './services/dbProvider.js';
 import { ReceiptRepository } from './services/receiptRepository.js';
 import { ApiClient } from './services/apiClient.js';
@@ -345,9 +344,7 @@ async function updateReceipt(username, id, data, extraOps = []) {
   if (!username) throw new Error('[FinancialService:update] username is required.');
   if (!id)       throw new Error('[FinancialService:update] id is required.');
 
-  // Archive guard — cannot modify archived receipts
   const _existing = await DBProvider.get(STORE.RECEIPTS, id);
-  ArchiveService.assertNotArchived(_existing);
 
   const clean    = _validate(data);
   const firstDataRow = (Array.isArray(data.rows) ? data.rows : []).find(r => r && r._type !== 'separator') || null;
@@ -426,9 +423,6 @@ async function deleteReceipt(username, id, extraOps = []) {
   if (!username) throw new Error('[FinancialService:delete] username is required.');
   if (!id)       throw new Error('[FinancialService:delete] id is required.');
 
-  const _existing = await DBProvider.get(STORE.RECEIPTS, id);
-  ArchiveService.assertNotArchived(_existing);
-
   // Phase 2 TASK E — extraOps lets the caller atomically unlink any bolsa
   // rows that pointed back to this receipt.  They are inserted BEFORE the
   // receipt delete op so the soft-deleted receipt remains the last op,
@@ -462,9 +456,6 @@ async function deleteReceipt(username, id, extraOps = []) {
 async function updateReceiptStatus(username, receiptId, status) {
   if (!username) throw new Error('[FinancialService:updateReceiptStatus] username is required.');
   if (!receiptId) throw new Error('[FinancialService:updateReceiptStatus] receiptId is required.');
-
-  const _existing = await DBProvider.get(STORE.RECEIPTS, String(receiptId));
-  ArchiveService.assertNotArchived(_existing);
 
   const normalized = _normalizePayoutStatus(status);
   if (!normalized) {
@@ -846,20 +837,9 @@ async function getClientBalance(client_id, client_type, dateRange = null, option
     if (entry.type === 'withdraw') withdraw_total += cents;
   }
 
-  // Add carry-forward balance from archived periods only when computing all-time balance (no date range filter)
-  let archivedCents = 0;
-  if (!normalizedRange) {
-    try {
-      const session = (typeof window !== 'undefined' && window.__APP_CONTEXT__?.username) || '';
-      if (session) {
-        archivedCents = await ArchiveService.getArchivedClientBalance(session, client_id, client_type, options);
-      }
-    } catch (_) { /* no archive data — continue with zero */ }
-  }
-
   return {
     client_id: String(client_id),
-    balance: Money.toDecimal(deposit_total - withdraw_total + archivedCents),
+    balance: Money.toDecimal(deposit_total - withdraw_total),
     deposit_total: Money.toDecimal(deposit_total),
     withdraw_total: Money.toDecimal(withdraw_total),
     entry_count: ledger.length,
