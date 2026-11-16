@@ -94,20 +94,17 @@ test('Phase 2.1: Migration SQL artifact created and schema SQL files updated', (
     'karta/database_vehicle_ledger.sql',
     'karta/database_main_capital.sql',
     'karta/database_sync.sql',
-    'karta/database_archive.sql',
+    // 'karta/database_archive.sql' — DELETED IN PHASE 2 FINAL REMOVAL
   ];
 
   for (const rel of schemaFiles) {
-    const content = fs.readFileSync(path.join(KARTA_DIR, rel), 'utf8');
     if (rel === 'karta/database_archive.sql') {
-      assert.ok(content.includes('-- Karta ERP — Archive Batches + Financial Snapshots (REMOVED IN PHASE 2)'), 'database_archive.sql must contain historical reference note header');
-      assert.ok(content.includes('-- Tables and indexes deleted. This file is retained only for historical reference.'), 'database_archive.sql must contain historical reference note body');
-      assert.ok(content.includes('-- DELETED IN PHASE 2 IMPLEMENTATION'), 'database_archive.sql must contain DELETED IN PHASE 2 IMPLEMENTATION');
-      assert.ok(!content.includes('CREATE TABLE archive_batches'), 'database_archive.sql must not contain CREATE TABLE archive_batches');
-      assert.ok(!content.includes('CREATE TABLE financial_snapshots'), 'database_archive.sql must not contain CREATE TABLE financial_snapshots');
-    } else {
-      assert.ok(!hasArchiveFilter(content), `${rel} must not contain archive columns/indexes/seed`);
+      // File deleted in final Phase 2 removal; verify it no longer exists
+      assert.ok(!fs.existsSync(path.join(KARTA_DIR, rel)), 'database_archive.sql must NOT exist (deleted in final removal)');
+      continue;
     }
+    const content = fs.readFileSync(path.join(KARTA_DIR, rel), 'utf8');
+    assert.ok(!hasArchiveFilter(content), `${rel} must not contain archive columns/indexes/seed`);
   }
 });
 
