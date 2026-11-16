@@ -137,6 +137,49 @@ class BackupRepository {
                 $errors[] = "Missing table: $table";
             } elseif (!is_array($backup['tables'][$table])) {
                 $errors[] = "Invalid data for table: $table";
+            } else {
+                // --- NEW: Schema Preflight Column Validation ---
+                $rows = $backup['tables'][$table];
+                if (!empty($rows)) {
+                    // 1. Retrieve actual database column names
+                    $stmt = $this->db->query("SHOW COLUMNS FROM `$table`");
+                    if ($stmt) {
+                        $schemaCols = array_map(fn($row) => $row['Field'], $stmt->fetchAll(PDO::FETCH_ASSOC));
+                        sort($schemaCols);
+
+                        // 2. Extract column names from backup rows and ensure consistency
+                        $backupColsSet = null;
+                        foreach ($rows as $index => $row) {
+                            if (!is_array($row)) {
+                                $errors[] = "Invalid row structure in table $table at index $index";
+                                break;
+                            }
+                            $rowCols = array_keys($row);
+                            sort($rowCols);
+
+                            if ($backupColsSet === null) {
+                                $backupColsSet = $rowCols;
+                            } elseif ($backupColsSet !== $rowCols) {
+                                $errors[] = "Inconsistent column structure in table $table: row 0 has [" . implode(', ', $backupColsSet) . "], row $index has [" . implode(', ', $rowCols) . "]";
+                                break;
+                            }
+                        }
+
+                        if (!empty($errors)) break;
+
+                        // 3. Compare schema vs backup columns strictly
+                        $missing = array_diff($schemaCols, $backupColsSet);
+                        $unexpected = array_diff($backupColsSet, $schemaCols);
+
+                        if (!empty($missing) || !empty($unexpected)) {
+                            $missingStr = !empty($missing) ? "missing [" . implode(', ', $missing) . "]" : "none";
+                            $unexpectedStr = !empty($unexpected) ? "unexpected [" . implode(', ', $unexpected) . "]" : "none";
+                            $errors[] = "Schema mismatch in table $table: $missingStr, $unexpectedStr";
+                        }
+                    } else {
+                        $errors[] = "Failed to query schema for table $table";
+                    }
+                }
             }
         }
 
