@@ -153,7 +153,6 @@ function _resolveOfficeForRow(row, officeById, officeByNameKey) {
 function _isRowDisbursementOfficeMovement(movement) {
   if (!movement || typeof movement !== 'object') return false;
   if (movement.deleted_at !== null && movement.deleted_at !== undefined) return false;
-  if (dbBool(movement.is_archived)) return false;
 
   const refType = String(movement.reference_type ?? '').trim();
   const effect = String(movement.effect ?? '').trim();
@@ -247,7 +246,6 @@ export function calculateTotalCollectedFromCompanies(activeReceipts, offices, mo
       const receipt = activeReceipts[rIdx];
       if (!receipt || typeof receipt !== 'object') continue;
       if (receipt.deleted_at !== null && receipt.deleted_at !== undefined) continue;
-      if (dbBool(receipt.is_archived)) continue;
 
       const receiptId =
         receipt.id !== undefined && receipt.id !== null && String(receipt.id).trim() !== ''
@@ -1131,7 +1129,7 @@ async function _refreshDashboard(options = {}) {
   // 2. Filter datasets based on selected dates with defense & deduplication guards
   const seenReceiptIds = new Set();
   const activeReceipts = (allReceipts || []).filter(r => {
-    if (!r || (r.deleted_at !== null && r.deleted_at !== undefined) || dbBool(r.is_archived)) return false;
+    if (!r || (r.deleted_at !== null && r.deleted_at !== undefined)) return false;
     if (r.id !== undefined && r.id !== null) {
       const rid = String(r.id);
       if (seenReceiptIds.has(rid)) return false;
@@ -1145,7 +1143,7 @@ async function _refreshDashboard(options = {}) {
 
   const seenTreasuryIds = new Set();
   const activeTreasury = (allTreasury || []).filter(t => {
-    if (!t || dbBool(t.is_reversed) || (t.deleted_at !== null && t.deleted_at !== undefined) || dbBool(t.is_archived)) return false;
+    if (!t || dbBool(t.is_reversed) || (t.deleted_at !== null && t.deleted_at !== undefined)) return false;
     if (t.id !== undefined && t.id !== null) {
       const tid = String(t.id);
       if (seenTreasuryIds.has(tid)) return false;
@@ -1209,7 +1207,7 @@ export function calculateDashboardNetProfit(activeReceipts, activeTreasury) {
   const seenReceipts = new Set();
 
   for (const r of (activeReceipts || [])) {
-    if (!r || (r.deleted_at !== null && r.deleted_at !== undefined) || dbBool(r.is_archived)) continue;
+    if (!r || (r.deleted_at !== null && r.deleted_at !== undefined)) continue;
     if (r.id !== undefined && r.id !== null) {
       const rid = String(r.id);
       if (seenReceipts.has(rid)) continue;
@@ -1231,7 +1229,7 @@ export function calculateDashboardNetProfit(activeReceipts, activeTreasury) {
   const seenTreasury = new Set();
 
   for (const t of (activeTreasury || [])) {
-    if (!t || dbBool(t.is_reversed) || (t.deleted_at !== null && t.deleted_at !== undefined) || dbBool(t.is_archived)) continue;
+    if (!t || dbBool(t.is_reversed) || (t.deleted_at !== null && t.deleted_at !== undefined)) continue;
     if (t.id !== undefined && t.id !== null) {
       const tid = String(t.id);
       if (seenTreasury.has(tid)) continue;

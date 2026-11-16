@@ -38,10 +38,6 @@ The system is designed for LAN deployment across 5 devices using XAMPP.
 | Offices | `offices.js` | Companies and office management |
 | Treasury | `treasury.js` | Financial treasury operations |
 | Dashboard | `dashboard.js` | Admin-only financial dashboard |
-| Archive | `archive.js`, `archiveViewer.js` | Batch archiving of historical data |
-| Financial Service | `financial.js` | All financial operations (create/delete/update with balance tracking) |
-| Money | `money.js` | Cents ↔ decimal conversion (single source of truth) |
-| Sync Service | `services/syncService.js` | Real-time data version polling |
 | Print Engine | `printEngine.js` | Iframe-based print system |
 | Excel Export | `excelService.js` | Receipt data export to .xlsx |
 
@@ -57,13 +53,10 @@ karta/
 │   ├── middleware/         # Auth & role middleware
 │   ├── stats/              # Statistical queries
 │   ├── sync/               # Data version tracking
-│   ├── archive/            # Archive operations
 │   └── backup/             # Backup create/restore
 ├── components/             # Reusable UI components
 │   └── multiSelectFilter.js
 ├── config/                 # PHP configuration
-│   ├── app.php             # App name, timezone, debug mode
-│   ├── database.php        # MySQL connection settings
 │   └── session.php         # Session configuration
 ├── constants/              # Shared constants
 │   └── payoutStatus.js
@@ -99,7 +92,7 @@ karta/
 ├── uploads/                # Upload directory (placeholder)
 ├── utils/                  # Shared utilities
 │   └── idGenerator.js
-├── database*.sql           # 16 SQL schema files
+├── database*.sql           # 15 SQL schema files
 ├── index.html              # Main SPA entry point
 ├── login.html              # Login page
 ├── index.php               # API root info
@@ -153,7 +146,7 @@ karta/
 - Name: `karta_erp`
 - Charset: `utf8mb4`
 - Collation: `utf8mb4_unicode_ci`
-- Tables: 18 (see Section 10)
+- Tables: 15 (see Section 10)
 - Money storage: All monetary values stored as **integer cents** (BIGINT)
 - Dates: `Africa/Cairo` timezone, `DATETIME(3)` millisecond precision
 
@@ -209,12 +202,10 @@ Import SQL files **in this order**:
 8. `database_receipts.sql`
 9. `database_treasury.sql`
 10. `database_vehicle_ledger.sql`
-11. `database_bolsa_forms.sql`
-12. `database_main_capital.sql`
-13. `database_archive.sql`
-14. `database_sync.sql`
-15. `database_backup_metadata.sql`
-16. `database_hamola_details.sql`
+11. `database_main_capital.sql`
+12. `database_sync.sql`
+13. `database_backup_metadata.sql`
+14. `database_hamola_details.sql`
 
 ### Step 5: Configure Database Connection
 
@@ -423,19 +414,12 @@ After logging in, you should see:
 - [ ] Office detail page shows transactions
 - [ ] Print office report
 
-### Archive (الأرشيف)
+### Archive
 
-- [ ] Create archive batch
-- [ ] View archived data
-- [ ] Restore archived data
-- [ ] Print archived receipts
+- [ ] (Archive module removed in Phase 2)
 
 ### Dashboard (لوحة التحكم — Admin Only)
 
-- [ ] Dashboard loads for admin user
-- [ ] Dashboard is blocked for accountant user
-- [ ] Summary cards show correct values
-- [ ] Financial charts render
 - [ ] Print dashboard report
 
 ### Backup & Restore
@@ -661,8 +645,6 @@ Open browser Developer Tools (F12) → Network tab.
 | `vehicle_ledger` | Per-vehicle financial ledger |
 | `bolsa_forms` | Bolsa discharge forms |
 | `main_capital_treasury` | Capital treasury records |
-| `archive_batches` | Archive batch metadata |
-| `financial_snapshots` | Point-in-time financial snapshots |
 | `data_versions` | Entity version tracking for sync |
 | `backup_metadata` | Backup file metadata |
 | `hamola_details` | Hamola (load) detail records |

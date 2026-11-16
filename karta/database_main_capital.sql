@@ -16,11 +16,6 @@ CREATE TABLE IF NOT EXISTS main_capital_treasury (
   description       TEXT          DEFAULT NULL,
   date              DATE          DEFAULT NULL,
 
-  -- Archive
-  is_archived       TINYINT(1)    NOT NULL DEFAULT 0,
-  archive_batch_id  CHAR(36)      DEFAULT NULL,
-  archived_at       DATETIME(3)   DEFAULT NULL,
-
   -- Audit
   created_by        VARCHAR(100)  DEFAULT NULL,
   updated_by        VARCHAR(100)  DEFAULT NULL,
@@ -33,6 +28,5 @@ CREATE TABLE IF NOT EXISTS main_capital_treasury (
   INDEX idx_username (username),
   INDEX idx_type (type),
   INDEX idx_date (date),
-  INDEX idx_archived (is_archived),
   INDEX idx_deleted (deleted_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

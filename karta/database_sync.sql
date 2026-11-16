@@ -26,6 +26,5 @@ INSERT IGNORE INTO data_versions (entity_name, version) VALUES
   ('treasury',              1),
   ('vehicle_ledger',        1),
   ('main_capital',          1),
-  ('archive_batches',       1),
   ('drivers',               1),
   ('notes',                 1);

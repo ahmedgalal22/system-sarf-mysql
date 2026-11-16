@@ -65,11 +65,6 @@ CREATE TABLE IF NOT EXISTS receipts (
   shipping_number   VARCHAR(100)  DEFAULT NULL,
   request_id        CHAR(36)      DEFAULT NULL,
 
-  -- Archive fields
-  is_archived       TINYINT(1)    NOT NULL DEFAULT 0,
-  archive_batch_id  CHAR(36)      DEFAULT NULL,
-  archived_at       DATETIME(3)   DEFAULT NULL,
-
   -- Audit trail (server-authoritative)
   created_by        VARCHAR(100)  DEFAULT NULL,
   updated_by        VARCHAR(100)  DEFAULT NULL,
@@ -88,7 +83,6 @@ CREATE TABLE IF NOT EXISTS receipts (
   INDEX idx_client (client_id),
   INDEX idx_date (receipt_date),
   INDEX idx_status (payout_status),
-  INDEX idx_archived (is_archived),
   INDEX idx_deleted (deleted_at),
   INDEX idx_created (created_at),
   INDEX idx_updated (updated_at)

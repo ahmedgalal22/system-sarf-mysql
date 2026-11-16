@@ -524,7 +524,7 @@ class ReceiptRepository {
     }
 
     public function findAll(string $username, array $filters = []): array {
-        $sql = 'SELECT * FROM receipts WHERE username = :username AND deleted_at IS NULL AND is_archived = 0';
+        $sql = 'SELECT * FROM receipts WHERE username = :username AND deleted_at IS NULL';
         $params = [':username' => $username];
 
         if (!empty($filters['client_id'])) {
@@ -594,7 +594,7 @@ class ReceiptRepository {
 
         // ── 1. Build shared WHERE clause from column-level filters ────────
 
-        $whereBase = 'username = :username AND deleted_at IS NULL AND is_archived = 0';
+        $whereBase = 'username = :username AND deleted_at IS NULL';
         $bindParams = [':username' => $username];
 
         // Date range
@@ -924,7 +924,7 @@ class ReceiptRepository {
     }
 
     private function _buildSearchOptions(string $username, ?string $fromDate, ?string $toDate): array {
-        $baseWhere = 'username = :username AND deleted_at IS NULL AND is_archived = 0';
+        $baseWhere = 'username = :username AND deleted_at IS NULL';
         $baseParams = [':username' => $username];
         if ($fromDate) {
             $baseWhere .= ' AND receipt_date >= :from_date';
@@ -1110,7 +1110,6 @@ class ReceiptRepository {
                     payout_status, payment_status, paid_at, account_type,
                     total, net_due, net_total, paid, previous_balance, general_add,
                     `rows`, notes, shipping_number, request_id,
-                    is_archived, archive_batch_id, archived_at,
                     created_by, created_at, updated_at
                 ) VALUES (
                     :uuid, :username, :receipt_number, :receipt_date,
@@ -1118,7 +1117,6 @@ class ReceiptRepository {
                     :payout_status, :payment_status, :paid_at, :account_type,
                     :total, :net_due, :net_total, :paid, :previous_balance, :general_add,
                     :rows, :notes, :shipping_number, :request_id,
-                    :is_archived, :archive_batch_id, :archived_at,
                     :created_by, NOW(3), NOW(3)
                 )'
             );
@@ -1130,7 +1128,6 @@ class ReceiptRepository {
                     payout_status, paid_at, account_type,
                     total, net_due, net_total, paid, previous_balance, general_add,
                     `rows`, notes, shipping_number, request_id,
-                    is_archived, archive_batch_id, archived_at,
                     created_by, created_at, updated_at
                 ) VALUES (
                     :uuid, :username, :receipt_number, :receipt_date,
@@ -1138,7 +1135,6 @@ class ReceiptRepository {
                     :payout_status, :paid_at, :account_type,
                     :total, :net_due, :net_total, :paid, :previous_balance, :general_add,
                     :rows, :notes, :shipping_number, :request_id,
-                    :is_archived, :archive_batch_id, :archived_at,
                     :created_by, NOW(3), NOW(3)
                 )'
             );
@@ -1165,9 +1161,6 @@ class ReceiptRepository {
             ':notes'            => $data['notes'] ?? null,
             ':shipping_number'  => $data['shipping_number'] ?? null,
             ':request_id'       => $data['request_id'] ?? null,
-            ':is_archived'      => $data['is_archived'] ?? 0,
-            ':archive_batch_id' => $data['archive_batch_id'] ?? null,
-            ':archived_at'      => $data['archived_at'] ?? null,
             ':created_by'       => $data['created_by'] ?? null,
         ];
         if ($hasPayCol) {

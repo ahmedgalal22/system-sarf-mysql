@@ -21,7 +21,7 @@
  *   entries.filter(e => !dbBool(e.is_reversed))
  *
  *   // Archived entries:
- *   entries.filter(e => dbBool(e.is_archived))
+ *   // (removed in Phase 2)
  * ─────────────────────────────────────────────────────────────────────────────
  */
 

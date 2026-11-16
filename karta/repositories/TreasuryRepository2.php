@@ -30,7 +30,7 @@ class TreasuryRepo {
 
     public function getAllByUsername(string $username): array {
         $stmt = $this->db->prepare(
-            'SELECT * FROM treasury WHERE username = :u AND deleted_at IS NULL AND is_archived = 0 ORDER BY created_at DESC'
+            'SELECT * FROM treasury WHERE username = :u AND deleted_at IS NULL ORDER BY created_at DESC'
         );
         $stmt->execute([':u' => $username]);
         return $stmt->fetchAll();
@@ -98,11 +98,11 @@ class TreasuryRepo {
         $stmt = $this->db->prepare(
             'INSERT INTO treasury (uuid, username, type, effect, account_type, entry_type, amount,
                 reference_type, reference_id, client_id, client_type, client_name, agent_id, receipt_number,
-                date, applied_at, description, note, is_reversed, is_archived, archive_batch_id,
+                date, applied_at, description, note, is_reversed,
                 created_by, created_at, updated_at)
              VALUES (:uuid, :username, :type, :effect, :account_type, :entry_type, :amount,
                 :reference_type, :reference_id, :client_id, :client_type, :client_name, :agent_id, :receipt_number,
-                :date, :applied_at, :description, :note, :is_reversed, :is_archived, :archive_batch_id,
+                :date, :applied_at, :description, :note, :is_reversed,
                 :created_by, NOW(3), NOW(3))'
         );
         $stmt->execute([
@@ -125,8 +125,6 @@ class TreasuryRepo {
             ':description'     => $data['description'] ?? null,
             ':note'            => $data['note'] ?? null,
             ':is_reversed'     => intval($data['is_reversed'] ?? 0),
-            ':is_archived'     => intval($data['is_archived'] ?? 0),
-            ':archive_batch_id'=> $data['archive_batch_id'] ?? null,
             ':created_by'      => $data['username'],
         ]);
         return $this->getById((int)$this->db->lastInsertId());

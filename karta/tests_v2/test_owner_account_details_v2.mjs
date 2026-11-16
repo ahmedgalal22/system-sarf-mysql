@@ -403,7 +403,6 @@ function resetMockServer() {
       created_at: '2026-06-10 09:00:00',
       note: 'رصيد افتتاحي',
       is_reversed: 0,
-      is_archived: 0,
       deleted_at: null,
     },
   ];

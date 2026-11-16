@@ -25,7 +25,7 @@ try {
     }
 
     // Build filtered query dynamically
-    $sql = 'SELECT * FROM treasury WHERE username = :u AND deleted_at IS NULL AND is_archived = 0';
+    $sql = 'SELECT * FROM treasury WHERE username = :u AND deleted_at IS NULL';
     $params = [':u' => $username];
 
     // Optional filters

@@ -66,8 +66,6 @@ try {
         $params[':is_reversed'] = $reversed;
     }
 
-    $sql .= ' AND is_archived = 0';
-
     // Optional inclusive date range filter (YYYY-MM-DD)
     $fromDate = sanitizeString($_GET['from'] ?? ($_GET['from_date'] ?? null));
     $toDate   = sanitizeString($_GET['to'] ?? ($_GET['to_date'] ?? null));

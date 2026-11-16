@@ -40,8 +40,7 @@ try {
     $sql = "SELECT id, `rows`
             FROM receipts
             WHERE username = :u
-              AND deleted_at IS NULL
-              AND is_archived = 0";
+              AND deleted_at IS NULL";
     $params = [':u' => $authUser['username']];
     if ($fromDate !== '') {
         $sql .= ' AND receipt_date >= :from_date';

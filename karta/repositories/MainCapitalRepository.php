@@ -18,7 +18,7 @@ class MainCapitalRepository {
 
     public function getAllByUsername(string $username): array {
         $stmt = $this->db->prepare(
-            'SELECT *, description AS note FROM main_capital_treasury WHERE username = :u AND deleted_at IS NULL AND is_archived = 0 ORDER BY created_at DESC'
+            'SELECT *, description AS note FROM main_capital_treasury WHERE username = :u AND deleted_at IS NULL ORDER BY created_at DESC'
         );
         $stmt->execute([':u' => $username]);
         return $stmt->fetchAll();
@@ -28,9 +28,9 @@ class MainCapitalRepository {
         $uuid = $data['uuid'] ?? $data['id'] ?? $this->uuid();
         $stmt = $this->db->prepare(
             'INSERT INTO main_capital_treasury (uuid, username, type, amount, description, date,
-                is_archived, archive_batch_id, created_by, created_at, updated_at)
+                created_by, created_at, updated_at)
              VALUES (:uuid, :username, :type, :amount, :description, :date,
-                :is_archived, :archive_batch_id, :created_by, NOW(3), NOW(3))'
+                :created_by, NOW(3), NOW(3))'
         );
         $stmt->execute([
             ':uuid'            => $uuid,
@@ -39,8 +39,6 @@ class MainCapitalRepository {
             ':amount'          => intval($data['amount'] ?? 0),
             ':description'     => $data['description'] ?? $data['note'] ?? null,
             ':date'            => $data['date'] ?? null,
-            ':is_archived'     => intval($data['is_archived'] ?? 0),
-            ':archive_batch_id'=> $data['archive_batch_id'] ?? null,
             ':created_by'      => $data['username'],
         ]);
         return $this->getById((int)$this->db->lastInsertId());

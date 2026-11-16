@@ -595,7 +595,7 @@ async function getOfficeFinancialSummary(username, filters = null, options = {})
     const receipts = await OfficeRepository.getReceipts(username, options);
     const filtered = range
       ? receipts.filter((r) => {
-          if (r.deleted_at != null || r.is_archived) return false;
+          if (r.deleted_at != null) return false;
           const rawDate = r.receipt_date || r.date || r.created_at || 0;
           const rawDateIso = String(rawDate || '').trim().slice(0, 10);
           if (/^\d{4}-\d{2}-\d{2}$/.test(rawDateIso) && (range.fromIso || range.toIso)) {

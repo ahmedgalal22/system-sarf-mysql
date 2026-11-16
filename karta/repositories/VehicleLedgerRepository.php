@@ -18,7 +18,7 @@ class VehicleLedgerRepository {
 
     public function getAllByUsername(string $username): array {
         $stmt = $this->db->prepare(
-            'SELECT * FROM vehicle_ledger WHERE username = :u AND deleted_at IS NULL AND is_archived = 0 ORDER BY created_at DESC'
+            'SELECT * FROM vehicle_ledger WHERE username = :u AND deleted_at IS NULL ORDER BY created_at DESC'
         );
         $stmt->execute([':u' => $username]);
         return $stmt->fetchAll();
@@ -90,12 +90,12 @@ class VehicleLedgerRepository {
             'INSERT INTO vehicle_ledger (uuid, username, vehicle_id, vehicle_plate, vehicle_owner_id, vehicle_owner_name,
                 client_id, client_type, client_name,
                 type, effect, amount, reference_type, reference_id, receipt_number,
-                date, applied_at, note, is_reversed, is_archived, archive_batch_id,
+                date, applied_at, note, is_reversed,
                 created_by, created_at, updated_at)
              VALUES (:uuid, :username, :vehicle_id, :vehicle_plate, :vehicle_owner_id, :vehicle_owner_name,
                 :client_id, :client_type, :client_name,
                 :type, :effect, :amount, :reference_type, :reference_id, :receipt_number,
-                :date, :applied_at, :note, :is_reversed, :is_archived, :archive_batch_id,
+                :date, :applied_at, :note, :is_reversed,
                 :created_by, NOW(3), NOW(3))'
         );
         $stmt->execute([
@@ -118,8 +118,6 @@ class VehicleLedgerRepository {
             ':applied_at'        => $data['applied_at'] ?? null,
             ':note'              => $data['note'] ?? null,
             ':is_reversed'       => intval($data['is_reversed'] ?? 0),
-            ':is_archived'       => intval($data['is_archived'] ?? 0),
-            ':archive_batch_id'  => $data['archive_batch_id'] ?? null,
             ':created_by'        => $data['username'],
         ]);
         return $this->getById((int)$this->db->lastInsertId());

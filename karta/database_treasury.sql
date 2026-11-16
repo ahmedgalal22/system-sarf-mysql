@@ -44,11 +44,6 @@ CREATE TABLE IF NOT EXISTS treasury (
   reversed_at       VARCHAR(30)   DEFAULT NULL,
   reversed_by       VARCHAR(100)  DEFAULT NULL,
 
-  -- Archive
-  is_archived       TINYINT(1)    NOT NULL DEFAULT 0,
-  archive_batch_id  CHAR(36)      DEFAULT NULL,
-  archived_at       DATETIME(3)   DEFAULT NULL,
-
   -- Audit
   created_by        VARCHAR(100)  DEFAULT NULL,
   updated_by        VARCHAR(100)  DEFAULT NULL,
@@ -66,7 +61,6 @@ CREATE TABLE IF NOT EXISTS treasury (
   INDEX idx_reference_type (reference_type),
   INDEX idx_client_id (client_id),
   INDEX idx_reversed (is_reversed),
-  INDEX idx_archived (is_archived),
   INDEX idx_date (date),
   INDEX idx_deleted (deleted_at),
   INDEX idx_ref_active (reference_id, is_reversed)
