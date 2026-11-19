@@ -189,7 +189,10 @@ activateServerMode();
 
 const { AuthModule } = await import('../auth.js');
 const { DateUtils } = await import('../dateUtils.js');
+const { OfficeRepository } = await import('../services/officeRepository.js');
 const {
+  OfficesModule,
+  initOfficesPage,
   showOfficeDetails,
   attachOfficesPageListeners,
 } = await import('../offices.js');
@@ -216,7 +219,9 @@ globalThis.fetch = async (url, options = {}) => {
 
   if (u.includes('/auth/login.php')) {
     payload = { ok: true, success: true, data: { username: 'admin' } };
-  } else if (u.includes('/entities/offices/get.php') || u.includes('/offices')) {
+  } else if (u.includes('/entities/offices/list.php')) {
+    payload.data = [OFFICE_RECORD];
+  } else if (u.includes('/entities/offices/get.php')) {
     payload = { ok: true, success: true, data: OFFICE_RECORD };
   } else if (u.includes('/entities/vehicle-ledger/list.php')) {
     payload = { ok: true, success: true, data: ledgerEntries };
@@ -415,3 +420,166 @@ test('4. Submitting Deposit and Withdrawal calls existing handlers and updates O
   assert.ok(balanceHtml.includes('1100.00'), 'Office balance must be 1100.00 (1500 - 400) after withdrawal');
   assert.ok(balanceHtml.includes('-400.00'), 'Withdrawal row delta (-400.00) must be rendered in movement table');
 });
+
+test('Office creation modal shows only the Arabic duplicate-name message and saves no partial batch', async (t) => {
+  initOfficesPage();
+  await triggerActionClick('office-add');
+  let names;
+  t.mock.method(document, 'querySelectorAll', (sel) => sel === '#officeModalBody tr'
+    ? names.map((name) => ({ querySelector: (field) => ({ value: field === '.office-modal-name' ? name : '' }) }))
+    : []);
+  const start = apiCalls.length;
+  for (const inputs of [[` ${OFFICE_RECORD.name} `], ['مكتب الدلتا', ' مكتب الدلتا ']]) {
+    names = inputs;
+    await triggerActionClick('office-modal-save');
+    const msg = elementsById.get('officeModalMsg');
+    assert.equal(msg.textContent, `اسم هذا المكتب موجود بالفعل: ${inputs.at(-1).trim()}`);
+    assert.ok(msg.classList.contains('is-visible'));
+  }
+  assert.ok(apiCalls.slice(start).every((call) => call.method === 'GET'));
+});
+
+test('Paid-row credit references use the receipt customer, preserving the posted amounts and running balances', async (t) => {
+  const receiptRead = t.mock.method(OfficeRepository, 'getReceiptById', async (id) => id === '41'
+    ? { id, client_name: 'منى علي', rows: [{ owner_name: 'مالك المركبة', office: OFFICE_RECORD.name }] }
+    : null);
+  const base = {
+    client_id: '10', client_type: 'office', client_name: OFFICE_RECORD.name, type: 'OFFICE_DEPOSIT',
+    is_reversed: 0, date: '2026-10-24', vehicle_owner_name: 'مالك المركبة',
+  };
+  const credit = { ...base, reference_type: 'receipt_row_disbursement', effect: 'row_disbursement',
+    receipt_number: 'RC-41', note: `صرف كارتة - ${OFFICE_RECORD.name}` };
+  ledgerEntries = [
+    { ...base, id: 1, amount: 1000, reference_type: 'office_deposit', receipt_number: 'M-1' },
+    { ...credit, id: 2, amount: 12345, reference_id: '41:row-a' },
+    { ...credit, id: 3, amount: 5, is_reversed: '0', reference_id: `41:h_${'a'.repeat(32)}` },
+    { ...credit, id: 4, amount: 2000, reference_id: '42:row-c', receipt_number: 'RC-42',
+      note: 'إضافة رصيد - قيمة كارتة مريم <حسن>' },
+  ];
+  const start = apiCalls.length;
+  await showOfficeDetails('10');
+  const html = elementsById.get('officeDetailsContent').innerHTML;
+  const rows = [...html.matchAll(/<tr>([\s\S]*?)<\/tr>/g)].slice(1);
+  assert.deepEqual(rows.map(([, row]) => [...row.matchAll(/<td>(.*?)<\/td>/g)].slice(3).map((m) => m[1])), [
+    ['20.00', '153.50', 'إضافة رصيد - قيمة كارتة مريم &lt;حسن&gt;'],
+    ['0.05', '133.50', 'إضافة رصيد - قيمة كارتة منى علي'],
+    ['123.45', '133.45', 'إضافة رصيد - قيمة كارتة منى علي'],
+    ['10.00', '10.00', 'إضافة رصيد — إذن صرف رقم M-1'],
+  ]);
+  assert.match(html, /<p class="text-2xl font-bold balance-positive">153\.50<\/p>/);
+  assert.deepEqual(receiptRead.mock.calls.map((call) => call.arguments[0]), ['41']);
+  assert.ok(apiCalls.slice(start).every((call) => call.method === 'GET'));
+});
+
+// Override just one GET endpoint; all other requests still use this suite's in-memory fetch.
+function mockLedgerGet(t, endpoint, respond) {
+  const suiteFetch = globalThis.fetch;
+  t.mock.method(globalThis, 'fetch', async (url, options) => {
+    const request = new URL(url, 'http://localhost');
+    if (options.method === 'GET' && request.pathname.endsWith(endpoint)) return respond(request);
+    return suiteFetch(url, options);
+  });
+}
+
+const bareCreditReference = 'إضافة رصيد - قيمة كارتة';
+for (const [scenario, client_name, expected] of [
+  ['U+0085 only', '\u0085', bareCreditReference],
+  ['U+0085 at both edges', '\u0085منى علي\u0085', `${bareCreditReference} منى علي`],
+  ['U+00A0 only', '\u00A0', bareCreditReference],
+  ['ordinary Arabic name', 'ليلى حسن', `${bareCreditReference} ليلى حسن`],
+  ['internal whitespace', 'عبد  الله\u0085حسن', `${bareCreditReference} عبد  الله\u0085حسن`],
+]) {
+  test(`Office ledger paid-row reference: ${scenario}`, async (t) => {
+    ledgerEntries = [{
+      id: 1, client_id: '10', client_type: 'office', date: '2026-10-24', is_reversed: 0,
+      type: 'OFFICE_DEPOSIT', effect: 'row_disbursement', reference_type: 'receipt_row_disbursement',
+      reference_id: '41:row-a', amount: 100, note: bareCreditReference,
+    }];
+    mockLedgerGet(t, '/entities/receipts/get.php', () => Response.json({ success: true, data: { id: 41, client_name } }));
+    const [credit] = await OfficesModule.getOfficeLedger('10');
+    assert.equal(credit.reference_label, expected);
+  });
+}
+
+test('Office ledger renders every movement when ordinary and credit receipt lookups fail', async (t) => {
+  const receipts = new Map([
+    ['42', { id: 42, client_name: 'منى علي' }],
+    ['43', { id: 43, client_name: '   ' }],
+  ]);
+  const receiptReads = [];
+  mockLedgerGet(t, '/entities/receipts/get.php', (request) => {
+    const id = request.searchParams.get('id');
+    receiptReads.push(id);
+    return receipts.has(id) ? Response.json({ success: true, data: receipts.get(id) })
+      : Response.json({ success: false, message: 'السجل غير موجود' }, { status: 404 });
+  });
+  const base = { client_id: '10', client_type: 'office', client_name: OFFICE_RECORD.name, date: '2026-10-24', is_reversed: 0 };
+  const deduction = { ...base, type: 'OFFICE_WITHDRAW_AUTO', effect: 'office_deduction', reference_type: 'receipt' };
+  const credit = { ...base, type: 'OFFICE_DEPOSIT', effect: 'row_disbursement', reference_type: 'receipt_row_disbursement',
+    vehicle_owner_name: 'مالك المركبة', note: `صرف كارتة - ${OFFICE_RECORD.name}` };
+  const unnamed = 'إضافة رصيد - قيمة كارتة';
+  ledgerEntries = [
+    { ...deduction, id: 1, reference_id: '42', amount: -329 },
+    { ...deduction, id: 2, reference_id: '41', amount: -12345 },
+    { ...credit, id: 3, reference_id: '41:row-a', amount: 12345 }, // same unavailable receipt
+    { ...credit, id: 4, reference_id: '42:row-b', amount: 329 },
+    { ...credit, id: 5, reference_id: '43:row-c', amount: 5, note: unnamed }, // blank receipt customer
+    { ...credit, id: 6, reference_id: '44:row-d', amount: 1001, note: unnamed }, // new unnamed credit, 404
+  ];
+  const start = apiCalls.length;
+  await showOfficeDetails('10');
+  const html = elementsById.get('officeDetailsContent').innerHTML;
+  const rows = [...html.matchAll(/<tr>([\s\S]*?)<\/tr>/g)].slice(1);
+  assert.deepEqual(rows.map(([, row]) => [...row.matchAll(/<td>(.*?)<\/td>/g)].slice(3).map((m) => m[1])), [
+    ['10.01', '10.06', unnamed],
+    ['0.05', '0.05', unnamed],
+    ['3.29', '0.00', 'إضافة رصيد - قيمة كارتة منى علي'],
+    ['123.45', '-3.29', unnamed],
+    ['-123.45', '-126.74', 'قيمة كارتة'],
+    ['-3.29', '-3.29', 'قيمة كارتة - منى علي'],
+  ]);
+  assert.match(html, /<p class="text-2xl font-bold balance-positive">10\.06<\/p>/);
+  assert.deepEqual(receiptReads.sort(), ['41', '42', '43', '44']); // once per id, even on failure
+  assert.ok(apiCalls.slice(start).every((call) => call.method === 'GET'));
+});
+
+test('Office ledger attempts each optional receipt GET once on transport failure and recovers on reload', async (t) => {
+  const attempts = [];
+  let offline = true;
+  mockLedgerGet(t, '/entities/receipts/get.php', (request) => {
+    const id = request.searchParams.get('id');
+    attempts.push(id);
+    if (id === '41' && offline) throw new TypeError('Simulated network failure');
+    return Response.json({ success: true, data: { id, client_name: id === '41' ? 'منى علي' : 'ليلى عمر' } });
+  });
+  const base = { client_id: '10', client_type: 'office', date: '2026-10-24', is_reversed: 0 };
+  const credit = { ...base, type: 'OFFICE_DEPOSIT', effect: 'row_disbursement', reference_type: 'receipt_row_disbursement' };
+  ledgerEntries = [
+    { ...base, id: 1, type: 'OFFICE_WITHDRAW_AUTO', effect: 'office_deduction', reference_type: 'receipt', reference_id: '41', amount: -12345 },
+    { ...credit, id: 2, reference_id: '41:row-a', amount: 12345 },
+    { ...credit, id: 3, reference_id: '42:row-b', amount: 50 },
+  ];
+  const label = 'إضافة رصيد - قيمة كارتة';
+  const options = Object.freeze({ passive: true, retries: 1 });
+  for (const unavailable of [true, false]) {
+    offline = unavailable;
+    attempts.length = 0;
+    const ledger = await OfficesModule.getOfficeLedger('10', options);
+    assert.deepEqual(attempts.sort(), ['41', '42']);
+    assert.deepEqual(Object.fromEntries(ledger.map((entry) => [entry.id, entry.reference_label])), {
+      1: offline ? 'قيمة كارتة' : 'قيمة كارتة - منى علي',
+      2: offline ? label : `${label} منى علي`,
+      3: `${label} ليلى عمر`,
+    });
+  }
+});
+
+for (const [endpoint, status, message] of [
+  ['/entities/offices/get.php', 403, 'غير مسموح'],
+  ['/entities/vehicle-ledger/list.php', 500, 'خطأ في الخادم'],
+]) {
+  test(`Office ledger propagates HTTP ${status} from the required ${endpoint} read`, async (t) => {
+    mockLedgerGet(t, endpoint, () => Response.json({ success: false, message }, { status }));
+    await assert.rejects(OfficesModule.getOfficeLedger('10'), { message });
+  });
+}

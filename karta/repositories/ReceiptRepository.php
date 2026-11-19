@@ -218,6 +218,12 @@ class ReceiptRepository {
         return $receiptId . ':h_' . substr(hash('sha256', $clean), 0, 32);
     }
 
+    private static function officeRowCreditNote(array $receipt): string {
+        $label = 'إضافة رصيد - قيمة كارتة';
+        $customer = preg_replace('/\A[\s\x00]+|[\s\x00]+\z/u', '', (string)($receipt['client_name'] ?? '')) ?? '';
+        return $customer === '' ? $label : $label . ' ' . $customer;
+    }
+
     /**
      * Resolve a stable identifier for a receipt row.
      */
@@ -485,7 +491,12 @@ class ReceiptRepository {
     // ── READ ──────────────────────────────────────────────────────────────
 
     public function findById(int $id): ?array {
-        $stmt = $this->db->prepare(
+        return self::findByIdReadOnly($this->db, $id);
+    }
+
+    /** Single-record GETs use this SELECT directly, without the constructor's schema preparation. */
+    public static function findByIdReadOnly(PDO $db, int $id): ?array {
+        $stmt = $db->prepare(
             'SELECT * FROM receipts WHERE id = :id AND deleted_at IS NULL LIMIT 1'
         );
         $stmt->execute([':id' => $id]);
@@ -1820,7 +1831,7 @@ class ReceiptRepository {
                     'receipt_number'     => strval($current['receipt_number'] ?? $receiptId),
                     'date'               => $effectiveDate,
                     'applied_at'         => $now,
-                    'note'               => $desc,
+                    'note'               => self::officeRowCreditNote($current),
                     'is_reversed'        => 0,
                 ]);
             }
@@ -2292,7 +2303,7 @@ class ReceiptRepository {
                         'receipt_number'     => $receiptNumStr,
                         'date'               => $effectiveDate,
                         'applied_at'         => $now,
-                        'note'               => $desc,
+                        'note'               => self::officeRowCreditNote($updatedReceipt),
                         'is_reversed'        => 0,
                     ]);
                 }

@@ -11,7 +11,9 @@ import {
 } from './financial.js';
 import { AuthModule } from './auth.js';
 import { Money } from './money.js';
+import { dbBool } from './dbTypes.js';
 import { DateUtils } from './dateUtils.js';
+import { printHTML, buildPrintDocument, _escPrint } from './printEngine.js';
 import { calculateRowNet, calculateWeightTotal } from './services/financialCalculator.js';
 import { OfficeRepository } from './services/officeRepository.js';
 import { ApiClient } from './services/apiClient.js';
@@ -170,7 +172,7 @@ async function createOffices(username, rows) {
     const lower = name.toLowerCase();
 
     if (existingNames.has(lower) || seen.has(lower)) {
-      throw new Error(`[OfficesService] duplicate office name: ${name}`);
+      throw new Error(`اسم هذا المكتب موجود بالفعل: ${name}`);
     }
     seen.add(lower);
 
@@ -214,7 +216,7 @@ async function updateOffice(username, id, patch) {
     const existing = await OfficeRepository.getAll(username);
     const dup = existing.some((o) => String(o.id) !== String(id)
       && String(o.name || '').trim().toLowerCase() === name.toLowerCase());
-    if (dup) throw new Error(`[OfficesService] duplicate office name: ${name}`);
+    if (dup) throw new Error(`اسم هذا المكتب موجود بالفعل: ${name}`);
   }
 
   const nextPatch = {
@@ -748,8 +750,32 @@ export function formatOfficeWithdrawalReference(ownerNameOrNote) {
   return cleanOwner ? `قيمة كارتة - ${cleanOwner}` : 'قيمة كارتة';
 }
 
-export function formatMovementReference(entry) {
+const ROW_CREDIT_LABEL = 'إضافة رصيد - قيمة كارتة';
+
+function _isRowDisbursementCredit(entry) {
+  return entry.type === 'OFFICE_DEPOSIT' && entry.reference_type === 'receipt_row_disbursement'
+    && entry.effect === 'row_disbursement' && Number(entry.amount) > 0 && !dbBool(entry.is_reversed);
+}
+
+function _storedRowCreditNote(value) {
+  const note = String(value ?? '').trim();
+  return note.startsWith(`${ROW_CREDIT_LABEL} `) ? note : '';
+}
+
+function _legacyCreditReceiptId(entry) {
+  if (!_isRowDisbursementCredit(entry) || _storedRowCreditNote(entry.note)) return null;
+  // Both plain and hashed row references start with the stable receipt id and a colon.
+  return /^(\d+):/.exec(entry.reference_id)?.[1];
+}
+
+export function formatMovementReference(entry, receiptCustomer = '') {
   if (!entry || typeof entry !== 'object') return 'حركة مالية';
+  // The customer of a paid row is on the receipt, not the office ledger's client_name.
+  if (_isRowDisbursementCredit(entry)) {
+    // Match officeRowCreditNote: PCRE's Unicode whitespace includes U+180E, and the writer also trims NUL.
+    const customer = String(receiptCustomer ?? '').replace(/^[\p{White_Space}\u180E\x00]+|[\p{White_Space}\u180E\x00]+$/gu, '');
+    return _storedRowCreditNote(entry.note) || (customer ? `${ROW_CREDIT_LABEL} ${customer}` : ROW_CREDIT_LABEL);
+  }
   const type = String(entry.type || '').trim();
   const refType = String(entry.reference_type || '').trim();
   const effect = String(entry.effect || '').trim();
@@ -881,10 +907,21 @@ async function getOfficeLedger(username, office_id, options = {}) {
       .map((e) => String(e.reference_id))
   )];
 
+  async function getOptionalReceipt(id) {
+    try {
+      return await OfficeRepository.getReceiptById(id, { ...options, retries: 0 });
+    } catch (err) {
+      console.warn(`[offices] Could not read metadata for receipt ${id}:`, err?.message ?? err);
+      return null;
+    }
+  }
+
   const receiptMap = new Map();
+  const receiptCustomers = new Map();
   const officeKey = normalizeCargoKey(office.name);
   for (const id of receiptIds) {
-    const receipt = await OfficeRepository.getReceiptById(id, options);
+    const receipt = await getOptionalReceipt(id);
+    receiptCustomers.set(id, receipt?.client_name);
     if (receipt) {
       const rRows = Array.isArray(receipt.rows) ? receipt.rows : [];
       const matchingRow = rRows.find(
@@ -900,6 +937,13 @@ async function getOfficeLedger(username, office_id, options = {}) {
     }
   }
 
+  // Reuse earlier lookups, including misses, without rewriting any ledger notes.
+  for (const id of new Set(ledger.map(_legacyCreditReceiptId).filter(Boolean))) {
+    if (receiptCustomers.has(id)) continue;
+    const receipt = await getOptionalReceipt(id);
+    receiptCustomers.set(id, receipt?.client_name);
+  }
+
   return ledger.map((entry) => {
     const recMeta = receiptMap.get(String(entry.reference_id)) || null;
     const reference_number = entry.receipt_number || recMeta?.receipt_number || null;
@@ -911,7 +955,7 @@ async function getOfficeLedger(username, office_id, options = {}) {
     };
     return {
       ...enriched,
-      reference_label: formatMovementReference(enriched),
+      reference_label: formatMovementReference(enriched, receiptCustomers.get(_legacyCreditReceiptId(entry))),
     };
   });
 }
@@ -1063,6 +1107,9 @@ function _text(value) {
   return value == null ? '' : String(value);
 }
 
+// List templates insert data only as HTML text or inside double-quoted attributes.
+const escapeListHtml = _escPrint;
+
 function _renderListShell() {
   const page = document.getElementById('officesPage');
   if (!page) return;
@@ -1094,11 +1141,11 @@ function _renderListShell() {
       <div class="flex flex-wrap gap-3 items-end mb-4 p-3 rounded-xl" style="background:#f8fafc;border:1px solid #e2e8f0;">
         <div class="form-group mb-0">
           <label class="label mb-1 text-xs" for="officeDateFrom">من تاريخ</label>
-          <input id="officeDateFrom" type="date" class="input input-sm" value="${_text(_officeDateFrom)}" />
+          <input id="officeDateFrom" type="date" class="input input-sm" value="${escapeListHtml(_officeDateFrom)}" />
         </div>
         <div class="form-group mb-0">
           <label class="label mb-1 text-xs" for="officeDateTo">إلى تاريخ</label>
-          <input id="officeDateTo" type="date" class="input input-sm" value="${_text(_officeDateTo)}" />
+          <input id="officeDateTo" type="date" class="input input-sm" value="${escapeListHtml(_officeDateTo)}" />
         </div>
         <button type="button" data-action="office-apply-date-filter" class="btn btn-primary btn-sm">تطبيق</button>
         <button type="button" data-action="office-clear-date-filter" class="btn btn-secondary btn-sm">مسح</button>
@@ -1106,8 +1153,9 @@ function _renderListShell() {
       </div>
 
       <!-- شريط البحث -->
-      <div class="mb-6">
-        <input id="officeSearch" type="text" class="input" placeholder="🔍 ابحث عن مكتب..." style="border-radius:12px;padding:10px 16px 10px 40px;" />
+      <div class="flex items-center gap-2 mb-6">
+        <input id="officeSearch" type="text" class="input flex-1 min-w-0" placeholder="🔍 ابحث عن مكتب..." style="border-radius:12px;padding:10px 16px 10px 40px;" />
+        <button type="button" id="officeListPrint" data-action="office-list-print" class="btn ent-btn-print" disabled><span aria-hidden="true">🖨️</span> طباعة</button>
       </div>
 
       <!-- قائمة المكاتب -->
@@ -1184,6 +1232,7 @@ function _renderOfficeModalRow() {
 function _renderDetailsShell(office) {
   const page = document.getElementById('officeDetailsPage');
   if (!page) return;
+  const nameHtml = _escPrint(office.name);
 
   page.innerHTML = `
     <div class="p-6 card">
@@ -1193,7 +1242,7 @@ function _renderDetailsShell(office) {
         <div class="flex items-center gap-3">
           <button type="button" data-action="office-back" style="background:#6b7280;color:#fff;border:none;border-radius:8px;padding:8px 16px;font-weight:700;font-size:0.8125rem;cursor:pointer;font-family:inherit;">← العودة</button>
           <div>
-            <h2 class="text-xl font-bold text-gray-800 mb-0">${office.name}</h2>
+            <h2 class="text-xl font-bold text-gray-800 mb-0">${nameHtml}</h2>
             <p class="text-muted text-xs mb-0">عرض وإدارة البيانات الكاملة</p>
           </div>
         </div>
@@ -1206,14 +1255,14 @@ function _renderDetailsShell(office) {
           <div style="width:40px;height:40px;border-radius:50%;background:#22c55e;display:flex;align-items:center;justify-content:center;color:#fff;font-size:1.125rem;flex-shrink:0;">🏢</div>
           <div>
             <p style="font-size:0.6875rem;color:#6b7280;margin:0;">اسم المكتب</p>
-            <p style="font-size:1.0625rem;font-weight:700;color:#1f2937;margin:0;">${office.name}</p>
+            <p style="font-size:1.0625rem;font-weight:700;color:#1f2937;margin:0;">${nameHtml}</p>
           </div>
         </div>
         <div style="display:flex;align-items:center;gap:10px;flex:1;min-width:200px;">
           <div style="width:40px;height:40px;border-radius:50%;background:#0f766e;display:flex;align-items:center;justify-content:center;color:#fff;font-size:1.125rem;flex-shrink:0;">📞</div>
           <div>
             <p style="font-size:0.6875rem;color:#6b7280;margin:0;">رقم الهاتف</p>
-            <p style="font-size:1.0625rem;font-weight:700;color:#1f2937;margin:0;">${office.phone || '—'}</p>
+            <p style="font-size:1.0625rem;font-weight:700;color:#1f2937;margin:0;">${_escPrint(office.phone || '—')}</p>
           </div>
         </div>
       </div>
@@ -1356,7 +1405,7 @@ function _renderOfficeBalance(entries) {
         <td>${entryTypeLabel(entry)}</td>
         <td>${delta < 0 ? '-' : ''}${_fmt(Math.abs(delta))}</td>
         <td>${_fmt(balance)}</td>
-        <td>${_text(formatMovementReference(entry))}</td>
+        <td>${_escPrint(entry.reference_label)}</td>
       </tr>
     `).join('')
     : `<tr><td colspan="6" class="text-center text-muted p-4">لا توجد حركات</td></tr>`;
@@ -1483,6 +1532,42 @@ function _renderHamolaTable(rows) {
   `;
 }
 
+function _officeListActions(id, includeEdit = true) {
+  const idAttr = escapeListHtml(id);
+  return `
+    ${includeEdit ? `<button type="button" data-action="office-edit" data-id="${idAttr}" class="btn-icon" title="تعديل" style="background:#fef3c7;color:#d97706;width:28px;height:28px;border:none;border-radius:6px;cursor:pointer;">✏️</button>` : ''}
+    <button type="button" data-action="office-details" data-id="${idAttr}" class="btn-icon" title="تفاصيل" style="background:#dbeafe;color:#2563eb;width:28px;height:28px;border:none;border-radius:6px;cursor:pointer;">📋</button>
+    <button type="button" data-action="office-delete" data-id="${idAttr}" class="btn-icon" title="حذف" style="background:#fee2e2;color:#dc2626;width:28px;height:28px;border:none;border-radius:6px;cursor:pointer;">🗑️</button>`;
+}
+
+function _printOfficeList() {
+  const button = document.getElementById('officeListPrint');
+  if (!button || button.disabled) return;
+  // Read exactly what's on screen, including inline edits and optimistic list updates.
+  const rows = Array.from(document.querySelectorAll('#officesTableBody > tr[data-id]'), (tr) => {
+    const [name, phone, balance] = tr.cells;
+    return {
+      name: (name.querySelector('input')?.value ?? name.textContent).trim(),
+      phone: (phone.querySelector('input')?.value ?? phone.textContent).trim(),
+      balance: balance.textContent.trim(),
+    };
+  });
+  // Each rendered balance already has two decimal places; keep its cents exact through printing.
+  const totalCents = rows.reduce((sum, row) => sum + BigInt(row.balance.replace('.', '')), 0n);
+  const magnitude = totalCents < 0n ? -totalCents : totalCents;
+  const total = `${totalCents < 0n ? '-' : ''}${magnitude / 100n}.${String(magnitude % 100n).padStart(2, '0')}`;
+  const body = `
+    <div class="print-header-info" style="margin:0 0 10px;font-weight:bold;white-space:nowrap;">
+      <span>عدد المكاتب = <bdi>${rows.length}</bdi></span>
+      <span>إجمالي الرصيد = <bdi dir="ltr">${total}</bdi></span>
+    </div>
+    <table>
+      <thead><tr><th class="print-th">اسم المكتب</th><th class="print-th">رقم الهاتف</th><th class="print-th">الرصيد</th></tr></thead>
+      <tbody>${rows.map((row) => `<tr><td>${_escPrint(row.name)}</td><td dir="ltr">${_escPrint(row.phone)}</td><td dir="ltr">${_escPrint(row.balance)}</td></tr>`).join('')}</tbody>
+    </table>`;
+  printHTML(buildPrintDocument({ title: '', body, orientation: 'portrait' }), { id: 'office-list-print-iframe' });
+}
+
 async function loadOffices(options = {}) {
   const session = _requireSession();
   if (!session) return;
@@ -1500,15 +1585,31 @@ async function loadOffices(options = {}) {
   if (dateToEl) dateToEl.value = _officeDateTo || '';
 
   // Show lightweight loading indicator inside existing table
-  const tbodyPreview = document.getElementById('officesTableBody');
-  if (tbodyPreview && tbodyPreview.children.length === 0) {
-    tbodyPreview.innerHTML = '<tr><td colspan="4" class="text-center text-muted p-6">⏳ جاري التحميل...</td></tr>';
+  const tbody = document.getElementById('officesTableBody');
+  const printButton = document.getElementById('officeListPrint');
+  if (!tbody || !printButton) return;
+  const initialLoad = printButton.disabled;
+  if (initialLoad && tbody.children.length === 0) {
+    tbody.innerHTML = '<tr data-office-list-status><td colspan="4" class="text-center text-muted p-6">⏳ جاري التحميل...</td></tr>';
   }
 
   const activeDateFilter = (_officeDateFrom || _officeDateTo)
     ? { from: _officeDateFrom, to: _officeDateTo }
     : null;
-  const summary = await OfficesModule.getOfficeSummary(activeDateFilter, options);
+  let summary;
+  try {
+    summary = await OfficesModule.getOfficeSummary(activeDateFilter, options);
+  } catch (err) {
+    if (!initialLoad) throw err; // Preserve the existing error path for refreshes.
+    if (printButton.disabled) { // A concurrent load may already have rendered the list.
+      tbody.querySelector('tr[data-office-list-status]')?.remove();
+      tbody.insertAdjacentHTML('afterbegin', `<tr data-office-list-status><td colspan="4" class="text-center p-6">
+        <span class="field-msg-inline field-msg-inline--error is-visible" role="alert">تعذر تحميل قائمة المكاتب${err?.message ? ': ' + escapeListHtml(err.message) : ''}</span>
+      </td></tr>`);
+    }
+    return;
+  }
+  if (tbody !== document.getElementById('officesTableBody')) return;
   const totalCountEl = document.getElementById('officeTotalCount');
 
   if (totalCountEl) totalCountEl.textContent = String(summary.total_offices || 0);
@@ -1526,9 +1627,6 @@ async function loadOffices(options = {}) {
     totalBalanceEl.textContent = _fmt(totalBalance);
   }
 
-  const tbody = document.getElementById('officesTableBody');
-  if (!tbody) return;
-
   const query = _searchQuery.trim().toLowerCase();
   const rows = summary.rows.filter((item) => {
     if (!query) return true;
@@ -1539,36 +1637,33 @@ async function loadOffices(options = {}) {
 
   tbody.innerHTML = rows.map((item) => {
     const office = item.office;
+    const idAttr = escapeListHtml(office.id);
     const isEditing = _editingOfficeId && String(_editingOfficeId) === String(office.id);
     const nameVal = isEditing ? _editingOfficeDraft?.name ?? office.name : office.name;
     const phoneVal = isEditing ? _editingOfficeDraft?.phone ?? office.phone : office.phone;
 
     return `
-      <tr data-id="${office.id}" style="transition:background 0.15s;">
-        <td ${!isEditing ? `data-action="office-details" data-id="${office.id}" style="cursor:pointer;color:#2563eb;font-weight:700;" onmouseover="this.style.background='#eff6ff'" onmouseout="this.style.background=''"` : ''}>
+      <tr data-id="${idAttr}" style="transition:background 0.15s;">
+        <td ${!isEditing ? `data-action="office-details" data-id="${idAttr}" style="cursor:pointer;color:#2563eb;font-weight:700;" onmouseover="this.style.background='#eff6ff'" onmouseout="this.style.background=''"` : ''}>
           ${isEditing
-            ? `<input type="text" class="input input-sm office-edit-name" value="${_text(nameVal)}" />`
-            : _text(office.name)
+            ? `<input type="text" class="input input-sm office-edit-name" value="${escapeListHtml(nameVal)}" />`
+            : escapeListHtml(office.name)
           }
         </td>
         <td style="color:#374151;">
           ${isEditing
-            ? `<input type="text" class="input input-sm office-edit-phone" value="${_text(phoneVal)}" />`
-            : _text(office.phone || '—')
+            ? `<input type="text" class="input input-sm office-edit-phone" value="${escapeListHtml(phoneVal)}" />`
+            : escapeListHtml(office.phone || '—')
           }
         </td>
         <td class="${Number(item.balance) < 0 ? 'balance-negative' : ''}" style="font-weight:700;">${_fmt(item.balance)}</td>
         <td>
           ${isEditing
             ? `
-              <button type="button" data-action="office-save" data-id="${office.id}" class="btn btn-primary btn-sm">حفظ</button>
+              <button type="button" data-action="office-save" data-id="${idAttr}" class="btn btn-primary btn-sm">حفظ</button>
               <button type="button" data-action="office-cancel" class="btn btn-secondary btn-sm">إلغاء</button>
             `
-            : `
-              <button type="button" data-action="office-edit" data-id="${office.id}" class="btn-icon" title="تعديل" style="background:#fef3c7;color:#d97706;width:28px;height:28px;border:none;border-radius:6px;cursor:pointer;">✏️</button>
-              <button type="button" data-action="office-details" data-id="${office.id}" class="btn-icon" title="تفاصيل" style="background:#dbeafe;color:#2563eb;width:28px;height:28px;border:none;border-radius:6px;cursor:pointer;">📋</button>
-              <button type="button" data-action="office-delete" data-id="${office.id}" class="btn-icon" title="حذف" style="background:#fee2e2;color:#dc2626;width:28px;height:28px;border:none;border-radius:6px;cursor:pointer;">🗑️</button>
-            `
+            : _officeListActions(office.id)
           }
         </td>
       </tr>
@@ -1580,6 +1675,7 @@ async function loadOffices(options = {}) {
       <p style="font-size:0.8125rem;color:#94a3b8;margin:0;">ابدأ بإضافة المكاتب من الزر أعلاه</p>
     </div>
   </td></tr>`;
+  printButton.disabled = false;
 }
 
 async function showOfficeDetails(id) {
@@ -2015,13 +2111,10 @@ function attachOfficesPageListeners() {
             tr.dataset.id = String(record.id);
             tr.style.transition = 'background 0.15s';
             tr.innerHTML = `
-              <td data-action="office-details" data-id="${record.id}" style="cursor:pointer;color:#2563eb;font-weight:700;">${_text(record.name)}</td>
-              <td style="color:#374151;">${_text(record.phone || '—')}</td>
+              <td data-action="office-details" data-id="${escapeListHtml(record.id)}" style="cursor:pointer;color:#2563eb;font-weight:700;">${escapeListHtml(record.name)}</td>
+              <td style="color:#374151;">${escapeListHtml(record.phone || '—')}</td>
               <td style="font-weight:700;">0.00</td>
-              <td>
-                <button type="button" data-action="office-details" data-id="${record.id}" class="btn-icon" title="تفاصيل" style="background:#dbeafe;color:#2563eb;width:28px;height:28px;border:none;border-radius:6px;cursor:pointer;">📋</button>
-                <button type="button" data-action="office-delete" data-id="${record.id}" class="btn-icon" title="حذف" style="background:#fee2e2;color:#dc2626;width:28px;height:28px;border:none;border-radius:6px;cursor:pointer;">🗑️</button>
-              </td>`;
+              <td>${_officeListActions(record.id, false)}</td>`;
             // Remove 'no offices' placeholder if present
             const placeholder = tbody.querySelector('td[colspan]');
             if (placeholder) placeholder.closest('tr')?.remove();
@@ -2118,7 +2211,7 @@ function attachOfficesPageListeners() {
           const cells = row.querySelectorAll('td');
           if (cells[0]) { cells[0].textContent = name; cells[0].setAttribute('data-action','office-details'); cells[0].setAttribute('data-id', id); cells[0].style.cssText='cursor:pointer;color:#2563eb;font-weight:700;'; }
           if (cells[1]) { cells[1].textContent = phone || '—'; cells[1].style.color = '#374151'; }
-          if (cells[3]) { cells[3].innerHTML = `<button type="button" data-action="office-edit" data-id="${id}" class="btn-icon" title="تعديل" style="background:#fef3c7;color:#d97706;width:28px;height:28px;border:none;border-radius:6px;cursor:pointer;">✏️</button><button type="button" data-action="office-details" data-id="${id}" class="btn-icon" title="تفاصيل" style="background:#dbeafe;color:#2563eb;width:28px;height:28px;border:none;border-radius:6px;cursor:pointer;">📋</button><button type="button" data-action="office-delete" data-id="${id}" class="btn-icon" title="حذف" style="background:#fee2e2;color:#dc2626;width:28px;height:28px;border:none;border-radius:6px;cursor:pointer;">🗑️</button>`; }
+          if (cells[3]) cells[3].innerHTML = _officeListActions(id);
         }
         loadOffices(); // background refresh for summary
       } catch (err) {
@@ -2135,7 +2228,7 @@ function attachOfficesPageListeners() {
       if (!id) return;
       if (!confirm('هل أنت متأكد من حذف المكتب؟')) return;
       // Optimistic: remove row immediately
-      const delRow = document.querySelector(`#officesTableBody tr[data-id="${id}"]`);
+      const delRow = target.closest('#officesTableBody tr[data-id]');
       if (delRow) delRow.remove();
       const countEl = document.getElementById('officeTotalCount');
       const tbody = document.getElementById('officesTableBody');
@@ -2186,15 +2279,19 @@ function attachOfficesPageListeners() {
 
 
 
+    if (target.closest('[data-action="office-list-print"]')) {
+      _printOfficeList();
+      return;
+    }
+
     if (target.closest('[data-action="office-print"]')) {
       if (_detailsOfficeId) {
         const content = document.getElementById('officeDetailsContent');
         if (content) {
-          const { printHTML, buildPrintDocument } = await import('./printEngine.js');
           const office = await OfficesModule.getOfficeDetails(_detailsOfficeId);
           printHTML(buildPrintDocument({
             title: 'طباعة تفاصيل المكتب',
-            body: '<h2 style="text-align:center;color:#0f766e;margin-bottom:12px;">' + (office?.name || '') + '</h2>' + content.innerHTML,
+            body: '<h2 style="text-align:center;color:#0f766e;margin-bottom:12px;">' + _escPrint(office?.name || '') + '</h2>' + content.innerHTML,
             orientation: 'portrait',
           }), { id: 'office-print-iframe' });
         }

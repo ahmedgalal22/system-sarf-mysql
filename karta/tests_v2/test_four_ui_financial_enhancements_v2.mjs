@@ -126,6 +126,11 @@ function makeElement(id = '', tagName = 'DIV', initialClasses = []) {
   return el;
 }
 
+function decodeHtmlText(text) {
+  const entities = { amp: '&', lt: '<', gt: '>', quot: '"', '#39': "'" };
+  return text.replace(/&(amp|lt|gt|quot|#39);/g, (_, key) => entities[key]);
+}
+
 function syncParsedElements(html) {
   const tagWithIdRegex = /<([a-zA-Z0-9]+)\b([^>]*\bid="([^"]+)"[^>]*)>([\s\S]*?)<\/\1>|<([a-zA-Z0-9]+)\b([^>]*\bid="([^"]+)"[^>]*)\/?>/g;
   let match;
@@ -143,6 +148,7 @@ function syncParsedElements(html) {
       el.tagName = tag;
       el.classList = makeClassList(classes);
     }
+    if (tag === 'BUTTON') el.disabled = /(?:^|\s)disabled(?:\s|=|$)/i.test(attrs);
     const valMatch = attrs.match(/\bvalue="([^"]*)"/);
     if (valMatch) el.value = valMatch[1];
     if (innerText !== undefined && !innerText.includes('<')) {
@@ -302,6 +308,7 @@ await AuthModule.login('admin', 'admin');
 
 const { initTreasuryPage } = await import('../treasury.js');
 const { initOfficesPage, loadOffices, attachOfficesPageListeners, OfficesModule } = await import('../offices.js');
+const { OfficeRepository } = await import('../services/officeRepository.js');
 const {
   FinancialService,
   extractLedgerEntryDateIso,
@@ -1025,3 +1032,293 @@ test('6. Vehicle Owner Details & Office Details — الوقت column after ال
   );
 });
 
+async function clickOffice(action, ancestors = {}) {
+  const button = action === 'office-list-print' ? elementsById.get('officeListPrint') : { dataset: { action } };
+  const target = { closest: (selector) => selector === `[data-action="${action}"]` ? button : ancestors[selector] ?? null };
+  for (const listener of docClickListeners) await listener({ target });
+}
+
+function holdNextOfficeRead(t) {
+  let release;
+  const pending = new Promise((resolve) => { release = resolve; });
+  const getAll = OfficeRepository.getAll;
+  t.mock.method(OfficeRepository, 'getAll', async (...args) => {
+    await pending;
+    return getAll(...args);
+  }, { times: 1 });
+  return release;
+}
+
+test('Offices print contains only the two first-line figures and the current name/phone search results', async (t) => {
+  mockOffices = [
+    { id: 10, name: 'مكتب النور', phone: '010001' },
+    { id: 11, name: 'النور & شركاه', phone: '011002' },
+    { id: 12, name: 'مكتب الشرق', phone: null },
+  ];
+  mockOfficeLedgerEntries = [
+    { client_id: '10', client_type: 'office', type: 'OFFICE_DEPOSIT', amount: 10510, date: '2026-10-01' },
+    { client_id: '11', client_type: 'office', type: 'withdraw', amount: 2535, date: '2026-10-02' },
+    { client_id: '12', client_type: 'office', type: 'OFFICE_DEPOSIT', amount: 10, date: '2026-10-03' },
+  ];
+  initOfficesPage();
+  assert.match(elementsById.get('officesPage').innerHTML, /<input id="officeSearch"[^>]*>\s*<button[^>]*data-action="office-list-print"/);
+  const button = elementsById.get('officeListPrint');
+  const release = holdNextOfficeRead(t);
+  const initialLoad = loadOffices();
+  assert.equal(button.disabled, true, 'No initial data has been rendered');
+  printedDocuments.length = 0;
+  await clickOffice('office-list-print'); // even explicit dispatch must not print the placeholder
+  assert.equal(printedDocuments.length, 0);
+  release();
+  await initialLoad;
+  assert.equal(button.disabled, false);
+
+  // Supply the mock DOM's row/cell interface from loadOffices' actual filtered markup.
+  const tbody = elementsById.get('officesTableBody');
+  t.mock.method(document, 'querySelectorAll', (selector) => selector === '#officesTableBody > tr[data-id]'
+    ? [...tbody.innerHTML.matchAll(/<tr data-id="[^"]+"[^>]*>([\s\S]*?)<\/tr>/g)].map(([, row]) => ({
+      cells: [...row.matchAll(/<td\b[^>]*>([\s\S]*?)<\/td>/g)].map(([, text]) => ({
+        textContent: decodeHtmlText(text), querySelector: () => null,
+      })),
+    })) : []);
+  const text = (html) => html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+  const full = ['مكتب النور 010001 105.10', 'النور &amp; شركاه 011002 -25.35', 'مكتب الشرق — 0.10'];
+  async function checkPrint(expectedRows, total) {
+    const before = fetchedUrls.length;
+    printedDocuments.length = 0;
+    assert.equal(button.disabled, false);
+    await clickOffice('office-list-print');
+    assert.equal(fetchedUrls.length, before, 'Printing must not refetch or recalculate the list');
+    assert.equal(printedDocuments.length, 1);
+    const doc = printedDocuments[0];
+    assert.match(doc, /<html dir="rtl" lang="ar">/);
+    const body = doc.match(/<body>([\s\S]*?)<\/body>/)[1].trim();
+    const header = `عدد المكاتب = ${expectedRows.length} إجمالي الرصيد = ${total}`;
+    assert.equal(text(body.match(/^<div\b[^>]*>([\s\S]*?)<\/div>\s*<table>/)[1]), header);
+    assert.equal(text(body), [header, 'اسم المكتب رقم الهاتف الرصيد', ...expectedRows].join(' '));
+    assert.equal((body.match(/<td\b/g) || []).length, expectedRows.length * 3);
+  }
+  await checkPrint(full, '79.85');
+
+  elementsById.get('officeDateFrom').value = '2026-10-03';
+  await clickOffice('office-apply-date-filter');
+  assert.equal(elementsById.get('officeTotalBalance').textContent, '0.10');
+  const search = elementsById.get('officeSearch');
+  for (const [query, visible, sum] of [
+    ['النور', full.slice(0, 2), '79.75'], ['11002', [full[1]], '-25.35'], ['غير موجود', [], '0.00'], ['', full, '79.85'],
+  ]) {
+    search.value = query;
+    const releaseSearch = holdNextOfficeRead(t);
+    const refresh = Promise.all(docInputListeners.map((listener) => listener({ target: search })));
+    assert.equal(button.disabled, false, 'Searching must keep the last rendered rows printable');
+    if (query === 'النور') await checkPrint(full, '79.85'); // still on screen while search is pending
+    releaseSearch();
+    await refresh;
+    await checkPrint(visible, sum);
+  }
+  await clickOffice('office-clear-date-filter');
+
+  await t.test('sums the displayed balances exactly beyond the safe integer range in cents', async () => {
+    mockOffices = mockOffices.slice(0, 2);
+    const deposit = mockOfficeLedgerEntries[0];
+    mockOfficeLedgerEntries = [
+      { ...deposit, client_id: '10', amount: 5_000_000_000_000_000 },
+      { ...deposit, client_id: '11', amount: 5_000_000_000_000_001 },
+    ];
+    await loadOffices();
+    await checkPrint(['مكتب النور 010001 50000000000000.00', 'النور &amp; شركاه 011002 50000000000000.01'], '100000000000000.01');
+  });
+});
+
+test('Offices list reports an initial read failure without printing, then enables print on a successful empty result', async (t) => {
+  initOfficesPage();
+  const button = elementsById.get('officeListPrint');
+  const tbody = makeElement('officesTableBody', 'TBODY');
+  // Model only the placeholder replacement that the mock DOM does not implement.
+  tbody.insertAdjacentHTML = (where, html) => {
+    assert.equal(where, 'afterbegin');
+    tbody.innerHTML = html + tbody.innerHTML;
+  };
+  t.mock.method(tbody, 'querySelector', (selector) => {
+    const row = tbody.innerHTML.match(/<tr data-office-list-status>[\s\S]*?<\/tr>/)?.[0];
+    return selector === 'tr[data-office-list-status]' && row
+      ? { remove: () => { tbody.innerHTML = tbody.innerHTML.replace(row, ''); } } : null;
+  });
+  t.mock.method(globalThis, 'fetch', async (url) => {
+    assert.match(String(url), /\/entities\/offices\/list\.php/);
+    return Response.json({ success: false, message: 'خطأ <b>مؤقت</b>' }, { status: 503 });
+  }, { times: 1 });
+  await loadOffices();
+  assert.equal(button.disabled, true);
+  assert.match(tbody.innerHTML, /role="alert">تعذر تحميل قائمة المكاتب: خطأ &lt;b&gt;مؤقت&lt;\/b&gt;/);
+  assert.doesNotMatch(tbody.innerHTML, /جاري التحميل|لا يوجد مكاتب/);
+  printedDocuments.length = 0;
+  await clickOffice('office-list-print');
+  assert.equal(printedDocuments.length, 0);
+
+  mockOffices = [];
+  await loadOffices();
+  assert.equal(button.disabled, false);
+  assert.match(tbody.innerHTML, /لا يوجد مكاتب/);
+  assert.doesNotMatch(tbody.innerHTML, /role="alert"/);
+  await clickOffice('office-list-print');
+  assert.equal(printedDocuments.length, 1);
+  assert.match(printedDocuments[0], /عدد المكاتب = <bdi>0<\/bdi>[\s\S]*إجمالي الرصيد = <bdi dir="ltr">0\.00<\/bdi>/);
+});
+
+// Inert fixtures: exercise text nodes, double-quoted attributes and already entity-like text.
+const markedOffice = { id: 'id-"&', name: `مكتب <em id="name-marker" onmouseover="">النور</em> &lt; 'أ'`,
+  phone: '<b id="phone-marker">01001</b> "&"' };
+const plainOffice = { id: 12, name: 'مكتب الدلتا', phone: '01001234567' };
+
+function assertOfficeFields(rowHtml, office, editing = false) {
+  const cells = Array.from(rowHtml.matchAll(/<td\b[^>]*>([\s\S]*?)<\/td>/g), (m) => m[1].trim());
+  assert.equal(cells.length, 4);
+  for (const [index, field] of ['name', 'phone'].entries()) {
+    let value = cells[index];
+    if (editing) {
+      // Exactly one intended input and no extra attributes, including when the value contains quotes.
+      const input = value.match(new RegExp(`^<input type="text" class="input input-sm office-edit-${field}" value="([^"<>]*)"\\s*/>$`));
+      assert.ok(input, `Unexpected ${field} input markup`);
+      value = input[1];
+    } else {
+      assert.doesNotMatch(value, /[<>]/, `The ${field} cell must contain only text, no child elements`);
+    }
+    assert.equal(decodeHtmlText(value), office[field]);
+  }
+  const ids = [...rowHtml.matchAll(/\bdata-id="([^"]*)"/g)].map((m) => decodeHtmlText(m[1]));
+  assert.ok(ids.length > 0);
+  assert.ok(ids.every((id) => id === String(office.id)), 'Action IDs must stay inside one attribute');
+  assert.equal(document.getElementById('name-marker'), null);
+  assert.equal(document.getElementById('phone-marker'), null);
+}
+
+test('Offices list keeps markup-like and ordinary Arabic values literal in display and edit mode', async () => {
+  mockOffices = [markedOffice, plainOffice];
+  mockOfficeLedgerEntries = [];
+  initOfficesPage();
+  await loadOffices();
+  const tbody = elementsById.get('officesTableBody');
+  const rows = () => [...tbody.innerHTML.matchAll(/<tr\b[^>]*>[\s\S]*?<\/tr>/g)].map((m) => m[0]);
+  assert.equal(rows().length, 2);
+  rows().forEach((row, i) => assertOfficeFields(row, mockOffices[i]));
+  await clickOffice('office-edit', { '[data-id]': { dataset: { id: markedOffice.id } } });
+  assertOfficeFields(rows()[0], markedOffice, true);
+  await clickOffice('office-cancel');
+  assertOfficeFields(rows()[0], markedOffice);
+});
+
+test('Offices list safely inserts a newly created row before its background refresh', async (t) => {
+  mockOffices = [];
+  initOfficesPage();
+  await loadOffices();
+  const tbody = makeElement('officesTableBody', 'TBODY');
+  let inserted;
+  tbody.prepend = (tr) => { inserted = tr; };
+  t.mock.method(document, 'querySelectorAll', (selector) => selector === '#officeModalBody tr'
+    ? [{ querySelector: (sel) => ({ value: sel === '.office-modal-name' ? markedOffice.name : markedOffice.phone }) }] : []);
+  t.mock.method(OfficeRepository, 'save', async (record) => {
+    assert.equal(record.name, markedOffice.name); // never encode or strip the submitted value
+    assert.equal(record.phone, markedOffice.phone);
+    return { ...record, id: markedOffice.id };
+  });
+  await clickOffice('office-modal-save');
+  assert.ok(inserted);
+  assert.equal(inserted.dataset.id, markedOffice.id);
+  assertOfficeFields(inserted.innerHTML, markedOffice);
+  assert.deepEqual([...inserted.innerHTML.matchAll(/<button[^>]*data-action="([^"]+)"/g)].map((m) => m[1]),
+    ['office-details', 'office-delete']);
+  await new Promise(setImmediate); // let the mock-only summary refresh finish
+});
+
+test('Offices list keeps inline-saved text and action IDs literal during the background refresh', async (t) => {
+  const office = { ...plainOffice, id: markedOffice.id, username: 'admin', deleted_at: null };
+  mockOffices = [office];
+  initOfficesPage();
+  await loadOffices();
+  const cells = Array.from({ length: 4 }, () => makeElement('', 'TD'));
+  const row = { dataset: { id: office.id }, querySelectorAll: () => cells,
+    querySelector: (sel) => ({ value: sel === '.office-edit-name' ? markedOffice.name : markedOffice.phone }) };
+  t.mock.method(OfficeRepository, 'getById', async () => office);
+  t.mock.method(OfficeRepository, 'update', async (id, patch) => {
+    assert.equal(id, office.id);
+    assert.deepEqual(patch, { name: markedOffice.name, phone: markedOffice.phone });
+    return { ...office, ...patch };
+  });
+  await clickOffice('office-save', { tr: row });
+  for (const [i, field] of ['name', 'phone'].entries()) {
+    assert.equal(cells[i].textContent, markedOffice[field]);
+    assert.equal(cells[i].innerHTML, ''); // the mock would record any HTML insertion separately
+  }
+  assert.equal(cells[0].dataset.id, markedOffice.id);
+  const actions = [...cells[3].innerHTML.matchAll(/<button[^>]*data-action="([^"]+)" data-id="([^"]*)"/g)];
+  assert.deepEqual(actions.map((m) => m[1]), ['office-edit', 'office-details', 'office-delete']);
+  assert.ok(actions.every((m) => decodeHtmlText(m[2]) === markedOffice.id));
+  await new Promise(setImmediate);
+});
+
+async function openDetailsFixture(t) {
+  const office = { ...plainOffice, username: 'admin', deleted_at: null, hamolaRows: [] };
+  t.mock.method(OfficeRepository, 'getById', async (id) => {
+    assert.equal(id, String(office.id));
+    return { ...office };
+  });
+  mockOfficeLedgerEntries = [];
+  const page = makeElement('officeDetailsPage', 'SECTION');
+  await clickOffice('office-details', { '[data-id]': { dataset: { id: String(office.id) } } });
+  return { office, page };
+}
+
+test('Office Details header keeps the title, name and phone literal on opening and tab changes', async (t) => {
+  const { office, page } = await openDetailsFixture(t);
+  function checkHeader() {
+    const header = page.innerHTML.split(/<div\b[^>]*\brole="tablist"/)[0];
+    const values = [
+      /<h2\b[^>]*>([^<]*)<\/h2>/,
+      />اسم المكتب<\/p>\s*<p\b[^>]*>([^<]*)<\/p>/,
+      />رقم الهاتف<\/p>\s*<p\b[^>]*>([^<]*)<\/p>/,
+    ].map((pattern) => {
+      const match = header.match(pattern);
+      assert.ok(match, 'Each office field must be text with no child elements');
+      return decodeHtmlText(match[1]);
+    });
+    assert.deepEqual(values, [office.name, office.name, office.phone || '—']);
+    return header.match(/<[a-z][^>]*>/gi); // compare all elements and attributes, not just visible text
+  }
+  const plainTags = checkHeader();
+  assert.match(page.innerHTML, /<button\b[^>]*data-tab="hamola"/);
+  const tab = { dataset: { tab: 'hamola' }, closest: (sel) => sel === '[data-tab]' ? tab : null };
+  for (const phone of [markedOffice.phone, null]) {
+    office.name = markedOffice.name;
+    office.phone = phone;
+    for (const listener of docClickListeners) await listener({ target: tab });
+    assert.deepEqual(checkHeader(), plainTags);
+    assert.match(elementsById.get('officeDetailsContent').innerHTML, /data-action="hamola-add"/);
+  }
+});
+
+test('Office Details print heading keeps the freshly read name literal and the active tab as markup', async (t) => {
+  const { office, page } = await openDetailsFixture(t);
+  assert.match(page.innerHTML, /<button\b[^>]*data-action="office-print"/);
+  const content = elementsById.get('officeDetailsContent').innerHTML;
+  assert.match(content, /<table\b/);
+  const headings = [];
+  printedDocuments.length = 0;
+  for (const name of [plainOffice.name, markedOffice.name]) {
+    office.name = name; // the print action fetches the office again, independently of the displayed title
+    await clickOffice('office-print');
+    assert.equal(printedDocuments.length, headings.length + 1);
+    const doc = printedDocuments.at(-1);
+    assert.match(doc, /<html dir="rtl" lang="ar">/);
+    assert.match(doc, /<title>طباعة تفاصيل المكتب<\/title>/);
+    const body = doc.match(/<body>\s*(<h2\b[^>]*>)([^<]*)<\/h2>([\s\S]*)<\/body>/);
+    assert.ok(body, 'Print must start with one text-only heading');
+    assert.equal(decodeHtmlText(body[2]), name);
+    assert.equal(body[3].trim(), content.trim());
+    headings.push(body[1]);
+  }
+  assert.equal(headings[1], headings[0], 'Office data must not add heading attributes');
+  await clickOffice('office-back');
+  await clickOffice('office-print');
+  assert.equal(printedDocuments.length, 2, 'Leaving Details clears the active print target');
+});
