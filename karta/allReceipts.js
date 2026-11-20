@@ -1456,23 +1456,14 @@ function _receiptPrintBuildTotalsRow(record, kartaCount) {
     </table>`;
 }
 
-/**
- * _receiptPrintBuildHeader(record)
- *
- * Renders the document header block:
- *   - Header image (wasel.png) — absolute URL built from window.location, no DOM read.
- *   - Title, receipt number, date.
- *   - Owner name.
- *   - Payout status badge.
- *   - Optional shipping number and notes.
- */
+/** Banner and single RTL metadata row for the All Forms card print. */
 function _receiptPrintBuildHeader(record) {
   const receiptNumber = esc(record.receipt_number || '—');
   const receiptDate   = esc(receiptDisplayDate(record.receipt_date));
   const dayName       = esc(receiptDayName(record.receipt_date));
   const ownerName     = esc(record.client_name || '—');
-  const shipping      = record.paid_at
-    ? `<span>تاريخ الصرف: <strong>${esc(record.paid_at.split('T')[0])}</strong></span>`
+  const payoutDate    = record.paid_at
+    ? `<span>تاريخ الصرف: <strong dir="ltr">${esc(record.paid_at.split('T')[0])}</strong></span>`
     : '';
 
   // Build absolute URL for the header image (wasel.png sits next to the app files).
@@ -1487,25 +1478,19 @@ function _receiptPrintBuildHeader(record) {
   })();
 
   const headerImgHTML = _headerImgAbsUrl
-    ? `<div style="margin-bottom:10px;">
-         <img src="${_headerImgAbsUrl}" alt="Header"
-              style="width:100%;height:auto;max-height:80px;object-fit:cover;display:block;">
-       </div>`
+    ? `<img class="receipt-print-banner" src="${esc(_headerImgAbsUrl)}" alt="ترويسة المكتب">`
     : '';
 
   return `
-    ${headerImgHTML}
-    <div class="print-header">
-      <h2>نموذج الصرف</h2>
+    <header class="print-header">
+      ${headerImgHTML}
       <div class="print-header-info">
-        <span>إذن الصرف: <strong>${receiptNumber}</strong></span>
+        <span>إذن الصرف: <strong dir="auto">${receiptNumber}</strong></span>
         <span>التاريخ: <strong>${receiptDate} — ${dayName}</strong></span>
-        ${shipping}
+        <span>صاحب المركبة: <strong dir="auto">${ownerName}</strong></span>
+        ${payoutDate}
       </div>
-      <div class="print-header-info" style="margin-top:4px;">
-        <span>صاحب المركبة: <strong>${ownerName}</strong></span>
-      </div>
-    </div>`;
+    </header>`;
 }
 
 /**
@@ -1588,15 +1573,25 @@ function printSingleReceipt(record) {
 
   // ── Build & print ──────────────────────────────────────────────────────────
   try {
-    const receiptNumber = record.receipt_number ? ` — ${record.receipt_number}` : '';
-    const title         = `نموذج الصرف${receiptNumber}`;
-    const body          = _receiptPrintBuildBody(record);
-
     const html = buildPrintDocument({
-      title,
-      body,
+      title: '',
+      body: _receiptPrintBuildBody(record),
       orientation: 'landscape',
       extraCSS: `
+        .print-header { break-inside: avoid; break-after: avoid; }
+        .receipt-print-banner {
+          display: block;
+          width: 100%;
+          height: auto;
+          object-fit: contain;
+        }
+        .print-header-info {
+          flex-wrap: nowrap;
+          align-items: baseline;
+          column-gap: 1em;
+          text-align: start;
+        }
+        .print-header-info > span { min-width: 0; overflow-wrap: anywhere; }
         .no-print,
         .snapshot-cell-status {
           display: none !important;

@@ -538,4 +538,50 @@ test('6. Printing Disbursement Form shows "إضافة عام" and "هنا" only 
   assert.ok(!printedDocs[0].includes('الصافي الكلي'), 'الصافي الكلي must not appear in printSingleReceipt');
 });
 
+test('Only the All Forms single print omits the title and groups the selected form fields below the banner', async (t) => {
+  resetDom();
+  const previousUrl = window.location.href;
+  window.location.href = 'https://example.test/karta/index.html';
+  t.after(() => { window.location.href = previousUrl; });
+  const { printSingleReceipt } = await import('../allReceipts.js');
+  const receipt_date = '2026-11-18';
+  const date = new Date(receipt_date);
+  const dateLabel = new Intl.DateTimeFormat('ar-EG', { dateStyle: 'medium' }).format(date)
+    + ' — ' + new Intl.DateTimeFormat('ar-EG', { weekday: 'long' }).format(date);
+
+  for (const [number, owner, escapedOwner, paid_at] of [
+    ['RC-17', 'منى <علي>', 'منى &lt;علي&gt;', null],
+    ['RC-18', 'أحمد & محمد', 'أحمد &amp; محمد', '2026-11-19T09:30:00'],
+  ]) {
+    printedDocs.length = 0;
+    printSingleReceipt({ receipt_number: number, receipt_date, client_name: owner, paid_at, rows: [{ kartano: '101' }] });
+    assert.equal(printedDocs.length, 1);
+    const [html] = printedDocs;
+    assert.doesNotMatch(html, /نموذج الصرف/);
+    assert.match(html, /<html dir="rtl" lang="ar">/);
+    const header = html.match(/<header\b[^>]*>([\s\S]*?)<\/header>\s*<table>/)?.[1];
+    assert.ok(header, 'The header immediately precedes the receipt table');
+    assert.match(header, /^\s*<img\b[^>]*src="https:\/\/example\.test\/karta\/wasel\.png"[^>]*>\s*<div class="print-header-info">/);
+    const rows = [...header.matchAll(/<div class="print-header-info">([\s\S]*?)<\/div>/g)];
+    assert.equal(rows.length, 1, 'All fields share a single row below the banner');
+    const fields = [...rows[0][1].matchAll(/<span>([^<]+): <strong\b[^>]*>([^<]*)<\/strong><\/span>/g)].map(m => [m[1], m[2]]);
+    assert.deepEqual(fields, [
+      ['إذن الصرف', number], ['التاريخ', dateLabel], ['صاحب المركبة', escapedOwner],
+      ...(paid_at ? [['تاريخ الصرف', '2026-11-19']] : []),
+    ]);
+  }
+
+  const bannerCSS = printedDocs[0].match(/\.receipt-print-banner\s*\{([^}]+)\}/)?.[1] || '';
+  assert.match(bannerCSS, /\swidth:\s*100%;/);
+  assert.match(bannerCSS, /\sheight:\s*auto;/);
+  assert.doesNotMatch(bannerCSS, /max-height:\s*\d|object-fit:\s*cover/);
+
+  const { printReceipt } = await import('../receipts.js');
+  elementsById.set('receiptTable', { id: 'receiptTable' });
+  printedDocs.length = 0;
+  printReceipt();
+  assert.equal(printedDocs.length, 1);
+  assert.match(printedDocs[0], /<h2\b[^>]*>نموذج الصرف<\/h2>/, 'The entry-page print still has its title');
+});
+
 
