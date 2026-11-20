@@ -86,6 +86,7 @@ function makeElement(id = '', tagName = 'DIV', initialClasses = []) {
     _setParsedInner(html) {
       _innerHTML = String(html ?? '');
     },
+    get rows() { return tableRows(_innerHTML); },
     setAttribute(name, val) {
       const strVal = String(val);
       attrs.set(name, strVal);
@@ -164,6 +165,16 @@ function decodeHtmlEntities(str) {
     .replace(/&amp;/g, '&');
 }
 
+// Read-only projection of table section rows / tr.cells for statement print tests.
+function tableRows(html) {
+  return Array.from(html.matchAll(/<tr\b[^>]*>([\s\S]*?)<\/tr>/g), ([, row]) => ({
+    cells: Array.from(row.matchAll(/<t[hd]\b([^>]*)>([\s\S]*?)<\/t[hd]>/g), ([, attrs, text]) => ({
+      textContent: decodeHtmlEntities(text.replace(/<[^>]*>/g, '')),
+      colSpan: Number(attrs.match(/\bcolspan="(\d+)"/i)?.[1] || 1),
+    })),
+  }));
+}
+
 function syncParsedElements(html) {
   const str = String(html ?? '');
   const openTagWithIdRegex = /<([a-zA-Z0-9]+)\b([^>]*?\bid="([^"]+)"[^>]*?)>(?:([^<]*)<\/\1>)?/g;
@@ -176,9 +187,8 @@ function syncParsedElements(html) {
     registerParsedElement(tag, rawAttrs, id, leafText);
   }
 
-  const tbodyMatch = str.match(/<tbody\b[^>]*\bid="ownerAccTableBody"[^>]*>([\s\S]*?)<\/tbody>/i);
-  if (tbodyMatch && elementsById.has('ownerAccTableBody')) {
-    elementsById.get('ownerAccTableBody')._setParsedInner(tbodyMatch[1]);
+  for (const [, , id, contents] of str.matchAll(/<(thead|tbody)\b[^>]*\bid="([^"]+)"[^>]*>([\s\S]*?)<\/\1>/gi)) {
+    elementsById.get(id)?._setParsedInner(contents);
   }
 }
 
@@ -1249,4 +1259,115 @@ test('10. Backend delete ownership enforcement, owner-switch isolation, and fina
   const ledgerAfter = await OwnersModule.getClientLedger('1', 'owner');
   assert.equal(balanceAfter.balance, balanceBefore.balance);
   assert.equal(ledgerAfter.length, ledgerBefore.length);
+});
+
+test('Owner statement labels receipt save and paid movements without changing amounts or ledger records', async (t) => {
+  resetMockServer();
+  const { FinancialService } = await import('../financial.js');
+  const receiptId = 71; // Assigned by the mock server, distinct from receipt number 17.
+  const http = t.mock.method(globalThis, 'fetch');
+  function nextPosting(endpoint, reply) {
+    http.mock.mockImplementationOnce(async (url, options) => {
+      assert.ok(String(url).endsWith(endpoint));
+      assert.equal(options.method, 'POST');
+      return Response.json({ success: true, data: reply(JSON.parse(options.body)) });
+    });
+  }
+  const amountsAndNotes = () => document.getElementById('clientLedgerBody').rows.map(
+    row => row.cells.slice(2).map(cell => cell.textContent)
+  );
+
+  // Use the real receipt-save operation; the PHP boundary is in memory only.
+  nextPosting('/financial/receipt-create.php', receipt => {
+    const ledger = receipt.ledger_ops.map((op, i) => ({
+      ...op, id: 101 + i, reference_id: String(receiptId), applied_at: '2026-06-11 09:00:00', deleted_at: null,
+    }));
+    mockLedgerEntries.push(...ledger);
+    return { receipt: { ...receipt, uuid: receipt.id, id: receiptId, receipt_number: '17' }, ledger };
+  });
+  const saved = await FinancialService.createReceipt('admin', {
+    client_id: '1', client_type: 'owner', client_name: mockOwners[0].name,
+    receipt_date: '2026-06-11', total: 123.45, paid: 45.25,
+    rows: [{ owner_id: '1', vehicle_id: '10', net: 123.45 }],
+  });
+  const due = mockLedgerEntries[1];
+  assert.deepEqual([due.type, due.amount, due.reference_type, due.reference_id], ['receipt_due', 12345, 'receipt', String(receiptId)]);
+  await showOwnerDetails('1', 'owner');
+  const dueRows = [['123.45', 'قيمة كارتات مستحقة له'], ['2500.00', 'رصيد افتتاحي']];
+  assert.deepEqual(amountsAndNotes(), dueRows);
+  assert.equal((await OwnersModule.getClientBalance('1', 'owner')).balance, 2623.45);
+
+  // The paid transition supplies the existing linked owner-ledger row, not a second UI posting.
+  nextPosting('/financial/receipt-status.php', patch => {
+    assert.deepEqual(patch, { receipt_id: receiptId, payment_status: 'paid' });
+    const ledger = { ...due, id: 102, type: 'receipt_payment', effect: 'receipt_payout',
+      reference_type: 'receipt_payment_status', receipt_number: '17', amount: 4525,
+      applied_at: '2026-06-11 23:59:59', note: 'صرف كارتة - ' + mockOwners[0].name };
+    mockLedgerEntries.push(ledger);
+    return { ...patch, changed: true, ledger };
+  });
+  await FinancialService.updateReceiptPaymentStatus('admin', saved.receipt.id, 'paid');
+  const stored = structuredClone(mockLedgerEntries);
+  await showOwnerDetails('1', 'owner');
+  assert.deepEqual(amountsAndNotes(), [['45.25', 'سحب رصيد من المستحق له'], ...dueRows]);
+  const { deposit_total, withdraw_total, balance, entry_count } = await OwnersModule.getClientBalance('1', 'owner');
+  assert.deepEqual([deposit_total, withdraw_total, balance, entry_count], [2623.45, 45.25, 2578.20, 3]);
+  assert.deepEqual(mockLedgerEntries, stored);
+  assert.equal(http.mock.calls.filter(call => call.arguments[1].method !== 'GET').length, 2);
+});
+
+test('Owner statement prints only the displayed movement rows and applied period, separately from the date controls', async () => {
+  resetMockServer();
+  mockOwners[0].name = 'محمود & شركاه';
+  const opening = mockLedgerEntries[0];
+  mockLedgerEntries.push(
+    { ...opening, id: 101, date: '2026-06-15', amount: 1325, note: 'نقل & تفريغ' },
+    { ...opening, id: 102, date: '2026-06-19', type: 'receipt_due', amount: 4000, receipt_number: '17' },
+  );
+  await showOwnerDetails('1', 'owner');
+
+  const page = document.getElementById('ownerDetailsPage');
+  const bar = page.innerHTML.match(/<div class="filter-row ent-filter-bar[^"]*">([\s\S]*?)<\/div>\s*<div class="table-wrapper">/)[1];
+  const fields = Array.from(bar.matchAll(/<div\b[^>]*>([\s\S]*?)<\/div>/g), ([, field]) =>
+    Array.from(field.matchAll(/\s(?:id|data-action)="([^"]+)"/g), ([, control]) => control));
+  assert.deepEqual(fields, [['clientFromDate'], ['clientToDate'], ['client-apply-filter', 'client-clear-filter'], ['client-print-ledger']]);
+
+  const body = document.getElementById('clientLedgerBody');
+  const from = document.getElementById('clientFromDate');
+  const to = document.getElementById('clientToDate');
+  const owner = { id: '1', type: 'owner' };
+  async function printDisplayed() {
+    const requests = apiRequestLog.length;
+    const count = printedDocuments.length;
+    await clickAction('client-print-ledger');
+    assert.equal(apiRequestLog.length, requests, 'Print must not reload or write transactions');
+    assert.equal(printedDocuments.length, count + 1);
+    const doc = printedDocuments.at(-1);
+    assert.deepEqual(tableRows(doc.match(/<tbody>([\s\S]*?)<\/tbody>/)[1]), body.rows);
+    return doc;
+  }
+
+  from.value = '2026-06-15';
+  to.value = '2026-06-19';
+  await clickAction('client-apply-filter', owner);
+  from.value = '2026-06-01'; // Not applied: both the printed rows and period must stay as displayed.
+  const doc = await printDisplayed();
+  assert.deepEqual(body.rows.map(row => row.cells[0].textContent), ['2026-06-19', '2026-06-15']);
+  assert.match(doc, /<html dir="rtl" lang="ar">/);
+  assert.match(doc, /محمود &amp; شركاه/);
+  assert.match(doc, /من 2026-06-15 إلى 2026-06-19/);
+  assert.match(doc, /نقل &amp; تفريغ/);
+  assert.match(doc, />قيمة كارتات مستحقة له<\/td>/);
+  assert.deepEqual(Array.from(doc.matchAll(/<th>(.*?)<\/th>/g), ([, th]) => th), ['التاريخ', 'الوقت', 'المبلغ', 'ملاحظة']);
+  assert.doesNotMatch(doc, /2026-06-01|رصيد افتتاحي|<(?:button|input|select|nav)\b|الرصيد الحالي|المركبات والسائقين|تفاصيل الحساب/);
+
+  from.value = '2026-07-01';
+  to.value = '';
+  await clickAction('client-apply-filter', owner);
+  assert.match(await printDisplayed(), /<td colspan="4">لا توجد حركات<\/td>/);
+  await clickAction('client-clear-filter', owner);
+  const all = await printDisplayed();
+  assert.match(all, /جميع الفترات/);
+  assert.match(all, /رصيد افتتاحي/);
+  assert.equal(body.rows.length, 3);
 });

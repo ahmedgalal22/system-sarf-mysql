@@ -10,7 +10,7 @@ import {
 } from './financial.js';
 import { AuthModule } from './auth.js';
 import { Money } from './money.js';
-import { printHTML } from './printEngine.js';
+import { buildPrintDocument, printHTML } from './printEngine.js';
 import { ExcelService } from './excelService.js';
 import { DateUtils } from './dateUtils.js';
 import { ClientRepository } from './services/clientRepository.js';
@@ -391,11 +391,12 @@ function _ledgerNote(entry) {
 
   // Receipt due — نموذج صرف أُضيف
   if (type === 'receipt_due') {
+    if (entry.amount > 0) return 'قيمة كارتات مستحقة له';
     return receiptNum ? 'إيداع نموذج صرف — إذن: ' + receiptNum : 'إيداع نموذج صرف';
   }
   // Receipt payment — نموذج صرف تم صرفه
   if (type === 'receipt_payment') {
-    return receiptNum ? 'سحب نموذج صرف — إذن: ' + receiptNum : 'سحب نموذج صرف';
+    return 'سحب رصيد من المستحق له';
   }
   // Client balance — manual deposit/withdraw
   if (refType === 'client_balance') {
@@ -882,10 +883,13 @@ async function _renderLedger(client, preloadedLedger = null) {
             مسح التحديد
           </button>
         </div>
+        <div class="form-group mb-0">
+          <button type="button" data-action="client-print-ledger" class="btn btn-secondary btn-sm">طباعة الحركات</button>
+        </div>
       </div>
       <div class="table-wrapper">
         <table class="table">
-          <thead>
+          <thead id="clientLedgerHead">
             <tr>
               <th>التاريخ</th>
               <th>الوقت</th>
@@ -893,7 +897,7 @@ async function _renderLedger(client, preloadedLedger = null) {
               <th>ملاحظة</th>
             </tr>
           </thead>
-          <tbody id="clientLedgerBody">
+          <tbody id="clientLedgerBody" data-owner-name="${_escAttr(client.name)}">
             ${ledger.length ? ledger.map(e => `
               <tr>
                 <td>${_dateLabel(e.date || e.applied_at)}</td>
@@ -913,6 +917,27 @@ async function _renderLedger(client, preloadedLedger = null) {
   `;
 }
 
+function _printOwnerLedger() {
+  const head = document.getElementById('clientLedgerHead');
+  const body = document.getElementById('clientLedgerBody');
+  if (!head || !body) return;
+  const title = `حركات حساب صاحب المركبة — ${body.dataset.ownerName}`;
+  const period = body.dataset.period || 'جميع الفترات';
+  // Copy displayed cell text, not page markup, draft date inputs or a fresh ledger query.
+  const headings = Array.from(head.rows[0].cells, cell => `<th>${_escHtml(cell.textContent)}</th>`);
+  const rows = Array.from(body.rows, row => {
+    const cells = Array.from(row.cells, cell =>
+      `<td colspan="${cell.colSpan}">${_escHtml(cell.textContent)}</td>`);
+    return `<tr>${cells.join('')}</tr>`;
+  });
+  const html = buildPrintDocument({
+    title, orientation: 'portrait',
+    body: `<header class="print-header"><h2>${_escHtml(title)}</h2><p>${_escHtml(period)}</p></header>
+      <table><thead><tr>${headings.join('')}</tr></thead><tbody>${rows.join('')}</tbody></table>`,
+    extraCSS: 'td { overflow-wrap: anywhere; }',
+  });
+  printHTML(html, { id: 'owner-ledger-print-iframe' });
+}
 
 function _ensureVehicleModal() {
   if (document.getElementById('vehicleModal')) return;
@@ -2311,6 +2336,11 @@ function attachOwnersPageListeners() {
       return;
     }
 
+    if (e.target.closest('[data-action="client-print-ledger"]')) {
+      _printOwnerLedger();
+      return;
+    }
+
     const clientFilterBtn = e.target.closest('[data-action="client-apply-filter"]');
     if (clientFilterBtn) {
       const id = clientFilterBtn.dataset.id;
@@ -2336,6 +2366,7 @@ function attachOwnersPageListeners() {
           <td class="p-2 text-right">${_ledgerNote(e1)}</td>
         </tr>
       `).join('') : `<tr><td colspan="4" class="text-center text-muted p-4">لا توجد حركات</td></tr>`;
+      body.dataset.period = [from && `من ${from}`, to && `إلى ${to}`].filter(Boolean).join(' ');
       return;
     }
 
@@ -2359,6 +2390,7 @@ function attachOwnersPageListeners() {
           <td class="p-2 text-right">${_ledgerNote(e1)}</td>
         </tr>
       `).join('') : `<tr><td colspan="4" class="text-center text-muted p-4">لا توجد حركات</td></tr>`;
+      delete body.dataset.period;
       return;
     }
   });
