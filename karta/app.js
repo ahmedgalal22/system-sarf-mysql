@@ -5,7 +5,7 @@
 import { AuthModule }  from './auth.js';
 import { initReceiptPage } from './receipts.js';
 import { initAllReceiptsPage } from './allReceipts.js';
-import { attachOwnersPageListeners, loadOwners } from './entities.js';
+import { attachOwnersPageListeners, refreshOwnersView } from './entities.js';
 import { attachOfficesPageListeners, initOfficesPage, loadOffices } from './offices.js';
 import { initTreasuryPage } from './treasury.js';
 import { initHomePage } from './home.js';
@@ -107,7 +107,7 @@ async function showPage(pageName) {
   });
 
   if (resolvedPageName === 'ownersPage' || targetId === 'ownersPage') {
-    await loadOwners();
+    await refreshOwnersView();
   }
   if (resolvedPageName === 'officesPage' || targetId === 'officesPage') {
     await loadOffices();

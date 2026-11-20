@@ -14,6 +14,7 @@ import { buildPrintDocument, printHTML } from './printEngine.js';
 import { ExcelService } from './excelService.js';
 import { DateUtils } from './dateUtils.js';
 import { ClientRepository } from './services/clientRepository.js';
+import { OwnerListRepository } from './services/ownerListRepository.js';
 import { ReceiptRepository } from './services/receiptRepository.js';
 import { ApiClient } from './services/apiClient.js';
 import { generateId as _uuid } from './utils/idGenerator.js';
@@ -350,6 +351,8 @@ let _balanceActionType = 'deposit';
 let _activeOwnerDetailsTab = 'movements';
 let _lastOwnerDetailsClientId = null;
 let _ownerDetailsLoadSeq = 0;
+let _ownerListLoadSeq = 0;
+const _pendingOwnerListCounts = new Set(); // in-flight request handles, not cached values
 let _ownerAccountDetailRows = [];
 let _ownerAccSearchQuery = '';
 let _ownerAccFromDate = '';
@@ -442,26 +445,6 @@ function _currentUsername() {
 
 
 
-async function _clientSnapshot(client, options = {}) {
-  const balance = await OwnersModule.getClientBalance(client.id, client.type, options);
-  // last_activity = most recent of: entity update OR financial transaction
-  const entityTime = Number(client.updated_at || client.created_at || 0);
-  const txTime = balance.last_transaction_date
-    ? new Date(balance.last_transaction_date).getTime() || 0
-    : 0;
-  const lastActivity = Math.max(entityTime, txTime);
-  return {
-    ...client,
-    phone: client.phone || null,
-    balance: balance.balance,
-    last_transaction_date: balance.last_transaction_date,
-    updated_at: entityTime,
-    last_activity: lastActivity,
-  };
-}
-
-
-
 function _renderShell() {
   const page = document.getElementById('ownersPage');
   if (!page) return;
@@ -487,7 +470,7 @@ function _renderCustomersShell() {
       <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;" class="ent-search-wrap">
         <input id="ownerSearchInput" type="text" class="ent-search-input" placeholder="🔍 ابحث عن صاحب مركبة..." style="flex:1;min-width:200px;">
         <div style="background:linear-gradient(135deg,#1e40af,#3b82f6);color:#fff;padding:8px 20px;border-radius:12px;font-weight:700;font-size:0.875rem;white-space:nowrap;">
-          الرصيد الكلي: <span id="totalBalanceDisplay">0.00</span>
+          الرصيد الكلي: <span id="totalBalanceDisplay">—</span>
         </div>
       </div>
 
@@ -622,7 +605,7 @@ async function _saveFromAddModal() {
     _editingAccountId = null;
     _editingAccountKind = null;
     document.getElementById('ownerAddModal')?.classList.add('hidden');
-    loadOwners(); // non-blocking background refresh
+    refreshOwnersView(); // non-blocking background refresh
     return;
   }
 
@@ -650,7 +633,7 @@ async function _saveFromAddModal() {
 
   document.getElementById('ownerAddModal')?.classList.add('hidden');
   _invalidateKartaCounts();
-  loadOwners(); // non-blocking background refresh
+  refreshOwnersView(); // non-blocking background refresh
 }
 
 
@@ -785,6 +768,10 @@ async function _getUnpaidKartaCount(clientId, clientType = 'owner', options = {}
   return counts[key] || 0;
 }
 
+function _kartaCountHtml(kartaCount) {
+  return kartaCount > 0 ? '<span class="ent-karta-badge">' + kartaCount + '</span>' : '—';
+}
+
 function _buildClientRow(client, kartaCount, _kind = 'owner') {
   return `
     <tr data-client-name="${(client.name || '').toLowerCase()}">
@@ -793,7 +780,7 @@ function _buildClientRow(client, kartaCount, _kind = 'owner') {
       </td>
       <td>${client.phone || '—'}</td>
       <td class="${_balanceClass(client.balance)}">${_fmt(client.balance)}</td>
-      <td class="text-center">${kartaCount > 0 ? '<span class="ent-karta-badge">' + kartaCount + '</span>' : '—'}</td>
+      <td class="text-center" data-owner-karta="${client.id}">${_kartaCountHtml(kartaCount)}</td>
       <td>
         <button type="button" data-action="edit-account" data-id="${client.id}" data-kind="owner" class="ent-action-btn ent-action-btn--edit" title="تعديل">✏️</button>
         <button type="button" data-action="delete-account" data-id="${client.id}" data-kind="owner" class="ent-action-btn ent-action-btn--delete" title="حذف">🗑️</button>
@@ -801,7 +788,17 @@ function _buildClientRow(client, kartaCount, _kind = 'owner') {
     </tr>`;
 }
 
+function _filterOwnerList() {
+  const query = (document.getElementById('ownerSearchInput')?.value || '').trim().toLowerCase();
+  const rows = document.querySelectorAll('#ownersTableBody tr[data-client-name]');
+  rows.forEach(tr => {
+    tr.style.display = (!query || tr.dataset.clientName.includes(query)) ? '' : 'none';
+  });
+  if (rows.length) _updateTotalBalance();
+}
+
 async function loadOwners(options = {}) {
+  const seq = ++_ownerListLoadSeq;
   if (!document.getElementById('ownersTableBody')) {
     _renderShell();
   }
@@ -814,40 +811,57 @@ async function loadOwners(options = {}) {
     ownersTbody.innerHTML = '<tr><td colspan="5" class="text-muted text-center p-6">⏳ جاري التحميل...</td></tr>';
   }
 
-  // Owners (exclude brokers)
-  const owners = await ClientRepository.getAllOwners(options);
-  const ownerList = owners.filter(o => o.deleted_at === null && o.name && o.owner_type !== 'broker').map(o => ({
-    id: String(o.id), type: 'owner', name: o.name || '', phone: o.phone || null
-  }));
-  const ownerSnaps = await Promise.all(ownerList.map(o => _clientSnapshot(o, options)));
-  const ownerKartas = await Promise.all(ownerList.map(o => _getUnpaidKartaCount(o.id, 'owner', options)));
-
-  const sortedOwners = _sortByPriority(ownerSnaps);
-  if (sortedOwners.length === 0) {
-    ownersTbody.innerHTML = '<tr><td colspan="5" class="text-muted text-center p-6">لا توجد أصحاب مركبات</td></tr>';
-  } else {
-    ownersTbody.innerHTML = sortedOwners.map((client) => {
-      const idx = ownerSnaps.indexOf(client);
-      return _buildClientRow(client, ownerKartas[idx], 'owner');
-    }).join('');
+  let owners;
+  try {
+    owners = await OwnerListRepository.getAll(options);
+  } catch (err) {
+    if (seq === _ownerListLoadSeq) {
+      ownersTbody.innerHTML = '<tr><td colspan="5" class="text-center p-6">تعذر تحميل أرصدة أصحاب المركبات</td></tr>';
+      const total = document.getElementById('totalBalanceDisplay');
+      if (total) total.textContent = '—';
+    }
+    throw err;
   }
+  if (seq !== _ownerListLoadSeq) return;
 
-  // Update total balance
+  const sortedOwners = _sortByPriority(owners);
+  if (!sortedOwners.length) {
+    ownersTbody.innerHTML = '<tr data-client-name=""><td colspan="5" class="text-muted text-center p-6">لا توجد أصحاب مركبات</td></tr>';
+  } else {
+    ownersTbody.innerHTML = sortedOwners.map(client =>
+      _buildClientRow(client, _kartaCountsCache?.['owner:' + client.id])
+    ).join('');
+  }
+  // A reload retains the search text, but only an input event filters the new rows.
   _updateTotalBalance();
-
-  // Search handler
   const searchInput = document.getElementById('ownerSearchInput');
   if (searchInput && !searchInput.dataset.bound) {
     searchInput.dataset.bound = '1';
-    searchInput.addEventListener('input', function() {
-      const query = this.value.trim().toLowerCase();
-      document.querySelectorAll('#ownersTableBody tr').forEach(tr => {
-        const name = tr.dataset.clientName || '';
-        tr.style.display = (!query || name.includes(query)) ? '' : 'none';
-      });
-      _updateTotalBalance();
-    });
+    searchInput.addEventListener('input', _filterOwnerList);
   }
+
+  // Same counter, options, cache and badge. Only its cell waits, never the list.
+  if (!_kartaCountsCache) {
+    ownersTbody.querySelectorAll('[data-owner-karta]').forEach(cell => {
+      _getUnpaidKartaCount(cell.dataset.ownerKarta, 'owner', options).then(count => {
+        if (seq === _ownerListLoadSeq) cell.innerHTML = _kartaCountHtml(count);
+      });
+    });
+    // Invalidation forgets this promise but does not cancel its response. Remember
+    // each actual GET (not one promise per cell) until it can no longer fill the cache.
+    const request = _kartaCountsPromise;
+    if (request && !_pendingOwnerListCounts.has(request)) {
+      _pendingOwnerListCounts.add(request);
+      const settled = () => _pendingOwnerListCounts.delete(request);
+      request.then(settled, settled);
+    }
+  }
+}
+
+// Navigation and fire-and-forget refreshes show the error inline. Callers that
+// need to know whether the read succeeded (Excel import) await loadOwners itself.
+function refreshOwnersView(options = {}) {
+  return loadOwners(options).catch(err => console.warn('[owners] List read failed:', err.message));
 }
 
 async function _getClient(type, id, options = {}) {
@@ -2024,7 +2038,7 @@ async function _saveBalanceEntry() {
   _closeBalanceEntryModal();
   _activeOwnerDetailsTab = 'movements';
   await showOwnerDetails(_selectedClient.id, _selectedClient.type);
-  loadOwners(); // non-blocking background refresh
+  refreshOwnersView(); // non-blocking background refresh
 }
 
 // ─── EXCEL HANDLERS ───────────────────────────────────────────────────────────
@@ -2082,14 +2096,22 @@ function _handleImportOwnersExcel() {
         }
       }
 
-      await loadOwners();
-      if (ownersAdded > 0) window.dispatchEvent(new CustomEvent('owners:changed'));
-
       const parts = [];
       if (ownersAdded   > 0) parts.push(`✅ تم إضافة ${ownersAdded} صاحب مركبة`);
       if (ownersSkipped > 0) parts.push(`⏭️ تم تخطي ${ownersSkipped} صاحب مركبة موجود مسبقاً`);
       if (errors.length > 0) parts.push(`❌ أخطاء: ${errors.join('، ')}`);
 
+      try {
+        await loadOwners();
+        if (ownersAdded > 0) {
+          // Render balances immediately, but don't invalidate a final time while an
+          // older count response (possibly from before the first create) can still land.
+          while (_pendingOwnerListCounts.size) await Promise.allSettled(_pendingOwnerListCounts);
+          window.dispatchEvent(new CustomEvent('owners:changed'));
+        }
+      } catch (err) {
+        parts.push(`⚠️ تعذر تحديث قائمة أصحاب المركبات: ${err.message}`);
+      }
       alert(parts.join('\n') || 'لم يتم إضافة أي اسم.');
     } catch (err) {
       console.error('[entities] Excel import entities failed:', err);
@@ -2182,8 +2204,8 @@ function attachOwnersPageListeners() {
       try {
         await OwnersModule.deleteOwner(_currentUsername(), id);
         _invalidateKartaCounts();
-        loadOwners(); // background refresh (non-blocking)
-      } catch (err) { alert(err.message); loadOwners(); }
+        refreshOwnersView(); // background refresh (non-blocking)
+      } catch (err) { alert(err.message); refreshOwnersView(); }
       return;
     }
 
@@ -2428,7 +2450,7 @@ window.addEventListener('owners:changed', (event) => {
   if (detailsPage && !detailsPage.classList.contains('hidden') && _selectedClient?.type === 'owner') {
     showOwnerDetails(_selectedClient.id, 'owner', options);
   }
-  loadOwners(options);
+  refreshOwnersView(options);
 });
 
 window.addEventListener('ownerAccountDetails:changed', async (event) => {
@@ -2492,6 +2514,7 @@ export {
   normalizeAndValidateOwnerAccNumber,
   addAccount,
   loadOwners,
+  refreshOwnersView,
   attachOwnersPageListeners,
   showOwnerDetails,
   notifyReceiptStatusChanged,
