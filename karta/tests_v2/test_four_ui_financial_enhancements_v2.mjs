@@ -1082,7 +1082,7 @@ test('Offices print contains only the two first-line figures and the current nam
       })),
     })) : []);
   const text = (html) => html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
-  const full = ['مكتب النور 010001 105.10', 'النور &amp; شركاه 011002 -25.35', 'مكتب الشرق — 0.10'];
+  const full = ['النور &amp; شركاه 011002 -25.35', 'مكتب النور 010001 105.10', 'مكتب الشرق — 0.10'];
   async function checkPrint(expectedRows, total) {
     const before = fetchedUrls.length;
     printedDocuments.length = 0;
@@ -1105,7 +1105,7 @@ test('Offices print contains only the two first-line figures and the current nam
   assert.equal(elementsById.get('officeTotalBalance').textContent, '0.10');
   const search = elementsById.get('officeSearch');
   for (const [query, visible, sum] of [
-    ['النور', full.slice(0, 2), '79.75'], ['11002', [full[1]], '-25.35'], ['غير موجود', [], '0.00'], ['', full, '79.85'],
+    ['النور', full.slice(0, 2), '79.75'], ['11002', [full[0]], '-25.35'], ['غير موجود', [], '0.00'], ['', full, '79.85'],
   ]) {
     search.value = query;
     const releaseSearch = holdNextOfficeRead(t);

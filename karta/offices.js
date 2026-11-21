@@ -1634,6 +1634,9 @@ async function loadOffices(options = {}) {
     const phone = String(item.office.phone || '').toLowerCase();
     return name.includes(query) || phone.includes(query);
   });
+  const balancePriority = balance => balance < 0 ? 0 : balance > 0 ? 1 : 2;
+  // Sort the filtered copy; equal priorities keep the summary's original order.
+  rows.sort((a, b) => balancePriority(a.balance) - balancePriority(b.balance));
 
   tbody.innerHTML = rows.map((item) => {
     const office = item.office;
@@ -1643,7 +1646,7 @@ async function loadOffices(options = {}) {
     const phoneVal = isEditing ? _editingOfficeDraft?.phone ?? office.phone : office.phone;
 
     return `
-      <tr data-id="${idAttr}" style="transition:background 0.15s;">
+      <tr data-id="${idAttr}"${item.balance !== 0 ? ' data-nonzero-balance' : ''} style="transition:background 0.15s;">
         <td ${!isEditing ? `data-action="office-details" data-id="${idAttr}" style="cursor:pointer;color:#2563eb;font-weight:700;" onmouseover="this.style.background='#eff6ff'" onmouseout="this.style.background=''"` : ''}>
           ${isEditing
             ? `<input type="text" class="input input-sm office-edit-name" value="${escapeListHtml(nameVal)}" />`
@@ -2103,9 +2106,11 @@ function attachOfficesPageListeners() {
       try {
         const created = await OfficesModule.createOffices(rows);
         _closeOfficeModal();
-        // Optimistic: append new rows immediately, then background refresh summary
+        // New offices display 0.00 until the background refresh supplies their balances.
         const tbody = document.getElementById('officesTableBody');
         if (tbody && Array.isArray(created)) {
+          const nonzeroRows = tbody.querySelectorAll('tr[data-nonzero-balance]');
+          const lastNonzero = nonzeroRows[nonzeroRows.length - 1];
           for (const record of created) {
             const tr = document.createElement('tr');
             tr.dataset.id = String(record.id);
@@ -2118,7 +2123,9 @@ function attachOfficesPageListeners() {
             // Remove 'no offices' placeholder if present
             const placeholder = tbody.querySelector('td[colspan]');
             if (placeholder) placeholder.closest('tr')?.remove();
-            tbody.prepend(tr);
+            // Keep the existing prepend order, but only within the zero group.
+            if (lastNonzero) lastNonzero.after(tr);
+            else tbody.prepend(tr);
           }
           // Update count
           const countEl = document.getElementById('officeTotalCount');
