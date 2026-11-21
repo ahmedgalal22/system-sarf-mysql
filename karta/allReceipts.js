@@ -57,6 +57,7 @@ const MS_FILTER_DEFS = [
   { key: 'karta',   label: 'رقم الكارتة',  stateKey: 'karta',   optionsKey: 'kartas',           level: 'row' },
   { key: 'type',    label: 'النوع',        stateKey: 'type',    optionsKey: 'types',            level: 'row' },
 ];
+const RECEIPT_QUERY_FILTERS = MS_FILTER_DEFS.filter(def => def.level === 'receipt' && def.apiParam);
 
 const STATE = {
   tab: 'receipts',
@@ -208,8 +209,10 @@ function _updateMultiSelectOptions() {
   if (!STATE.options) return;
   for (const def of MS_FILTER_DEFS) {
     const instance = _msFilters[def.key];
-    if (!instance) continue;
-    instance.setOptions(STATE.options[def.optionsKey] || []);
+    const values = STATE.options[def.optionsKey];
+    // An omitted option list is not an authoritative empty list.
+    if (!instance || !Array.isArray(values)) continue;
+    instance.setOptions(values);
     // Sync back: setOptions() may have dropped selected values that no
     // longer exist in the new options. Read back the component's actual
     // selection to keep STATE.filters.receipts as the single source of truth.
@@ -616,16 +619,20 @@ function summarizeReceipts(records) {
 
 
 
-function setFilterValue(tab, key, value) {
-  STATE.filters[tab][key] = value;
+function setDateRange(filters, { from = filters.from, to = filters.to }) {
+  if (from === filters.from && to === filters.to) return false;
+  filters.from = from;
+  filters.to = to;
+  // Invalidate at selection time, even if the read is busy or debounced.
+  _invalidateReceipts();
+  return true;
 }
 
 function setQuickRange(tab, days) {
   const toDate = new Date();
   const fromDate = new Date(toDate);
   fromDate.setDate(fromDate.getDate() - (days - 1));
-  STATE.filters[tab].from = DateUtils.toLocalDate(fromDate);
-  STATE.filters[tab].to = DateUtils.toLocalDate(toDate);
+  setDateRange(STATE.filters[tab], { from: DateUtils.toLocalDate(fromDate), to: DateUtils.toLocalDate(toDate) });
   STATE.filters[tab].date = '';
 }
 
@@ -963,9 +970,18 @@ function renderLists(_preFilteredReceipts) {
  */
 function _hasActiveReceiptFilters() {
   const f = STATE.filters.receipts;
-  return MS_FILTER_DEFS.some(def =>
-    def.level === 'receipt' && f[def.stateKey]?.length > 0
-  );
+  return RECEIPT_QUERY_FILTERS.some(def => f[def.stateKey]?.length > 0);
+}
+
+function _matchesCurrentReceiptSearch(params) {
+  const filters = STATE.filters.receipts;
+  if (params.from_date !== filters.from || params.to_date !== filters.to) return false;
+  return RECEIPT_QUERY_FILTERS.every(({ apiParam, stateKey }) => {
+    const sent = params[apiParam] || [];
+    const selected = new Set(filters[stateKey]);
+    // SQL IN filters depend on membership, not order or duplicate values.
+    return new Set(sent).size === selected.size && sent.every(value => selected.has(value));
+  });
 }
 
 /**
@@ -982,15 +998,33 @@ async function loadReceiptsData(mode, options = {}) {
   const username = getSessionUsername();
   if (!username) return;
   if (STATE.loading) return;
+  // A read starting now consumes the date debounce, even if it later fails.
+  clearTimeout(_filterDebounceTimer);
+  _filterDebounceTimer = null;
+  // Only a real read can acknowledge a change. A direct read starting after
+  // invalidation can serve the pending batch too (including an on-demand retry).
+  const revision = _refreshRevision;
+  const pending = revision !== _renderedRevision;
+  const activeChange = pending && !_refreshPassiveOnly;
+  if (pending) {
+    mode = _hasActiveReceiptFilters() ? 'search' : 'list';
+    if (activeChange && (options.passive || options.background)) {
+      options = { ...options, passive: false, background: false };
+    }
+    _refreshPassiveOnly = true; // subsequent events form a separate batch
+  }
   STATE.loading = true;
-  if (mode === 'search') _showReceiptsLoading();
-
   try {
     const f = STATE.filters.receipts;
+    // search.php fills in missing dates; list.php leaves them open. Its full range
+    // is filtered by owner and receipt number in getReceiptCardsFiltered().
+    if (!f.from || !f.to) mode = 'list';
+    if (mode === 'search') _showReceiptsLoading();
 
     if (mode === 'list') {
       // ── list.php: fast, 1 query, all receipts in date range ──
       const receipts = await ReceiptsModule.getByDateRange(username, f.from, f.to, options);
+      if (revision !== _refreshRevision) return; // stale options could prune live selections
       STATE.receipts = receipts.slice();
       STATE.meta = null;
     } else {
@@ -1002,18 +1036,27 @@ async function loadReceiptsData(mode, options = {}) {
         offset:    0,
         include_options: '1',
       };
-      for (const def of MS_FILTER_DEFS) {
-        if (def.level === 'receipt' && def.apiParam && f[def.stateKey]?.length > 0) {
-          searchParams[def.apiParam] = f[def.stateKey];
-        }
+      for (const { stateKey, apiParam } of RECEIPT_QUERY_FILTERS) {
+        if (f[stateKey]?.length) searchParams[apiParam] = [...f[stateKey]];
       }
       const searchResult = await ReceiptsModule.searchReceipts(searchParams, options);
-      STATE.receipts = searchResult.data;
-      STATE.meta = searchResult.meta;
+      if (revision !== _refreshRevision) return;
+      if (!_matchesCurrentReceiptSearch(searchParams)) {
+        _invalidateReceipts(); // a selection changed in flight; don't apply the response's options
+        return;
+      }
       if (searchResult.meta?.options) {
+        // Options describe the whole date range, but rows and summary describe the query sent.
         STATE.options = searchResult.meta.options;
         _updateMultiSelectOptions();
+        if (!_matchesCurrentReceiptSearch(searchParams)) {
+          // Keep the last rendered view; the loader's finally block drains the new revision.
+          _invalidateReceipts(options.passive === true || options.background === true);
+          return;
+        }
       }
+      STATE.receipts = searchResult.data;
+      STATE.meta = searchResult.meta;
     }
 
 
@@ -1025,10 +1068,17 @@ async function loadReceiptsData(mode, options = {}) {
     renderSummaryCards(_cachedR);
     renderLists(_cachedR);
     setActiveTabButtons();
-
+    _renderedRevision = revision;
+    STATE.ready = true;
+  } catch (err) {
+    if (activeChange) _refreshPassiveOnly = false; // preserve priority for retry
+    throw err;
   } finally {
     STATE.loading = false;
     if (mode === 'search') _hideReceiptsLoading();
+    // Drain newer dates or domain changes even after failure. Failure alone
+    // leaves a pending revision for retry without scheduling another read.
+    if (revision !== _refreshRevision) _queuePendingRefresh();
   }
 }
 
@@ -2027,6 +2077,25 @@ function _exportReceiptsToExcel() {
   }
 }
 
+function _reportRefreshError(err) {
+  console.error('[allReceipts] refresh failed:', err);
+}
+
+// DOM dispatch doesn't await click handlers. Handle the read here, not in the shared loader.
+async function _loadReceiptsForFilterClick(mode) {
+  const revision = _refreshRevision;
+  try {
+    await loadReceiptsData(mode);
+  } catch (err) {
+    // Even an unchanged range can fail. Leave it pending for re-entry, without
+    // scheduling a retry or invalidating a newer read.
+    if (!STATE.loading && _refreshRevision === revision && _renderedRevision === revision) {
+      _invalidateReceipts();
+    }
+    _reportRefreshError(err);
+  }
+}
+
 function bindPageEvents() {
   const page = getPage();
   if (!page || page.dataset.bound === '1') return;
@@ -2075,9 +2144,8 @@ function bindPageEvents() {
       const tab = rangeBtn.dataset.range;
       const days = Number(rangeBtn.dataset.days) || 30;
       setQuickRange(tab, days);
-      clearTimeout(_filterDebounceTimer);
       _updateDateInputValues();
-      await loadReceiptsData('list');
+      await _loadReceiptsForFilterClick('list');
       return;
     }
 
@@ -2089,7 +2157,7 @@ function bindPageEvents() {
         return;
       }
       if (action === 'apply-filter') {
-        await loadReceiptsData(_hasActiveReceiptFilters() ? 'search' : 'list');
+        await _loadReceiptsForFilterClick(_hasActiveReceiptFilters() ? 'search' : 'list');
         return;
       }
       if (action === 'print-filtered') {
@@ -2119,9 +2187,12 @@ function bindPageEvents() {
         // Receipt date inputs trigger server re-query with options refresh.
         // Multi-select filters are handled by _onMultiSelectConfirm (no input events).
         if (key === 'from' || key === 'to') {
-          setFilterValue(tab, key, field.value);
-          clearTimeout(_filterDebounceTimer);
-          _filterDebounceTimer = setTimeout(() => loadReceiptsData('list'), 400);
+          if (!setDateRange(STATE.filters[tab], { [key]: field.value })) return;
+          // A busy loader drains the latest revision in finally. Only idle typing needs a timer.
+          if (!STATE.loading) {
+            clearTimeout(_filterDebounceTimer);
+            _filterDebounceTimer = setTimeout(_queuePendingRefresh, 400);
+          }
         }
       }
       return;
@@ -2184,67 +2255,41 @@ async function refreshAllReceiptsPage(mode = 'list', options = {}) {
   const page = getPage();
   if (!page) return;
   await loadReceiptsData(mode, options);
-  STATE.ready = true;
 }
 
-/**
- * Phase 2 TASK F — coalesced refresh scheduler.
- *
- * Domain events frequently fire in pairs (e.g. agents:changed and
- * offices:changed back-to-back after a save).  Each listener
- * previously called refreshAllReceiptsPage → loadReceiptsData()
- * → and although a STATE.loading guard prevented the SECOND DB read,
- * the listener still ran a redundant async chain.
- *
- * This scheduler ensures that no matter how many *:changed events fire
- * in the same synchronous burst, exactly ONE loadReceiptsData() call
- * is scheduled for the next microtask.  Subsequent bursts during the
- * inflight load are deferred and run as a single re-fetch after the
- * current one settles.
- *
- * Behaviour preserved:
- *   - UI still updates after every save/delete (cache invalidation works).
- *   - First-page-load behavior unchanged (init triggers a direct refresh).
- *   - Filter clicks call refreshAllReceiptsPage(false) directly (no DB).
- */
-let _refreshScheduled = false;
-let _refreshInflight = false;
-let _refreshAgainAfter = false;
+// Pending until a read that started at this revision has actually rendered.
+let _refreshRevision = 0;
+let _renderedRevision = 0;
 let _refreshPassiveOnly = true;
-let _refreshAgainPassiveOnly = true;
+let _refreshScheduled = null;
+
+function _invalidateReceipts(isPassive = false) {
+  ++_refreshRevision;
+  if (!isPassive) _refreshPassiveOnly = false;
+}
+
 function _scheduleAllReceiptsRefresh(event = null) {
   const isPassive = event?.detail?.passive === true;
-  if (_refreshInflight) {
-    _refreshAgainAfter = true;
-    if (!isPassive) _refreshAgainPassiveOnly = false;
-    return;
-  }
-  if (!isPassive) _refreshPassiveOnly = false;
-  if (_refreshScheduled) return;
-  _refreshScheduled = true;
-  queueMicrotask(async () => {
-    _refreshScheduled = false;
+  _invalidateReceipts(isPassive);
+  _queuePendingRefresh();
+}
+
+function _queuePendingRefresh() {
+  if (_renderedRevision === _refreshRevision || STATE.loading || _refreshScheduled) return _refreshScheduled;
+  _refreshScheduled = Promise.resolve().then(() => {
+    _refreshScheduled = null;
+    // A direct request may have taken the loader since the event was queued.
+    if (STATE.loading || _renderedRevision === _refreshRevision) return;
     const options = _refreshPassiveOnly ? { passive: true } : {};
-    _refreshPassiveOnly = true;
-    _refreshInflight = true;
-    try {
-      await refreshAllReceiptsPage('list', options);
-    } finally {
-      _refreshInflight = false;
-      if (_refreshAgainAfter) {
-        const nextPassive = _refreshAgainPassiveOnly;
-        _refreshAgainAfter = false;
-        _refreshAgainPassiveOnly = true;
-        _scheduleAllReceiptsRefresh({ detail: { passive: nextPassive } });
-      }
-    }
-  });
+    return refreshAllReceiptsPage(undefined, options);
+  }).catch(_reportRefreshError);
+  return _refreshScheduled;
 }
 
 async function initAllReceiptsPage() {
   const page = getPage();
   if (!page) return;
-  if (page.dataset.initialized === '1') return;
+  if (page.dataset.initialized === '1') return _queuePendingRefresh();
   page.dataset.initialized = '1';
   renderShell();
   _initMultiSelectFilters();
