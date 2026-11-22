@@ -72,7 +72,6 @@ const STATE = {
 };
 
 function createReceiptFilterState() {
-  const range = getLast30DaysRange();
   return {
     owner: [],       // string[] — multi-select values (Phase 4)
     company: [],     // string[] — multi-select values (Phase 4)
@@ -82,8 +81,8 @@ function createReceiptFilterState() {
     type: [],        // string[] — multi-select values (Phase 4)
     status: 'all',
     paymentStatus: 'all',
-    from: range.from,
-    to: range.to,
+    from: '',
+    to: '',
     sortByPayoutDate: false,
     pageSize: 50,
   };
@@ -220,6 +219,15 @@ function _updateMultiSelectOptions() {
   }
 }
 
+// Use the first populated legacy key. Numeric zero is an identifier, not a missing value.
+function rowKartaText(row) {
+  for (const value of [row.kartano, row.kartaNo, row.karta]) {
+    if (typeof value === 'string' && value !== '') return value;
+    if (typeof value === 'number') return String(value);
+  }
+  return '';
+}
+
 /**
  * Populate MultiSelect options from STATE.receipts (client-side extraction).
  * Used in 'list' mode where meta.options is not available.
@@ -245,7 +253,7 @@ function _populateMultiSelectOptionsFromState() {
       if (row._type === 'separator') continue;
       const car = (row.car || row.carNo || row.vehicle_plate || '').trim();
       if (car) vehicleSet.add(car);
-      const karta = (row.kartano || row.kartaNo || row.karta || '').trim();
+      const karta = rowKartaText(row).trim();
       if (karta) kartaSet.add(karta);
       const type = (row.type || '').trim();
       if (type) typeSet.add(type);
@@ -337,14 +345,6 @@ function toNumber(value) {
   return Number(value) || 0;
 }
 
-function getLast30DaysRange() {
-  const today = new Date();
-  const to = DateUtils.toLocalDate(today);
-  const fromDate = new Date(today);
-  fromDate.setDate(fromDate.getDate() - 89);
-  return { from: DateUtils.toLocalDate(fromDate), to };
-}
-
 function normalizeDate(value) {
   if (!value) return '';
   const date = new Date(value);
@@ -380,9 +380,7 @@ function normalizePersistedRow(row) {
   if (row._type === 'separator') return row;
   const hasSeparatorShape = row.vehicleName != null
     && row.subtotal != null
-    && !row.kartano
-    && !row.kartaNo
-    && !row.karta;
+    && !rowKartaText(row);
   if (hasSeparatorShape) return { ...row, _type: 'separator' };
   return row;
 }
@@ -485,7 +483,7 @@ function getDisplayRowsForReceipt(record) {
       if (!car || !vehicleSet.has(car)) return false;
     }
     if (kartaSet) {
-      const karta = (row.kartano || row.kartaNo || row.karta || '').toLowerCase();
+      const karta = rowKartaText(row).toLowerCase();
       if (!karta || !kartaSet.has(karta)) return false;
     }
     if (typeSet) {
@@ -674,6 +672,7 @@ function renderShell() {
 
 function renderReceiptsControls() {
   const f = STATE.filters.receipts;
+  const outputDisabled = _isReceiptViewCurrent() ? '' : ' disabled';
   // Phase 4: multi-select filter containers.
   // Instances are created ONCE in _initMultiSelectFilters() and mounted into these divs.
   const filterSlots = MS_FILTER_DEFS.map(def =>
@@ -705,8 +704,8 @@ function renderReceiptsControls() {
         </select>
       </label>
       <button type="button" data-action="apply-filter" data-tab="receipts" class="apply-btn apply-btn--receipts">تطبيق</button>
-      <button type="button" data-action="print-filtered" data-tab="receipts" class="pdf-btn">📄 تصدير PDF</button>
-      <button type="button" data-action="export-excel-filtered" data-tab="receipts" class="excel-btn">📊 تصدير Excel</button>
+      <button type="button" data-action="print-filtered" data-tab="receipts" class="pdf-btn"${outputDisabled}>📄 تصدير PDF</button>
+      <button type="button" data-action="export-excel-filtered" data-tab="receipts" class="excel-btn"${outputDisabled}>📊 تصدير Excel</button>
        <button type="button" data-action="sort-by-payout-date" class="range-btn" style="${f.sortByPayoutDate ? 'background:#7c3aed;color:#fff;border-color:#7c3aed;' : ''}">📅 تنظيم الصرف</button>
       <div class="status-filter-group" data-filter-group="disbursement" style="display:flex;gap:6px;align-items:flex-end;">
         <button type="button" data-action="status-filter" data-status="all"
@@ -1015,9 +1014,10 @@ async function loadReceiptsData(mode, options = {}) {
   }
   STATE.loading = true;
   try {
+    _syncBulkOutputButtons();
     const f = STATE.filters.receipts;
-    // search.php fills in missing dates; list.php leaves them open. Its full range
-    // is filtered by owner and receipt number in getReceiptCardsFiltered().
+    // Keep open ranges on the date-wide list; owner and receipt number are
+    // applied locally before computing the summary or limiting the display.
     if (!f.from || !f.to) mode = 'list';
     if (mode === 'search') _showReceiptsLoading();
 
@@ -1071,11 +1071,13 @@ async function loadReceiptsData(mode, options = {}) {
     _renderedRevision = revision;
     STATE.ready = true;
   } catch (err) {
+    STATE.ready = false; // Keep the last display, but never export a failed read as current.
     if (activeChange) _refreshPassiveOnly = false; // preserve priority for retry
     throw err;
   } finally {
     STATE.loading = false;
     if (mode === 'search') _hideReceiptsLoading();
+    _syncBulkOutputButtons(); // after the overlay restores controls
     // Drain newer dates or domain changes even after failure. Failure alone
     // leaves a pending revision for retry without scheduling another read.
     if (revision !== _refreshRevision) _queuePendingRefresh();
@@ -2142,8 +2144,9 @@ function bindPageEvents() {
     const rangeBtn = event.target.closest('[data-range]');
     if (rangeBtn) {
       const tab = rangeBtn.dataset.range;
-      const days = Number(rangeBtn.dataset.days) || 30;
-      setQuickRange(tab, days);
+      const days = rangeBtn.dataset.days;
+      if (tab !== 'receipts' || !['1', '7', '30'].includes(days)) return;
+      setQuickRange(tab, Number(days));
       _updateDateInputValues();
       await _loadReceiptsForFilterClick('list');
       return;
@@ -2161,11 +2164,11 @@ function bindPageEvents() {
         return;
       }
       if (action === 'print-filtered') {
-        await printCurrentView();
+        if (_isReceiptViewCurrent()) await printCurrentView();
         return;
       }
       if (action === 'export-excel-filtered' && tab === 'receipts') {
-        _exportReceiptsToExcel();
+        if (_isReceiptViewCurrent()) _exportReceiptsToExcel();
         return;
       }
     }
@@ -2242,6 +2245,9 @@ function bindPageEvents() {
 }
 
 function renderAll() {
+  // Don't recombine new filters with a previous query's rows or server summary.
+  // The loader renders the latest local selections when its read succeeds.
+  if (!_isReceiptViewCurrent()) return;
   setActiveTabButtons();
   // Server-filtered dataset in STATE.receipts.
   // Client-side status filter + sort applied via getReceiptCardsFiltered() + renderReceiptList().
@@ -2263,9 +2269,21 @@ let _renderedRevision = 0;
 let _refreshPassiveOnly = true;
 let _refreshScheduled = null;
 
+function _isReceiptViewCurrent() {
+  return STATE.ready && !STATE.loading && _renderedRevision === _refreshRevision;
+}
+
+function _syncBulkOutputButtons() {
+  const disabled = !_isReceiptViewCurrent();
+  getPage()?.querySelectorAll('[data-action="print-filtered"], [data-action="export-excel-filtered"]').forEach(btn => {
+    btn.disabled = disabled;
+  });
+}
+
 function _invalidateReceipts(isPassive = false) {
   ++_refreshRevision;
   if (!isPassive) _refreshPassiveOnly = false;
+  _syncBulkOutputButtons();
 }
 
 function _scheduleAllReceiptsRefresh(event = null) {

@@ -11,8 +11,8 @@
  * Parameters (all optional, via GET):
  *   limit           int       Default 50. 0 = no limit. Max 10000.
  *   offset          int       Default 0.
- *   from_date       YYYY-MM-DD  Default: 89 days before today (Cairo).
- *   to_date         YYYY-MM-DD  Default: today (Cairo).
+ *   from_date       YYYY-MM-DD  Inclusive lower bound on receipt_date.
+ *   to_date         YYYY-MM-DD  Inclusive upper bound on receipt_date.
  *   client_name[]   string[]  Multi-value: match ANY.
  *   receipt_number[] string[] Multi-value: match ANY.
  *   vehicle[]       string[]  Multi-value: match ANY (searches rows JSON).
@@ -23,6 +23,10 @@
  *   sort_dir        string    asc or desc.
  *   include_options  1/0      If 1, response includes meta.options.
  *
+ * Each date is independent: omitted or blank means no bound on that side.
+ * Non-string or invalid calendar dates return HTTP 400. Two valid bounds
+ * are applied as given (an inverted range is not swapped).
+ *
  * Response:
  *   { success, data[], meta: { total, returned, offset, limit, has_more, summary, options? } }
  *
@@ -32,30 +36,18 @@
 
 require_once __DIR__ . '/../../../core/bootstrap.php';
 require_once __DIR__ . '/../../../api/middleware/auth.php';
+require_once __DIR__ . '/../../../core/allFormsSearchDates.php';
 require_once __DIR__ . '/../../../repositories/ReceiptRepository.php';
 
 if (!isMethod('GET')) jsonMethodNotAllowed('GET');
 
 try {
-    $repo = new ReceiptRepository(getDB());
+    $dates = parseAllFormsSearchDates($_GET);
+} catch (InvalidArgumentException $e) {
+    jsonError($e->getMessage(), 400);
+}
 
-    // ── Parse parameters ─────────────────────────────────────────────────
-
-    // Date range defaults: 89 days ago → today (Cairo timezone)
-    $today    = todayEgypt();
-    $default89 = (new DateTime($today, new DateTimeZone('Africa/Cairo')))
-                    ->modify('-89 days')
-                    ->format('Y-m-d');
-
-    $fromDate = sanitizeString($_GET['from_date'] ?? null);
-    $toDate   = sanitizeString($_GET['to_date'] ?? null);
-    if ($fromDate === '') $fromDate = $default89;
-    if ($toDate === '')   $toDate   = $today;
-
-    // Validate date formats (YYYY-MM-DD)
-    if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $fromDate)) $fromDate = $default89;
-    if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $toDate))   $toDate   = $today;
-
+try {
     // Multi-value array parameters
     $clientNames    = _sanitizeArray($_GET['client_name'] ?? []);
     $receiptNumbers = _sanitizeArray($_GET['receipt_number'] ?? []);
@@ -75,8 +67,8 @@ try {
     // ── Call repository ──────────────────────────────────────────────────
 
     $params = [
-        'from_date'       => $fromDate,
-        'to_date'         => $toDate,
+        'from_date'       => $dates['from_date'],
+        'to_date'         => $dates['to_date'],
         'client_name'     => $clientNames,
         'receipt_number'  => $receiptNumbers,
         'vehicle'         => $vehicles,
@@ -91,6 +83,7 @@ try {
         'include_options' => $includeOptions,
     ];
 
+    $repo = new ReceiptRepository(getDB());
     $result = $repo->search($authUser['username'], $params);
 
     // ── Build response ───────────────────────────────────────────────────

@@ -7,15 +7,23 @@ import { setImmediate as drain } from 'node:timers/promises';
 let screenNumber = 0;
 const owner = 'Selected owner';
 const office = 'Selected office';
+const mayRange = { from: '2026-05-01', to: '2026-05-31' };
 function receipt(id, client = owner, company = office) {
   return { id, created_at: id, receipt_number: String(id), receipt_date: '2026-05-15',
     client_name: client, payment_status: 'unpaid', rows: [{ office: company, kartano: `K${id}` }] };
 }
 
 function element() {
-  const classes = new Set();
+  const classes = new Set(), listeners = new Map(), popupParts = new Map();
   return { dataset: {}, classList: { add: c => classes.add(c), remove: c => classes.delete(c), contains: c => classes.has(c) }, innerHTML: '',
-    appendChild() {}, addEventListener() {}, querySelectorAll() { return []; } };
+    children: [], appendChild(child) { this.children.push(child); }, remove() {},
+    addEventListener(type, fn) { listeners.set(type, fn); }, fire(type, event) { listeners.get(type)?.(event); },
+    querySelector(selector) {
+      if (this.className !== 'ms-filter-popup') return null;
+      if (!popupParts.has(selector)) popupParts.set(selector, element());
+      return popupParts.get(selector);
+    },
+    querySelectorAll() { return []; } };
 }
 
 const dateSelector = key => `[data-filter-tab="receipts"][data-filter-key="${key}"]`;
@@ -37,9 +45,9 @@ async function mountScreen(t, filters = {}, slots = ['owner', 'company']) {
   });
   const applyButton = { dataset: { action: 'apply-filter' }, disabled: false };
   const apply = () => fire('click', '[data-action]', applyButton);
-  const quickRange = days => fire('click', '[data-range]', { dataset: { range: 'receipts', days: String(days) } });
+  const quickRange = days => fire('click', '[data-range]', { dataset: { range: 'receipts', days: days?.toString() } });
   globalThis.document = { getElementById: id => elements.get(id) ?? null,
-    addEventListener() {}, createElement: element, querySelector() { return null; } };
+    addEventListener() {}, removeEventListener() {}, createElement: element, querySelector() { return null; } };
   globalThis.window = Object.assign(new EventTarget(), { __APP_CONTEXT__: { username: 'admin' } });
   t.mock.method(globalThis, 'fetch', () => assert.fail('No live HTTP in these tests'));
   const { ReceiptRepository } = await import('../services/receiptRepository.js');
@@ -62,13 +70,15 @@ async function mountScreen(t, filters = {}, slots = ['owner', 'company']) {
   t.mock.method(ReceiptRepository, 'findByFields', (params, options) => hold('list', params, options));
   t.mock.method(ReceiptRepository, 'search', (params, options) => hold('search', params, options));
   const f = screen.STATE.filters.receipts;
-  Object.assign(f, { from: '2026-05-01', to: '2026-05-31' }, filters);
+  Object.assign(f, filters);
   const fields = new Map(['from', 'to'].map(key => [dateSelector(key), {
     dataset: { filterTab: 'receipts', filterKey: key }, value: f[key], disabled: false,
   }]));
   const controls = [...fields.values(), applyButton, { dataset: { action: 'page-size' }, disabled: true }];
   page.querySelector = selector => fields.get(selector) ?? null;
-  page.querySelectorAll = selector => selector.includes('.range-toolbar input') ? controls : [];
+  const bulkButtons = ['print-filtered', 'export-excel-filtered'].map(action => ({ dataset: { action, tab: 'receipts' } }));
+  page.querySelectorAll = selector => selector.includes('.range-toolbar input') ? [...controls, ...bulkButtons]
+    : selector.includes('[data-action="print-filtered"]') ? bulkButtons : [];
   const inputDate = (key, value) => {
     const field = page.querySelector(dateSelector(key));
     field.value = value;
@@ -79,11 +89,12 @@ async function mountScreen(t, filters = {}, slots = ['owner', 'company']) {
   const cards = () => [...elements.get('receiptsList').innerHTML.matchAll(/data-kind="receipt" data-id="(\d+)"/g)].map(m => Number(m[1]));
   const change = (passive = false, type = 'receipts:changed') =>
     window.dispatchEvent(new CustomEvent(type, { detail: { passive } }));
-  return { ...screen, initial, apply, quickRange, inputDate, change, cards, f, page, reads, controls };
+  return { ...screen, initial, apply, quickRange, inputDate, change, cards, f, page, reads, controls, bulkButtons,
+    clickBulk: button => fire('click', '[data-action]', button) };
 }
 
 async function openScreen(t, filters) {
-  const s = await mountScreen(t, filters);
+  const s = await mountScreen(t, { ...mayRange, ...filters });
   s.reads.pop().reply([receipt(1)]);
   await s.initial;
   assert.deepEqual(s.cards(), [1]);
@@ -258,7 +269,7 @@ function assertList(read, from, to, passive = false) {
 
 test('a quick range during the initial list invalidates it before it can render or prune', async t => {
   clockAtMay15(t);
-  const s = await mountScreen(t, { company: [office] });
+  const s = await mountScreen(t, { ...mayRange, company: [office] });
   assertList(s.reads[0], '2026-05-01', '2026-05-31');
   s.quickRange(7);
   assert.equal(s.page.querySelector(dateSelector('from')).value, '2026-05-09');
@@ -450,7 +461,7 @@ test('date-wide options prune the last owner: never publish the narrow result; o
 test('two pruned query selections share one passive follow-up; newer dates supersede it without pruning valid choices', async t => {
   const clock = clockAtMay15(t);
   const other = 'Owner B';
-  const s = await mountScreen(t, { owner: [owner, other], number: ['1', '2'], company: [office] }, ['owner', 'number', 'company']);
+  const s = await mountScreen(t, { ...mayRange, owner: [owner, other], number: ['1', '2'], company: [office] }, ['owner', 'number', 'company']);
   s.reads.shift().reply([receipt(1), receipt(2, other)]);
   await s.initial;
   const kept = { client_names: [owner], receipt_numbers: ['1'], company_names: [office] };
@@ -543,7 +554,7 @@ test('a failed corrective list keeps the pruned query pending for re-entry witho
 });
 
 test('clearing both dates during search coalesces to one unbounded list with owner AND number applied', async t => {
-  const s = await mountScreen(t, { owner: [owner], number: ['1', '2'] }, ['owner', 'number']);
+  const s = await mountScreen(t, { ...mayRange, owner: [owner], number: ['1', '2'] }, ['owner', 'number']);
   const match = receipt(1), wrongOwner = receipt(2, 'Other owner'), wrongNumber = receipt(3);
   s.reads.shift().reply([match, wrongOwner]);
   await s.initial;
@@ -568,7 +579,7 @@ for (const filter of ['owner', 'number']) {
   for (const cleared of ['from', 'to']) {
     test(`clearing ${cleared} with ${filter} selected uses an open list bound for debounce and Apply`, async t => {
       const clock = clockAtMay15(t);
-      // These ranges lie entirely outside what search.php would default the missing bound to.
+      // An open upper bound must reach future receipts; an open lower bound must reach old ones.
       const year = cleared === 'from' ? '2000' : '2040';
       const from = `${year}-04-01`, to = `${year}-04-30`;
       const selected = filter === 'owner' ? [owner] : ['1'];
@@ -678,7 +689,7 @@ test('a failed Apply superseded by passive events leaves their single follow-up 
 });
 
 test('initialization and explicit refresh still reject with the original error to their callers', async t => {
-  const s = await mountScreen(t);
+  const s = await mountScreen(t, mayRange);
   const log = t.mock.method(console, 'error', () => {});
   const initialError = new Error('initial list unavailable');
   s.reads[0].fail(initialError);
@@ -692,4 +703,263 @@ test('initialization and explicit refresh still reject with the original error t
   assert.equal(s.STATE.ready, false);
   assert.equal(s.reads.length, 2);
   assert.equal(log.mock.callCount(), 0, 'programmatic errors belong to the caller, not the click reporter');
+});
+
+// Type in the real multi-select, check the matching option and confirm (OK).
+function selectOption(key, query, value) {
+  const slot = document.getElementById(`ms-slot-${key}`);
+  slot.children[0].fire('click');
+  const popup = slot.children.at(-1);
+  const input = popup.querySelector('.ms-filter-search');
+  input.value = query;
+  input.fire('input');
+  const list = popup.querySelector('.ms-filter-list');
+  const choices = [...list.innerHTML.matchAll(/data-value="([^"]*)"/g)].map(m => m[1]);
+  assert.ok(choices.includes(value), 'option exists in the current date-wide choices');
+  list.fire('change', { target: { closest: () => ({ checked: true, dataset: { value } }) } });
+  popup.fire('click', { target: { closest: selector => selector === '.ms-filter-btn--ok' } });
+  return choices;
+}
+
+function summaryValues() {
+  const html = document.getElementById('receiptsSummaryContainer').innerHTML;
+  return [...html.matchAll(/class="summary-card__value">([^<]+)</g)].map(m => m[1]);
+}
+
+test('fresh fields and list are unbounded; clearing a preset reveals old Ahmed to customer and receipt-number searches', async t => {
+  clockAtMay15(t);
+  globalThis.requestAnimationFrame = () => {}; // popup focus is immaterial to selection
+  t.after(() => { delete globalThis.requestAnimationFrame; });
+  const s = await mountScreen(t, {}, ['owner', 'number', 'company']); // no injected dates
+  assert.deepEqual([s.f.from, s.f.to], ['', '']);
+  for (const key of ['from', 'to']) assert.match(s.page.innerHTML, new RegExp(`data-filter-key="${key}" type="date" value=""`));
+  const customer = 'أحمد', selectedOffice = 'مكتب طنطا';
+  const old = { ...receipt(1, customer), receipt_date: '2000-04-15', receipt_number: '001', paid: 12345,
+    rows: [{ kartano: 'OLD-A', office: selectedOffice, sarf: 1.25 }, { _type: 'separator' }, { kartano: 'OLD-B', office, sarf: 2.5 }] };
+  const alsoAhmed = { ...receipt(2, customer), receipt_date: '2001-04-15' };
+  const recent = Array.from({ length: 51 }, (_, i) => receipt(3 + i, 'Other'));
+  const all = [...recent, alsoAhmed, old];
+  function replyAll() {
+    const read = s.reads.shift();
+    assert.equal(read.mode, 'list');
+    assert.deepEqual(read.params, {}, 'neither a hidden bound nor a display limit is sent');
+    read.reply(all);
+  }
+  replyAll();
+  await s.initial;
+  assert.equal(s.cards().length, 50);
+  assert.ok(!s.cards().includes(old.id), 'old match is outside the initial display slice');
+  assert.deepEqual(summaryValues(), ['123.45', '54', '3.75']);
+
+  s.quickRange(7);
+  assertList(s.reads[0], '2026-05-09', '2026-05-15');
+  s.reads.shift().reply(recent);
+  await drain();
+  s.inputDate('from', ''); s.inputDate('to', ''); s.apply();
+  replyAll(); await drain();
+  selectOption('owner', 'أحم', customer);
+  replyAll(); await drain();
+  assert.deepEqual(s.cards(), [2, 1]);
+  selectOption('number', '001', '001');
+  replyAll(); await drain();
+  assert.deepEqual(s.cards(), [1]);
+  assert.deepEqual(summaryValues(), ['123.45', '2', '3.75']);
+
+  selectOption('company', 'طنطا', selectedOffice); // only one row in the selected receipt
+  assert.deepEqual(s.cards(), [1]);
+  assert.deepEqual(summaryValues(), ['123.45', '1', '1.25']);
+  const out = captureBulkOutput(t, s);
+  out.clickBoth(true);
+  assert.equal((out.pdf[0].match(/<section class="print-card">/g) || []).length, 1);
+  assert.ok(out.pdf[0].includes(customer));
+  assert.match(out.pdf[0], /OLD-A/); assert.doesNotMatch(out.pdf[0], /OLD-B|Other/);
+  const printSummary = out.pdf[0].split('</table>', 1)[0];
+  for (const value of summaryValues()) assert.ok(printSummary.includes(`>${value}<`));
+  assert.deepEqual(out.excel[0].map(row => [row['صاحب المركبة'], row['رقم الكارتة'], row['الصرف']]), [[customer, 'OLD-A', 1.25]]);
+
+  s.inputDate('from', old.receipt_date); s.inputDate('to', old.receipt_date); s.apply();
+  assertSearch(s.reads[0], old.receipt_date, old.receipt_date, { client_name: [customer], receipt_number: ['001'] });
+  s.reads.shift().reply([old], { client_names: [customer], receipt_numbers: ['001'], company_names: [selectedOffice, office] });
+  await drain();
+  assert.deepEqual(s.cards(), [1], 'both explicit boundaries are inclusive');
+  assert.deepEqual(summaryValues(), ['123.45', '1', '1.25']);
+});
+
+for (const [label, row, option] of [
+  ['string', { kartano: '101' }, '101'],
+  ['number', { kartano: 101 }, '101'],
+  ['zero with legacy subtotal fields', { kartano: 0, vehicleName: 'V', subtotal: 0 }, '0'],
+  ['null', { kartano: null }, null],
+  ['missing', {}, null],
+  ['empty with legacy kartaNo', { kartano: '', kartaNo: '00101' }, '00101'],
+  ['zero before a fallback alias', { kartaNo: 0, karta: 'other' }, '0'],
+]) {
+  test(`unbounded startup and karta filter: ${label} identifier`, async t => {
+    globalThis.requestAnimationFrame = () => {}; // popup focus only
+    t.after(() => { delete globalThis.requestAnimationFrame; });
+    const s = await mountScreen(t, {}, ['karta']);
+    const old = { ...receipt(1, 'أحمد'), receipt_date: '2000-04-15', rows: [structuredClone(row)] };
+    const read = s.reads.shift();
+    assert.equal(read.mode, 'list');
+    assert.deepEqual(read.params, {});
+    read.reply([old, receipt(2)]);
+    await s.initial;
+    assert.equal(s.STATE.ready, true);
+    assert.deepEqual(s.cards(), [2, 1], 'the old receipt is visible before filtering');
+    assert.equal(summaryValues()[1], '2', 'both data rows count, including an identifier of zero');
+
+    const choices = selectOption('karta', '', option ?? 'K2');
+    assert.deepEqual(choices, option === null ? ['K2'] : [option, 'K2']);
+    assert.deepEqual(s.cards(), option === null ? [2] : [1]);
+    assert.deepEqual(s.STATE.receipts.find(r => r.id === old.id).rows[0], row, 'stored identifier is unchanged');
+    assert.equal(s.reads.length, 0, 'karta filtering is local');
+  });
+}
+
+test('each bound is inclusive and independently removable; an inverted range is not repaired', async t => {
+  const s = await mountScreen(t);
+  const from = '2000-02-29', to = '2000-03-01';
+  const all = ['1990-01-01', from, to, '2040-01-01'].map((date, i) => ({ ...receipt(i + 1), receipt_date: date }));
+  s.reads.shift().reply(all); await s.initial;
+  assert.deepEqual(s.cards(), [4, 3, 2, 1]);
+  for (const [lower, upper, params, ids] of [
+    [from, '', { from_date: from }, [4, 3, 2]],
+    [from, to, { from_date: from, to_date: to }, [3, 2]],
+    ['', to, { to_date: to }, [3, 2, 1]],
+    [to, from, { from_date: to, to_date: from }, []],
+    ['', '', {}, [4, 3, 2, 1]],
+  ]) {
+    s.inputDate('from', lower); s.inputDate('to', upper); s.apply();
+    const read = s.reads.shift();
+    assert.equal(read.mode, 'list');
+    assert.deepEqual(read.params, params);
+    read.reply(all); // deliberate superset: exercise the view's own date checks too
+    await drain();
+    assert.deepEqual(s.cards(), ids);
+    assert.equal(summaryValues()[1], String(ids.length));
+  }
+});
+
+test('only configured quick-range actions change dates; a missing or invalid day count never selects a month', async t => {
+  clockAtMay15(t);
+  const s = await openScreen(t);
+  for (const days of [undefined, '', 'invalid', -1, 0, 1.5, 90]) s.quickRange(days);
+  assert.deepEqual([s.f.from, s.f.to], [mayRange.from, mayRange.to]);
+  assert.equal(s.reads.length, 0);
+  s.quickRange(30);
+  assertList(s.reads[0], '2026-04-16', '2026-05-15');
+  s.reads[0].reply([receipt(1)]);
+  await drain();
+});
+
+// Capture the existing output generators at their boundaries. No printer or filesystem I/O.
+function captureBulkOutput(t, s) {
+  const pdf = [], excel = [];
+  document.body = { appendChild() {} };
+  const create = document.createElement;
+  t.mock.method(document, 'createElement', tag => tag === 'iframe' ? {
+    style: {}, contentDocument: { open() {}, write: html => pdf.push(html), close() {} },
+    contentWindow: { focus() {}, print() {} }, remove() {},
+  } : create(tag));
+  window.XLSX = { utils: { json_to_sheet: rows => rows, book_new: () => ({}),
+    book_append_sheet: (wb, rows) => { wb.rows = rows; } }, writeFile: wb => excel.push(wb.rows) };
+  function clickBoth(ready) {
+    const n = pdf.length;
+    for (const button of s.bulkButtons) {
+      assert.equal(button.disabled, !ready, button.dataset.action);
+      s.clickBulk(button); // even a delegated/programmatic click must not bypass the guard
+    }
+    assert.equal(pdf.length, ready ? n + 1 : n);
+    assert.equal(excel.length, pdf.length);
+  }
+  return { pdf, excel, clickBoth };
+}
+
+test('bulk output waits for the completed range across debounce, an obsolete read and a failed refresh', async t => {
+  const clock = clockAtMay15(t);
+  const s = await mountScreen(t, mayRange);
+  const out = captureBulkOutput(t, s);
+  const log = t.mock.method(console, 'error', () => {});
+  out.clickBoth(false); // the first read has not published anything yet
+  s.reads.shift().reply([receipt(1)]); await s.initial;
+  s.inputDate('from', '2026-05-20');
+  s.renderAll(); // a local redraw during debounce must not mix the new range with the old data
+  assert.deepEqual(s.cards(), [1]);
+  assert.deepEqual(summaryValues(), ['0.00', '1', '0.00']);
+  s.inputDate('from', ''); s.inputDate('to', '');
+  clock.tick(399); await drain();
+  assert.equal(s.reads.length, 0);
+  out.clickBoth(false);
+  clock.tick(1); await drain();
+  assert.deepEqual(s.reads[0].params, {});
+  out.clickBoth(false);
+  s.change(true);
+  s.reads[0].reply([receipt(5, 'Obsolete')]);
+  await drain();
+  out.clickBoth(false);
+  s.reads[1].fail(); await drain();
+  assert.equal(log.mock.calls.filter(({ arguments: [message] }) => message === '[allReceipts] refresh failed:').length, 1);
+  out.clickBoth(false);
+  assert.deepEqual(s.cards(), [1], 'last completed view retained');
+
+  const retry = s.initAllReceiptsPage();
+  await drain();
+  const old = { ...receipt(2, 'Ahmed'), receipt_date: '1999-01-01', paid: 100, rows: [{ kartano: 'Old', sarf: 7.5 }] };
+  const recent = Array.from({ length: 50 }, (_, i) => receipt(10 + i));
+  s.reads[2].reply([...recent, old]); await retry;
+  assert.equal(s.cards().length, 50);
+  assert.ok(!s.cards().includes(old.id));
+  assert.deepEqual(summaryValues(), ['1.00', '51', '7.50']);
+  assert.equal(out.pdf.length + out.excel.length, 0, 'blocked clicks were not queued for replay');
+  out.clickBoth(true);
+  assert.equal((out.pdf[0].match(/<section class="print-card">/g) || []).length, 51);
+  assert.match(out.pdf[0], /Ahmed/); assert.doesNotMatch(out.pdf[0], /Obsolete/);
+  assert.equal(out.excel[0].length, 51);
+  assert.equal(out.excel[0].at(-1)['رقم الكارتة'], 'Old');
+});
+
+test('bulk actions also block an ordinary in-flight search and only resume after successful publication', async t => {
+  clockAtMay15(t);
+  const s = await openScreen(t, { owner: [owner] });
+  const out = captureBulkOutput(t, s);
+  out.clickBoth(true);
+  const search = s.refreshAllReceiptsPage('search'); // no date or revision change
+  out.clickBoth(false);
+  s.reads[0].fail(); await assert.rejects(search);
+  out.clickBoth(false);
+  const retry = s.refreshAllReceiptsPage('search');
+  s.reads[1].reply([receipt(3)], { client_names: [owner] }); await retry;
+  out.clickBoth(true);
+  assert.equal(out.excel.at(-1)[0]['رقم الكارتة'], 'K3');
+  s.change(true); // event scheduled, but the next read has not started
+  out.clickBoth(false);
+  await drain();
+  s.reads[2].reply([receipt(4)], { client_names: [owner] }); await drain();
+  out.clickBoth(true);
+  assert.equal(out.excel.at(-1)[0]['رقم الكارتة'], 'K4');
+});
+
+test('list and direct search serialize only the supplied date boundaries on the wire', async t => {
+  globalThis.document = { addEventListener() {}, getElementById: () => null };
+  globalThis.window = Object.assign(new EventTarget(), { SERVER_MODE_READY: true });
+  const { activateServerMode, activateLocalMode } = await import('../services/apiConfig.js');
+  const fetch = t.mock.method(globalThis, 'fetch', async () => Response.json({ success: true, data: [] }));
+  activateServerMode();
+  t.after(activateLocalMode);
+  const { ReceiptsModule } = await import('../receipts.js');
+  for (const bounds of [{}, { from_date: '2040-01-01' }, { to_date: '1999-01-01' },
+    { from_date: '2000-01-01', to_date: '2000-01-31' }]) {
+    const { from_date = '', to_date = '' } = bounds;
+    await ReceiptsModule.getByDateRange('fixture', from_date, to_date);
+    await ReceiptsModule.searchReceipts({ from_date, to_date, client_name: ['Ahmed'], limit: 0 });
+    const [list, search] = fetch.mock.calls.slice(-2).map(({ arguments: [url, options] }) => {
+      assert.equal(options.method, 'GET');
+      return new URL(url, 'https://fixture.invalid');
+    });
+    assert.ok(list.pathname.endsWith('/entities/receipts/list.php'));
+    assert.ok(search.pathname.endsWith('/entities/receipts/search.php'));
+    assert.deepEqual(Object.fromEntries(list.searchParams), bounds);
+    assert.deepEqual(Object.fromEntries(search.searchParams), { ...bounds, 'client_name[]': 'Ahmed', limit: '0' });
+  }
+  assert.equal(fetch.mock.callCount(), 8);
 });
