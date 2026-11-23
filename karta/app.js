@@ -4,7 +4,7 @@
 
 import { AuthModule }  from './auth.js';
 import { initReceiptPage } from './receipts.js';
-import { initAllReceiptsPage } from './allReceipts.js';
+import { initAllReceiptsPage, leaveAllReceiptsPage } from './allReceipts.js';
 import { attachOwnersPageListeners, refreshOwnersView } from './entities.js';
 import { attachOfficesPageListeners, initOfficesPage, loadOffices } from './offices.js';
 import { initTreasuryPage } from './treasury.js';
@@ -82,7 +82,11 @@ function _resolvePageKey(pageName, targetId) {
   return pageName || targetId || '';
 }
 
-async function showPage(pageName) {
+function _reportFormsNavigationError(err) {
+  console.error('[allReceipts] navigation failed:', err);
+}
+
+function _activateRoute(pageName, { restoreForms = false } = {}) {
   const pages = document.querySelectorAll('.page');
   pages.forEach(p => p.classList.add('hidden'));
 
@@ -106,14 +110,23 @@ async function showPage(pageName) {
     link.classList.toggle('active', lp === pageKey || lp === targetId);
   });
 
+  if (targetId === 'allReceiptsPage') {
+    // Mount synchronously so a genuine setup failure still fails boot. Only
+    // history publication is detached on restore, so sidebar and sync can start.
+    const ready = initAllReceiptsPage(_reportFormsNavigationError);
+    ready.catch(() => {}); // the read owner reports once, even for fire-and-forget sidebar/editor calls
+    return restoreForms ? Promise.resolve() : ready;
+  }
+  leaveAllReceiptsPage();
+  return _initOtherPage(resolvedPageName, targetId);
+}
+
+async function _initOtherPage(resolvedPageName, targetId) {
   if (resolvedPageName === 'ownersPage' || targetId === 'ownersPage') {
     await refreshOwnersView();
   }
   if (resolvedPageName === 'officesPage' || targetId === 'officesPage') {
     await loadOffices();
-  }
-  if (resolvedPageName === 'allReceipts' || targetId === 'allReceiptsPage') {
-    await initAllReceiptsPage();
   }
   if (resolvedPageName === 'dashboardPage' || targetId === 'dashboardPage') {
     await initDashboardPage();
@@ -127,6 +140,17 @@ async function showPage(pageName) {
   }
   if (resolvedPageName === 'termsPage' || targetId === 'termsPage') {
     initTermsPage();
+  }
+}
+
+function showPage(pageName) {
+  try {
+    return _activateRoute(pageName);
+  } catch (err) {
+    // Keep the public navigation API promise-based even for synchronous setup errors.
+    const failed = Promise.reject(err);
+    if (PAGE_KEY_NORMALIZE[pageName] === 'allReceipts') failed.catch(_reportFormsNavigationError);
+    return failed;
   }
 }
 
@@ -177,7 +201,6 @@ async function boot() {
     initSidebarLayout();
     _bindLogout();
     initReceiptPage();
-    await initAllReceiptsPage();
     initOfficesPage();
     attachOwnersPageListeners();
     attachOfficesPageListeners();
@@ -200,7 +223,7 @@ async function boot() {
       if (lastPage === 'officeDetailsPage') fallbackPage = 'officesPage';
       if (lastPage === 'ownerDetailsPage') fallbackPage = 'ownersPage';
       if (!fallbackPage || !_resolvePageElement(fallbackPage)) fallbackPage = 'homePage';
-      await showPage(fallbackPage);
+      await _activateRoute(fallbackPage, { restoreForms: true });
     }
 
     // sidebar [data-page] navigation (unified — no more onclick)
@@ -211,7 +234,7 @@ async function boot() {
       if (pageId) showPage(pageId);
     });
 
-    // ── Real-Time Sync — start polling AFTER all modules are initialized ──
+    // The shell is ready; a restored Forms route may still be reading its history.
     try {
       SyncService.start();
     } catch (syncErr) {

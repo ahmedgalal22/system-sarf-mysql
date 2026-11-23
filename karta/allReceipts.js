@@ -93,6 +93,10 @@ function getPage() {
   return document.getElementById(PAGE_ID);
 }
 
+function _isPageVisible(page = getPage()) {
+  return !!page && !page.classList.contains('hidden');
+}
+
 /* ─── LOADING OVERLAY ────────────────────────────────────────────────────── */
 
 function _showReceiptsLoading() {
@@ -295,7 +299,7 @@ async function _onMultiSelectConfirm(stateKey, values) {
   STATE.filters.receipts[stateKey] = values;
   const def = MS_FILTER_DEFS.find(d => d.stateKey === stateKey);
   if (def?.level === 'receipt') {
-    await loadReceiptsData('search');
+    await _readForPageControl('search');
   } else {
     renderAll();
   }
@@ -653,6 +657,7 @@ function renderShell() {
         <div class="all-receipts-panels">
           <section class="all-panel" data-panel="receipts">
             ${renderReceiptsControls()}
+            <div id="receiptsFirstLoadError" class="field-msg-inline field-msg-inline--error no-print" role="alert">تعذّر تحميل النماذج. أعد فتح صفحة جميع النماذج للمحاولة مرة أخرى.</div>
             <div id="receiptsSummaryContainer"></div>
             <div id="receiptsListWrap" style="position:relative;">
               <div id="receiptsLoadingOverlay" class="ar-loading-overlay ar-loading-overlay--hidden">
@@ -996,6 +1001,11 @@ function _matchesCurrentReceiptSearch(params) {
 async function loadReceiptsData(mode, options = {}) {
   const username = getSessionUsername();
   if (!username) return;
+  // Even an explicit refresh of a hidden view must wait for its next visit.
+  if (!_isPageVisible()) {
+    _invalidateReceipts(options.passive === true || options.background === true);
+    return;
+  }
   if (STATE.loading) return;
   // A read starting now consumes the date debounce, even if it later fails.
   clearTimeout(_filterDebounceTimer);
@@ -1014,6 +1024,7 @@ async function loadReceiptsData(mode, options = {}) {
   }
   STATE.loading = true;
   try {
+    if (_initialLoad === 'failed') document.getElementById('receiptsFirstLoadError')?.classList.remove('is-visible');
     _syncBulkOutputButtons();
     const f = STATE.filters.receipts;
     // Keep open ranges on the date-wide list; owner and receipt number are
@@ -1070,16 +1081,27 @@ async function loadReceiptsData(mode, options = {}) {
     setActiveTabButtons();
     _renderedRevision = revision;
     STATE.ready = true;
+    _initialLoad = 'published';
   } catch (err) {
     STATE.ready = false; // Keep the last display, but never export a failed read as current.
     if (activeChange) _refreshPassiveOnly = false; // preserve priority for retry
+    if (_initialLoad !== 'published') {
+      _initialLoad = 'failed';
+      document.getElementById('receiptsFirstLoadError')?.classList.add('is-visible');
+    }
+    // A failed first load requires explicit re-entry. After first publication,
+    // an obsolete failure does not own a visit waiting for a newer revision.
+    if (_initialLoad === 'failed' || revision === _refreshRevision) {
+      _visibleVisit?.reject(err);
+      _visibleVisit = null;
+    }
     throw err;
   } finally {
     STATE.loading = false;
     if (mode === 'search') _hideReceiptsLoading();
     _syncBulkOutputButtons(); // after the overlay restores controls
-    // Drain newer dates or domain changes even after failure. Failure alone
-    // leaves a pending revision for retry without scheduling another read.
+    if (_isReceiptViewCurrent()) _releaseVisit();
+    // Only drain a newer revision, and only if visibility and recovery allow it.
     if (revision !== _refreshRevision) _queuePendingRefresh();
   }
 }
@@ -2083,11 +2105,20 @@ function _reportRefreshError(err) {
   console.error('[allReceipts] refresh failed:', err);
 }
 
+// Keep filter changes, but don't let a control bypass the first-load recovery gate.
+function _readForPageControl(mode) {
+  if (_firstLoadNeedsEntry()) {
+    _invalidateReceipts();
+    return;
+  }
+  return loadReceiptsData(mode);
+}
+
 // DOM dispatch doesn't await click handlers. Handle the read here, not in the shared loader.
 async function _loadReceiptsForFilterClick(mode) {
   const revision = _refreshRevision;
   try {
-    await loadReceiptsData(mode);
+    await _readForPageControl(mode);
   } catch (err) {
     // Even an unchanged range can fail. Leave it pending for re-entry, without
     // scheduling a retry or invalidating a newer read.
@@ -2267,7 +2298,29 @@ async function refreshAllReceiptsPage(mode = 'list', options = {}) {
 let _refreshRevision = 0;
 let _renderedRevision = 0;
 let _refreshPassiveOnly = true;
-let _refreshScheduled = null;
+let _refreshScheduled = false;
+let _initialLoad = 'unpublished'; // unpublished → failed (entry required) or published (normal refresh)
+let _visibleVisit = null;
+
+// All entries during one visible visit wait for a current publication, not
+// the particular HTTP request that happened to be running when they arrived.
+function _waitForPublication() {
+  if (!_visibleVisit) {
+    let resolve, reject;
+    const promise = new Promise((ok, fail) => { resolve = ok; reject = fail; });
+    _visibleVisit = { promise, resolve, reject };
+  }
+  return _visibleVisit.promise;
+}
+
+function _releaseVisit() {
+  _visibleVisit?.resolve();
+  _visibleVisit = null;
+}
+
+function leaveAllReceiptsPage() {
+  _releaseVisit(); // no more readiness obligation; do not cancel or start a data read
+}
 
 function _isReceiptViewCurrent() {
   return STATE.ready && !STATE.loading && _renderedRevision === _refreshRevision;
@@ -2292,22 +2345,27 @@ function _scheduleAllReceiptsRefresh(event = null) {
   _queuePendingRefresh();
 }
 
-function _queuePendingRefresh() {
-  if (_renderedRevision === _refreshRevision || STATE.loading || _refreshScheduled) return _refreshScheduled;
-  _refreshScheduled = Promise.resolve().then(() => {
-    _refreshScheduled = null;
-    // A direct request may have taken the loader since the event was queued.
-    if (STATE.loading || _renderedRevision === _refreshRevision) return;
-    const options = _refreshPassiveOnly ? { passive: true } : {};
-    return refreshAllReceiptsPage(undefined, options);
-  }).catch(_reportRefreshError);
-  return _refreshScheduled;
+function _firstLoadNeedsEntry() {
+  return _initialLoad === 'failed' && !_visibleVisit;
 }
 
-async function initAllReceiptsPage() {
-  const page = getPage();
-  if (!page) return;
-  if (page.dataset.initialized === '1') return _queuePendingRefresh();
+function _canDrainPendingRefresh() {
+  return _renderedRevision !== _refreshRevision && !STATE.loading && _isPageVisible() && !_firstLoadNeedsEntry();
+}
+
+function _queuePendingRefresh() {
+  if (_refreshScheduled || !_canDrainPendingRefresh()) return;
+  _refreshScheduled = true;
+  Promise.resolve().then(() => {
+    _refreshScheduled = false;
+    // Navigation or a direct read can win between the event and this microtask.
+    if (!_canDrainPendingRefresh()) return;
+    const options = _refreshPassiveOnly ? { passive: true } : {};
+    return refreshAllReceiptsPage(undefined, options);
+  }).catch(_reportRefreshError); // one observer per dispatch, independent of navigation callers
+}
+
+function _mountAllReceiptsPage(page) {
   page.dataset.initialized = '1';
   renderShell();
   _initMultiSelectFilters();
@@ -2315,17 +2373,37 @@ async function initAllReceiptsPage() {
   window.applyAllReceiptsFilter = () => renderAll();
   window.refreshAllReceiptsPage = () => refreshAllReceiptsPage('list');
 
-  // Phase 2 TASK F — coalesced single-refresh-per-burst listeners.
+  // Before this visit there was no snapshot to invalidate. This first read
+  // covers earlier changes; changes from here on advance the view's revision.
   window.addEventListener('receipts:changed',    _scheduleAllReceiptsRefresh);
   window.addEventListener('offices:changed',     _scheduleAllReceiptsRefresh);
   window.addEventListener('treasury:changed',    _scheduleAllReceiptsRefresh);
+}
 
-  await refreshAllReceiptsPage('list');
+function initAllReceiptsPage(onFirstReadError = () => {}) {
+  const page = getPage();
+  if (!_isPageVisible(page)) return Promise.resolve();
+  if (!getSessionUsername()) throw new Error('Session username is required');
+  const first = page.dataset.initialized !== '1';
+  if (first) _mountAllReceiptsPage(page); // synchronous setup errors still belong to the router/boot
+  if (_isReceiptViewCurrent()) return Promise.resolve();
+
+  const publication = _waitForPublication();
+  if (first) {
+    // A direct initializer owns its rejection via publication. Fire-and-forget
+    // routing supplies a reporter for this physical read, not one per visitor.
+    refreshAllReceiptsPage('list').catch(onFirstReadError);
+  } else {
+    if (!STATE.ready && !STATE.loading && _renderedRevision === _refreshRevision) _invalidateReceipts();
+    _queuePendingRefresh();
+  }
+  return publication;
 }
 
 export {
   STATE,
   initAllReceiptsPage,
+  leaveAllReceiptsPage,
   refreshAllReceiptsPage,
   renderAll,
   renderReceiptsControls,
