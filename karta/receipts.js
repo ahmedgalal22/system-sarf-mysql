@@ -345,6 +345,9 @@ async function update(username, id, rawData) {
 
   const normalized     = _normalize({ ...rawData, id });
   const servicePayload = _buildServicePayload(normalized);
+  // An uncollected note is not an instruction to clear the saved note.
+  // Explicit null or an empty string still clears it through normalization.
+  if (rawData.notes === undefined) delete servicePayload.notes;
 
   const result = await FinancialService.updateReceipt(username, id, servicePayload, []);
 
