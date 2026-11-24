@@ -2773,68 +2773,71 @@ async function saveReceipt() {
   if (_isSaving) return;
   _isSaving = true;
 
-  let rawData;
   try {
-    rawData = await collectRawData();
-  } catch (err) {
-    alert(err.message || '❌ حدث خطأ أثناء تجهيز بيانات الحفظ');
-    _isSaving = false;
-    return;
-  }
-  const valid = await validateBeforeSave(rawData);
-  if (!valid) {
-    _isSaving = false;
-    return;
-  }
+    let rawData;
+    try {
+      rawData = await collectRawData();
+    } catch (err) {
+      alert(err.message || '❌ حدث خطأ أثناء تجهيز بيانات الحفظ');
+      return;
+    }
+    let valid;
+    try {
+      valid = await validateBeforeSave(rawData);
+    } catch (err) {
+      alert(err.message || '❌ حدث خطأ أثناء التحقق من بيانات الحفظ');
+      return;
+    }
+    if (!valid) {
+      return;
+    }
 
-  const username = _currentUsername();
-  try {
-    _assertCriticalSaveInputs(username, rawData);
-  } catch (err) {
-    _isSaving = false;
-    alert(err.message || '❌ بيانات الحفظ غير مكتملة');
-    return;
-  }
+    const username = _currentUsername();
+    try {
+      _assertCriticalSaveInputs(username, rawData);
+    } catch (err) {
+      alert(err.message || '❌ بيانات الحفظ غير مكتملة');
+      return;
+    }
 
-  // EDIT MODE — no modal
-  if (ReceiptState.isEditing && ReceiptState.editingReceiptId) {
+    // EDIT MODE — no modal
+    if (ReceiptState.isEditing && ReceiptState.editingReceiptId) {
+      rawData.account_type = null;
+
+      try {
+        await ReceiptsModule.update(username, ReceiptState.editingReceiptId, rawData);
+        _vehicleAnalysisCache.clear();
+        _exitEditMode();
+        window.dispatchEvent(new CustomEvent('receipts:changed'));
+        alert('✅ تم تحديث النموذج بنجاح');
+        clearReceiptSilent();
+        if (typeof showPage === 'function') showPage('allReceipts');
+        setTimeout(() => { if (typeof applyAllReceiptsFilter === 'function') applyAllReceiptsFilter(); }, 400);
+      } catch (err) {
+        alert(err.message || '❌ حدث خطأ أثناء التحديث');
+      }
+      return;
+    }
+
+    // CREATE MODE
     rawData.account_type = null;
 
     try {
-      await ReceiptsModule.update(username, ReceiptState.editingReceiptId, rawData);
+      await ReceiptsModule.create(username, rawData);
+
       _vehicleAnalysisCache.clear();
-      _exitEditMode();
+      rawData.rows
+        .filter(r => r._type !== 'separator' && r.data)
+        .forEach(r => _uiSaveDriverName(r.data));
+
+      if (typeof updateDashboardStats === 'function') updateDashboardStats();
       window.dispatchEvent(new CustomEvent('receipts:changed'));
-      alert('✅ تم تحديث النموذج بنجاح');
+      alert('✅ تم حفظ النموذج بنجاح');
       clearReceiptSilent();
-      if (typeof showPage === 'function') showPage('allReceipts');
-      setTimeout(() => { if (typeof applyAllReceiptsFilter === 'function') applyAllReceiptsFilter(); }, 400);
     } catch (err) {
-      alert(err.message || '❌ حدث خطأ أثناء التحديث');
-    } finally {
-      _isSaving = false;
+      console.error('[SAVE ERROR]', err);
+      alert(err.message || '❌ حدث خطأ أثناء الحفظ');
     }
-    return;
-  }
-
-  // CREATE MODE
-  rawData.account_type = null;
-
-  try {
-    await ReceiptsModule.create(username, rawData);
-
-    _vehicleAnalysisCache.clear();
-    rawData.rows
-      .filter(r => r._type !== 'separator' && r.data)
-      .forEach(r => _uiSaveDriverName(r.data));
-
-    if (typeof updateDashboardStats === 'function') updateDashboardStats();
-    window.dispatchEvent(new CustomEvent('receipts:changed'));
-    alert('✅ تم حفظ النموذج بنجاح');
-    clearReceiptSilent();
-  } catch (err) {
-    console.error('[SAVE ERROR]', err);
-    alert(err.message || '❌ حدث خطأ أثناء الحفظ');
   } finally {
     _isSaving = false;
   }
