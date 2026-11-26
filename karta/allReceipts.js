@@ -698,7 +698,6 @@ function renderReceiptsControls() {
         <span>إلى</span>
         <input data-filter-tab="receipts" data-filter-key="to" type="date" value="${esc(f.to)}" />
       </label>
-      <button type="button" data-action="apply-filter" data-tab="receipts" class="apply-btn apply-btn--receipts">تطبيق</button>
       <button type="button" data-action="print-filtered" data-tab="receipts" class="pdf-btn"${outputDisabled}>📄 تصدير PDF</button>
       <button type="button" data-action="export-excel-filtered" data-tab="receipts" class="excel-btn"${outputDisabled}>📊 تصدير Excel</button>
        <button type="button" data-action="sort-by-payout-date" class="range-btn" style="${f.sortByPayoutDate ? 'background:#7c3aed;color:#fff;border-color:#7c3aed;' : ''}">📅 تنظيم الصرف</button>
@@ -2175,10 +2174,6 @@ function bindPageEvents() {
       const tab = actionBtn.dataset.tab || STATE.tab;
       const action = actionBtn.dataset.action;
       if (action === 'toggle-row-status' || action === 'toggle-receipt-payment-status') {
-        return;
-      }
-      if (action === 'apply-filter') {
-        await _loadReceiptsForFilterClick(_hasActiveReceiptFilters() ? 'search' : 'list');
         return;
       }
       if (action === 'print-filtered') {

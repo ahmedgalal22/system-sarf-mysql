@@ -43,8 +43,6 @@ async function mountScreen(t, filters = {}, slots = ['owner', 'company']) {
   const fire = (type, selector, control) => page.dispatchEvent({
     type, target: { closest: s => s === selector ? control : null },
   });
-  const applyButton = { dataset: { action: 'apply-filter' }, disabled: false };
-  const apply = () => fire('click', '[data-action]', applyButton);
   const quickRange = days => fire('click', '[data-range]', { dataset: { range: 'receipts', days: days?.toString() } });
   globalThis.document = { getElementById: id => elements.get(id) ?? null,
     addEventListener() {}, removeEventListener() {}, createElement: element, querySelector() { return null; } };
@@ -74,7 +72,7 @@ async function mountScreen(t, filters = {}, slots = ['owner', 'company']) {
   const fields = new Map(['from', 'to'].map(key => [dateSelector(key), {
     dataset: { filterTab: 'receipts', filterKey: key }, value: f[key], disabled: false,
   }]));
-  const controls = [...fields.values(), applyButton, { dataset: {}, disabled: true }];
+  const controls = [...fields.values(), { dataset: {}, disabled: true }];
   page.querySelector = selector => fields.get(selector) ?? null;
   const bulkButtons = ['print-filtered', 'export-excel-filtered'].map(action => ({ dataset: { action, tab: 'receipts' } }));
   page.querySelectorAll = selector => selector.includes('.range-toolbar input') ? [...controls, ...bulkButtons]
@@ -85,11 +83,13 @@ async function mountScreen(t, filters = {}, slots = ['owner', 'company']) {
     fire('input', '[data-filter-tab][data-filter-key]', field);
   };
   const initial = screen.initAllReceiptsPage();
+  assert.doesNotMatch(page.innerHTML, /data-action="apply-filter"|apply-btn/);
   assert.equal(reads.length, 1);
   const cards = () => [...elements.get('receiptsList').innerHTML.matchAll(/data-kind="receipt" data-id="(\d+)"/g)].map(m => Number(m[1]));
   const change = (passive = false, type = 'receipts:changed') =>
     window.dispatchEvent(new CustomEvent(type, { detail: { passive } }));
-  return { ...screen, initial, apply, quickRange, inputDate, change, cards, f, page, reads, controls, bulkButtons,
+  const refresh = () => screen.refreshAllReceiptsPage(f.owner.length || f.number.length ? 'search' : 'list');
+  return { ...screen, initial, refresh, quickRange, inputDate, change, cards, f, page, reads, controls, bulkButtons,
     clickBulk: button => fire('click', '[data-action]', button) };
 }
 
@@ -103,7 +103,7 @@ async function openScreen(t, filters) {
 
 test('direct list: a passive burst yields one current-range read; obsolete rows cannot prune the office or change sorting', async t => {
   const s = await openScreen(t, { company: [office], sortByPayoutDate: true });
-  s.apply();
+  s.refresh();
   assert.equal(s.reads[0].mode, 'list');
   s.change(true);
   await drain();
@@ -131,7 +131,7 @@ test('direct list: a passive burst yields one current-range read; obsolete rows 
 
 test('direct search: mixed events coalesce into one active search without publishing obsolete meta/options', async t => {
   const s = await openScreen(t, { owner: [owner] });
-  s.apply();
+  s.refresh();
   assert.equal(s.reads[0].mode, 'search');
   s.change(true);
   await drain();
@@ -293,7 +293,7 @@ test('a quick range during the initial list invalidates it before it can render 
 test('several quick ranges during the trailing passive list produce one active read for the last range', async t => {
   clockAtMay15(t);
   const s = await openScreen(t, { company: [office] });
-  s.apply();
+  s.refresh();
   s.change(true);
   s.reads[0].reply([receipt(8)]);
   await drain();
@@ -323,7 +323,7 @@ test('several quick ranges during the trailing passive list produce one active r
 test('date inputs supersede a held search before the debounce expires; stale meta/options cannot prune selections', async t => {
   const clock = clockAtMay15(t);
   const s = await openScreen(t, { owner: [owner], company: [office] });
-  s.apply();
+  s.refresh();
   assert.equal(s.reads[0].mode, 'search');
   s.inputDate('from', '2026-05-04');
   s.inputDate('to', '2026-05-25');
@@ -383,12 +383,12 @@ test('idle date typing debounces; a newer date while that list is held still dra
   assert.equal(s.reads.length, 2);
 });
 
-test('failed Apply consumes the date timer but not the pending change; re-entry and later domain refreshes work', async t => {
+test('failed automatic date read stays pending; re-entry and later domain refreshes work', async t => {
   const clock = clockAtMay15(t);
   const s = await openScreen(t);
   const log = t.mock.method(console, 'error', () => {});
   s.inputDate('from', '2026-05-11');
-  s.apply(); // wins before the timer
+  clock.tick(400); await drain();
   assertList(s.reads[0], '2026-05-11', '2026-05-31');
   s.reads[0].fail();
   await drain();
@@ -454,7 +454,7 @@ test('date-wide options prune the last owner: never publish the narrow result; o
   assert.equal(publish.mock.callCount(), 1);
   clock.tick(1000);
   await drain();
-  assert.equal(s.reads.length, 2, 'exactly one corrective read, without navigation or Apply');
+  assert.equal(s.reads.length, 2, 'exactly one corrective read, without navigation');
 });
 
 test('two pruned query selections share one passive follow-up; newer dates supersede it without pruning valid choices', async t => {
@@ -496,7 +496,7 @@ test('two pruned query selections share one passive follow-up; newer dates super
 
 test('a search snapshot detects a replaced number even without a date or domain event', async t => {
   const s = await openScreen(t, { owner: [owner], number: ['1'] });
-  s.apply();
+  s.refresh();
   assertSearch(s.reads[0], s.f.from, s.f.to, { client_name: [owner], receipt_number: ['1'] });
   s.f.number[0] = '2'; // same array, same length, different effective query
   s.reads[0].reply([], { client_names: [], receipt_numbers: [] });
@@ -514,7 +514,7 @@ test('a search snapshot detects a replaced number even without a date or domain 
 
 test('partial options do not clear an omitted owner selection; row-only pruning does not repeat the search', async t => {
   const s = await openScreen(t, { owner: [owner], company: [office] });
-  s.apply();
+  s.refresh();
   assertSearch(s.reads[0], '2026-05-01', '2026-05-31', { client_name: [owner] });
   s.reads[0].reply([receipt(2, owner, 'New office')], { company_names: ['New office'] });
   await drain();
@@ -557,7 +557,7 @@ test('clearing both dates during search coalesces to one unbounded list with own
   const match = receipt(1), wrongOwner = receipt(2, 'Other owner'), wrongNumber = receipt(3);
   s.reads.shift().reply([match, wrongOwner]);
   await s.initial;
-  s.apply();
+  s.refresh();
   assertSearch(s.reads[0], '2026-05-01', '2026-05-31', { client_name: [owner], receipt_number: ['1', '2'] });
   s.inputDate('from', '');
   s.inputDate('to', '');
@@ -576,7 +576,7 @@ test('clearing both dates during search coalesces to one unbounded list with own
 
 for (const filter of ['owner', 'number']) {
   for (const cleared of ['from', 'to']) {
-    test(`clearing ${cleared} with ${filter} selected uses an open list bound for debounce and Apply`, async t => {
+    test(`clearing ${cleared} with ${filter} selected uses an open list bound for debounce and explicit refresh`, async t => {
       const clock = clockAtMay15(t);
       // An open upper bound must reach future receipts; an open lower bound must reach old ones.
       const year = cleared === 'from' ? '2000' : '2040';
@@ -610,7 +610,7 @@ for (const filter of ['owner', 'number']) {
       assert.equal(s.reads.length, 1);
 
       // Even a direct search request must not reintroduce a default after the date change settled.
-      s.apply();
+      s.refresh();
       releaseOpenList(s.reads[1]);
       await drain();
       assert.deepEqual(s.cards(), visible);
@@ -621,7 +621,6 @@ for (const filter of ['owner', 'number']) {
 
 for (const [action, click, from, to] of [
   ['quick range', s => s.quickRange(7), '2026-05-09', '2026-05-15'],
-  ['Apply', s => s.apply(), '2026-05-01', '2026-05-31'], // retry even when the dates were unchanged
 ]) {
   test(`browser click: failed ${action} reports once, restores controls, and retries only on re-entry`, async t => {
     const clock = clockAtMay15(t);
@@ -669,10 +668,11 @@ for (const [action, click, from, to] of [
   });
 }
 
-test('a failed Apply superseded by passive events leaves their single follow-up passive', async t => {
-  const s = await openScreen(t);
+test('a failed quick range superseded by passive events leaves their single follow-up passive', async t => {
+  clockAtMay15(t);
+  const s = await openScreen(t, { from: '2026-04-16', to: '2026-05-15' });
   const log = t.mock.method(console, 'error', () => {});
-  s.apply();
+  s.quickRange(30);
   s.change(true);
   s.change(true, 'offices:changed');
   s.reads[0].fail();
@@ -726,7 +726,7 @@ function summaryValues() {
 }
 
 test('fresh fields and list are unbounded; clearing a preset reveals old Ahmed to customer and receipt-number searches', async t => {
-  clockAtMay15(t);
+  const clock = clockAtMay15(t);
   globalThis.requestAnimationFrame = () => {}; // popup focus is immaterial to selection
   t.after(() => { delete globalThis.requestAnimationFrame; });
   const s = await mountScreen(t, {}, ['owner', 'number', 'company']); // no injected dates
@@ -754,7 +754,8 @@ test('fresh fields and list are unbounded; clearing a preset reveals old Ahmed t
   assertList(s.reads[0], '2026-05-09', '2026-05-15');
   s.reads.shift().reply(recent);
   await drain();
-  s.inputDate('from', ''); s.inputDate('to', ''); s.apply();
+  s.inputDate('from', ''); s.inputDate('to', '');
+  clock.tick(400); await drain();
   replyAll(); await drain();
   selectOption('owner', 'أحم', customer);
   replyAll(); await drain();
@@ -776,7 +777,8 @@ test('fresh fields and list are unbounded; clearing a preset reveals old Ahmed t
   for (const value of summaryValues()) assert.ok(printSummary.includes(`>${value}<`));
   assert.deepEqual(out.excel[0].map(row => [row['صاحب المركبة'], row['رقم الكارتة'], row['الصرف']]), [[customer, 'OLD-A', 1.25]]);
 
-  s.inputDate('from', old.receipt_date); s.inputDate('to', old.receipt_date); s.apply();
+  s.inputDate('from', old.receipt_date); s.inputDate('to', old.receipt_date);
+  clock.tick(400); await drain();
   assertSearch(s.reads[0], old.receipt_date, old.receipt_date, { client_name: [customer], receipt_number: ['001'] });
   s.reads.shift().reply([old], { client_names: [customer], receipt_numbers: ['001'], company_names: [selectedOffice, office] });
   await drain();
@@ -816,6 +818,7 @@ for (const [label, row, option] of [
 }
 
 test('each bound is inclusive and independently removable; an inverted range is not repaired', async t => {
+  const clock = clockAtMay15(t);
   const s = await mountScreen(t);
   const from = '2000-02-29', to = '2000-03-01';
   const all = ['1990-01-01', from, to, '2040-01-01'].map((date, i) => ({ ...receipt(i + 1), receipt_date: date }));
@@ -828,7 +831,8 @@ test('each bound is inclusive and independently removable; an inverted range is 
     [to, from, { from_date: to, to_date: from }, []],
     ['', '', {}, [4, 3, 2, 1]],
   ]) {
-    s.inputDate('from', lower); s.inputDate('to', upper); s.apply();
+    s.inputDate('from', lower); s.inputDate('to', upper);
+    clock.tick(400); await drain();
     const read = s.reads.shift();
     assert.equal(read.mode, 'list');
     assert.deepEqual(read.params, params);
