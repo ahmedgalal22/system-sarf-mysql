@@ -976,7 +976,9 @@ class ReceiptRepository {
                 $car = trim($r['car'] ?? $r['carNo'] ?? $r['vehicle_plate'] ?? '');
                 if ($car !== '') $vehicleSet[$car] = true;
                 // Karta
-                $karta = trim($r['kartano'] ?? $r['kartaNo'] ?? $r['karta'] ?? '');
+                $karta = trim($r['kartano'] ?? '');
+                if ($karta === '' || preg_match('/^\s+$/u', $karta)) $karta = trim($r['kartaNo'] ?? '');
+                if ($karta === '' || preg_match('/^\s+$/u', $karta)) $karta = trim($r['karta'] ?? '');
                 if ($karta !== '') $kartaSet[$karta] = true;
                 // Type
                 $type = trim($r['type'] ?? '');
