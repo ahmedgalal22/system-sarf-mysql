@@ -44,6 +44,7 @@ async function mountScreen(t, filters = {}, slots = ['owner', 'company']) {
     type, target: { closest: s => s === selector ? control : null },
   });
   const quickRange = days => fire('click', '[data-range]', { dataset: { range: 'receipts', days: days?.toString() } });
+  const clearDates = () => fire('click', '[data-action]', { dataset: { action: 'clear-receipt-dates' } });
   globalThis.document = { getElementById: id => elements.get(id) ?? null,
     addEventListener() {}, removeEventListener() {}, createElement: element, querySelector() { return null; } };
   globalThis.window = Object.assign(new EventTarget(), { __APP_CONTEXT__: { username: 'admin' } });
@@ -89,7 +90,7 @@ async function mountScreen(t, filters = {}, slots = ['owner', 'company']) {
   const change = (passive = false, type = 'receipts:changed') =>
     window.dispatchEvent(new CustomEvent(type, { detail: { passive } }));
   const refresh = () => screen.refreshAllReceiptsPage(f.owner.length || f.number.length ? 'search' : 'list');
-  return { ...screen, initial, refresh, quickRange, inputDate, change, cards, f, page, reads, controls, bulkButtons,
+  return { ...screen, initial, refresh, quickRange, clearDates, inputDate, change, cards, f, page, reads, controls, bulkButtons,
     clickBulk: button => fire('click', '[data-action]', button) };
 }
 
@@ -259,6 +260,74 @@ function clockAtMay15(t) {
   t.mock.timers.enable({ apis: ['Date', 'setTimeout'], now: Date.parse('2026-05-15T12:00:00Z') });
   return t.mock.timers;
 }
+
+test('clear dates uses the automatic debounce and preserves other filters', async t => {
+  const clock = clockAtMay15(t);
+  const s = await openScreen(t, { owner: [owner], number: ['1'], company: [office], sortByPayoutDate: true });
+  assert.match(s.page.innerHTML, /data-action="clear-receipt-dates"[^>]*>مسح<\/button>/);
+  s.clearDates();
+  assert.deepEqual([s.f.from, s.f.to], ['', '']);
+  assert.equal(s.page.querySelector(dateSelector('from')).value, '');
+  assert.equal(s.page.querySelector(dateSelector('to')).value, '');
+  assert.deepEqual([s.f.owner, s.f.number, s.f.company, s.f.sortByPayoutDate], [[owner], ['1'], [office], true]);
+  clock.tick(399); await drain();
+  assert.equal(s.reads.length, 0);
+  clock.tick(1); await drain();
+  assert.equal(s.reads.length, 1);
+  assert.equal(s.reads[0].mode, 'list');
+  assert.deepEqual(s.reads[0].params, {});
+  const old = { ...receipt(1), receipt_date: '2000-01-01', paid: 12345 };
+  s.reads[0].reply([old, receipt(2), receipt(3, 'Other owner')]);
+  await drain();
+  assert.deepEqual(s.cards(), [1]);
+  assert.deepEqual(summaryValues(), ['123.45', '1', '0.00']);
+  assert.deepEqual([s.f.owner, s.f.number, s.f.company, s.f.sortByPayoutDate], [[owner], ['1'], [office], true]);
+  s.clearDates();
+  clock.tick(400); await drain();
+  assert.equal(s.reads.length, 1, 'clearing already empty dates does not initiate a read');
+});
+
+test('clear dates coalesces a pending single-bound edit into one unbounded read', async t => {
+  const clock = clockAtMay15(t);
+  const s = await openScreen(t);
+  s.inputDate('from', '');
+  clock.tick(250);
+  s.clearDates();
+  assert.deepEqual([s.f.from, s.f.to], ['', '']);
+  assert.equal(s.page.querySelector(dateSelector('from')).value, '');
+  assert.equal(s.page.querySelector(dateSelector('to')).value, '');
+  clock.tick(399); await drain();
+  assert.equal(s.reads.length, 0);
+  clock.tick(1); await drain();
+  assert.equal(s.reads.length, 1);
+  assert.deepEqual(s.reads[0].params, {});
+  s.reads[0].reply([receipt(1)]);
+  await drain();
+  clock.tick(400); await drain();
+  assert.equal(s.reads.length, 1);
+});
+
+test('clear dates during an in-flight read drains the latest unbounded range', async t => {
+  const clock = clockAtMay15(t);
+  const s = await openScreen(t, { owner: [owner] });
+  const held = s.refresh();
+  assert.equal(s.reads[0].mode, 'search');
+  s.clearDates();
+  assert.deepEqual([s.f.from, s.f.to], ['', '']);
+  assert.deepEqual(s.f.owner, [owner]);
+  clock.tick(400); await drain();
+  assert.equal(s.reads.length, 1, 'no overlapping request');
+  s.reads[0].reply([receipt(9, 'Obsolete')], { client_names: ['Obsolete'] });
+  await held; await drain();
+  assert.equal(s.reads.length, 2);
+  assert.equal(s.reads[1].mode, 'list');
+  assert.deepEqual(s.reads[1].params, {});
+  assert.deepEqual(s.cards(), [1], 'stale data was not published');
+  s.reads[1].reply([{ ...receipt(2), receipt_date: '2000-01-01' }]);
+  await drain();
+  assert.deepEqual(s.cards(), [2]);
+  assert.deepEqual(s.f.owner, [owner]);
+});
 
 function assertList(read, from, to, passive = false) {
   assert.equal(read.mode, 'list');

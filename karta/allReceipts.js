@@ -629,6 +629,16 @@ function setDateRange(filters, { from = filters.from, to = filters.to }) {
   return true;
 }
 
+function _updateReceiptDateRange(bounds) {
+  if (!setDateRange(STATE.filters.receipts, bounds)) return false;
+  // A busy loader drains the latest revision in finally. Only idle changes need a timer.
+  if (!STATE.loading) {
+    clearTimeout(_filterDebounceTimer);
+    _filterDebounceTimer = setTimeout(_queuePendingRefresh, 400);
+  }
+  return true;
+}
+
 function setQuickRange(tab, days) {
   const toDate = new Date();
   const fromDate = new Date(toDate);
@@ -698,6 +708,7 @@ function renderReceiptsControls() {
         <span>إلى</span>
         <input data-filter-tab="receipts" data-filter-key="to" type="date" value="${esc(f.to)}" />
       </label>
+      <button type="button" data-action="clear-receipt-dates" class="range-btn">مسح</button>
       <button type="button" data-action="print-filtered" data-tab="receipts" class="pdf-btn"${outputDisabled}>📄 تصدير PDF</button>
       <button type="button" data-action="export-excel-filtered" data-tab="receipts" class="excel-btn"${outputDisabled}>📊 تصدير Excel</button>
        <button type="button" data-action="sort-by-payout-date" class="range-btn" style="${f.sortByPayoutDate ? 'background:#7c3aed;color:#fff;border-color:#7c3aed;' : ''}">📅 تنظيم الصرف</button>
@@ -2176,6 +2187,11 @@ function bindPageEvents() {
       if (action === 'toggle-row-status' || action === 'toggle-receipt-payment-status') {
         return;
       }
+      if (action === 'clear-receipt-dates') {
+        _updateReceiptDateRange({ from: '', to: '' });
+        _updateDateInputValues();
+        return;
+      }
       if (action === 'print-filtered') {
         if (_isReceiptViewCurrent()) await printCurrentView();
         return;
@@ -2203,12 +2219,7 @@ function bindPageEvents() {
         // Receipt date inputs trigger server re-query with options refresh.
         // Multi-select filters are handled by _onMultiSelectConfirm (no input events).
         if (key === 'from' || key === 'to') {
-          if (!setDateRange(STATE.filters[tab], { [key]: field.value })) return;
-          // A busy loader drains the latest revision in finally. Only idle typing needs a timer.
-          if (!STATE.loading) {
-            clearTimeout(_filterDebounceTimer);
-            _filterDebounceTimer = setTimeout(_queuePendingRefresh, 400);
-          }
+          _updateReceiptDateRange({ [key]: field.value });
         }
       }
       return;
