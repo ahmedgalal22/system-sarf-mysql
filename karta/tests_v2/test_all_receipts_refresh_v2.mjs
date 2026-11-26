@@ -74,7 +74,7 @@ async function mountScreen(t, filters = {}, slots = ['owner', 'company']) {
   const fields = new Map(['from', 'to'].map(key => [dateSelector(key), {
     dataset: { filterTab: 'receipts', filterKey: key }, value: f[key], disabled: false,
   }]));
-  const controls = [...fields.values(), applyButton, { dataset: { action: 'page-size' }, disabled: true }];
+  const controls = [...fields.values(), applyButton, { dataset: {}, disabled: true }];
   page.querySelector = selector => fields.get(selector) ?? null;
   const bulkButtons = ['print-filtered', 'export-excel-filtered'].map(action => ({ dataset: { action, tab: 'receipts' } }));
   page.querySelectorAll = selector => selector.includes('.range-toolbar input') ? [...controls, ...bulkButtons]
@@ -101,8 +101,8 @@ async function openScreen(t, filters) {
   return s;
 }
 
-test('direct list: a passive burst yields one current-range read; obsolete rows cannot prune the office or change pagination', async t => {
-  const s = await openScreen(t, { company: [office], pageSize: 100, sortByPayoutDate: true });
+test('direct list: a passive burst yields one current-range read; obsolete rows cannot prune the office or change sorting', async t => {
+  const s = await openScreen(t, { company: [office], sortByPayoutDate: true });
   s.apply();
   assert.equal(s.reads[0].mode, 'list');
   s.change(true);
@@ -123,10 +123,9 @@ test('direct list: a passive burst yields one current-range read; obsolete rows 
   assert.deepEqual(next.params, { from_date: '2026-05-10', to_date: '2026-05-31' });
   next.reply(Array.from({ length: 101 }, (_, i) => receipt(i + 1)));
   await drain();
-  assert.equal(s.f.pageSize, 100);
   assert.equal(s.f.sortByPayoutDate, true);
   assert.deepEqual(s.f.company, [office]);
-  assert.deepEqual(s.cards(), Array.from({ length: 100 }, (_, i) => 101 - i));
+  assert.deepEqual(s.cards(), Array.from({ length: 101 }, (_, i) => 101 - i));
   assert.equal(s.reads.length, 2);
 });
 
@@ -747,8 +746,8 @@ test('fresh fields and list are unbounded; clearing a preset reveals old Ahmed t
   }
   replyAll();
   await s.initial;
-  assert.equal(s.cards().length, 50);
-  assert.ok(!s.cards().includes(old.id), 'old match is outside the initial display slice');
+  assert.equal(s.cards().length, 53);
+  assert.ok(s.cards().includes(old.id), 'all loaded records are displayed');
   assert.deepEqual(summaryValues(), ['123.45', '54', '3.75']);
 
   s.quickRange(7);
@@ -907,8 +906,8 @@ test('bulk output waits for the completed range across debounce, an obsolete rea
   const old = { ...receipt(2, 'Ahmed'), receipt_date: '1999-01-01', paid: 100, rows: [{ kartano: 'Old', sarf: 7.5 }] };
   const recent = Array.from({ length: 50 }, (_, i) => receipt(10 + i));
   s.reads[2].reply([...recent, old]); await retry;
-  assert.equal(s.cards().length, 50);
-  assert.ok(!s.cards().includes(old.id));
+  assert.equal(s.cards().length, 51);
+  assert.ok(s.cards().includes(old.id));
   assert.deepEqual(summaryValues(), ['1.00', '51', '7.50']);
   assert.equal(out.pdf.length + out.excel.length, 0, 'blocked clicks were not queued for replay');
   out.clickBoth(true);

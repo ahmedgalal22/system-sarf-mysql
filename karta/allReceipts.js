@@ -84,7 +84,6 @@ function createReceiptFilterState() {
     from: '',
     to: '',
     sortByPayoutDate: false,
-    pageSize: 50,
   };
 }
 
@@ -699,15 +698,6 @@ function renderReceiptsControls() {
         <span>إلى</span>
         <input data-filter-tab="receipts" data-filter-key="to" type="date" value="${esc(f.to)}" />
       </label>
-      <label class="page-size-label">
-        <span>عرض:</span>
-        <select id="receiptPageSize" data-action="page-size">
-          <option value="50" ${f.pageSize === 50 ? 'selected' : ''}>50</option>
-          <option value="100" ${f.pageSize === 100 ? 'selected' : ''}>100</option>
-          <option value="200" ${f.pageSize === 200 ? 'selected' : ''}>200</option>
-          <option value="0" ${f.pageSize === 0 ? 'selected' : ''}>الكل</option>
-        </select>
-      </label>
       <button type="button" data-action="apply-filter" data-tab="receipts" class="apply-btn apply-btn--receipts">تطبيق</button>
       <button type="button" data-action="print-filtered" data-tab="receipts" class="pdf-btn"${outputDisabled}>📄 تصدير PDF</button>
       <button type="button" data-action="export-excel-filtered" data-tab="receipts" class="excel-btn"${outputDisabled}>📊 تصدير Excel</button>
@@ -934,10 +924,7 @@ function renderReceiptList(_preFiltered) {
     sorted.sort((a, b) => (b.created_at || 0) - (a.created_at || 0));
   }
 
-  const pageSize = Number(STATE.filters.receipts.pageSize) || 0;
-  const paged = pageSize > 0 ? sorted.slice(0, pageSize) : sorted;
-
-  container.innerHTML = paged
+  container.innerHTML = sorted
     .map((record) => buildReceiptCardHtml(record))
     .join('');
 
@@ -2242,14 +2229,6 @@ function bindPageEvents() {
   });
 
   page.addEventListener('change', async (event) => {
-    // Page size selector — update STATE and re-render immediately
-    const pageSizeField = event.target.closest('select[data-action="page-size"]');
-    if (pageSizeField) {
-      STATE.filters.receipts.pageSize = parseInt(pageSizeField.value, 10);
-      renderAll();
-      return;
-    }
-
     const rowStatusField = event.target.closest('select[data-action="toggle-row-status"]');
     if (rowStatusField) {
       const receiptId = rowStatusField.dataset.receiptId;

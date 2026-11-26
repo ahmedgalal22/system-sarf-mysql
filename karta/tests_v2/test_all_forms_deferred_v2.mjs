@@ -30,15 +30,13 @@ test('saved All Forms route reads on entry; queued and in-flight refreshes respe
   assert.equal(STATE.ready, true);
   assert.equal(STATE.receipts.length, history.length, 'all history is loaded, not just the first screen of cards');
   const cards = () => (nodes.receiptsList.innerHTML.match(/data-kind="receipt"/g) || []).length;
-  assert.equal(cards(), 50);
-  fireControl(forms, 'change', 'select[data-action="page-size"]', { value: '100' });
-  assert.equal(cards(), 100, 'display size still operates on the loaded history');
+  assert.equal(cards(), 205, 'all loaded history is displayed');
+  assert.doesNotMatch(forms.innerHTML, /receiptPageSize|data-action="page-size"/);
   await window.showPage('homePage');
   change('owners:changed', true); // editor lookup, not a receipt invalidation
   await window.showPage('allReceiptsPage');
   await drain();
-  assert.equal(cards(), 100);
-  assert.equal(STATE.filters.receipts.pageSize, 100);
+  assert.equal(cards(), 205);
   assert.equal(reads.length, 1, 'a clean return retains the display and does not re-read');
 
   // The change queues a microtask while visible; the router hides Forms before dispatch.
@@ -107,7 +105,6 @@ test('saved All Forms route reads on entry; queued and in-flight refreshes respe
   reads[4].reply([receipt(103)]);
   await earlyReturn;
   await drain();
-  assert.equal(STATE.filters.receipts.pageSize, 100);
   assert.deepEqual(STATE.receipts.map(r => r.id), [103]);
   assert.equal(reads.length, 5);
 });
